@@ -1,0 +1,108 @@
+name: Publish to PyPI
+
+# Publishing uses PyPI Trusted Publishing (OIDC): no API token is stored in
+# this repository, and no secret is referenced below. Configure it once at
+#   https://pypi.org/manage/project/antibrow/settings/publishing/
+# with owner = this GitHub org/user, repository = this repo,
+# workflow = publish.yml, environment = pypi.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Where to publish
+        required: true
+        default: testpypi
+        type: choice
+        options: [testpypi, pypi]
+
+permissions:
+  contents: read
+
+# The Python package lives in python/. Only `run:` steps follow this; the
+# artifact upload below spells out the full path from the workspace root.
+defaults:
+  run:
+    working-directory: python
+
+jobs:
+  build:
+    name: Build sdist + wheel
+    runs-on: ubuntu-latest
+    # Two packages share this repository, so releases are tagged per package:
+    # `python-v*` for PyPI, `js-v*` for npm. `on: release` cannot filter tags,
+    # so a js release must be skipped here rather than fail the version check.
+    if: github.event_name != 'release' || startsWith(github.ref_name, 'python-v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade pip build twine
+
+      - name: Run the test suite before publishing anything
+        run: |
+          python -m pip install -e ".[dev]"
+          python -m pytest -q
+
+      - name: Build
+        run: python -m build
+
+      - name: Check metadata
+        run: python -m twine check dist/*
+
+      - name: Verify the tag matches the packaged version
+        if: github.event_name == 'release'
+        run: |
+          VERSION=$(python -c "import tomllib,pathlib;print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          TAG="${GITHUB_REF_NAME#python-v}"
+          if [ "$VERSION" != "$TAG" ]; then
+            echo "::error::tag $TAG does not match pyproject version $VERSION"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: python/dist/
+
+  testpypi:
+    name: Publish to TestPyPI
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/antibrow
+    permissions:
+      id-token: write   # required for trusted publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  pypi:
+    name: Publish to PyPI
+    needs: build
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/antibrow
+    permissions:
+      id-token: write   # required for trusted publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

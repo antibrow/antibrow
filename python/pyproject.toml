@@ -1,0 +1,108 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "antibrow"
+version = "0.1.0"
+description = "The antidetect browser your AI agent can drive - kernel-level fingerprint spoofing with the Playwright API"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "AntiBrow", email = "support@antibrow.com" }]
+maintainers = [{ name = "AntiBrow", email = "support@antibrow.com" }]
+keywords = [
+    "antidetect-browser",
+    "anti-detect",
+    "fingerprint",
+    "browser-fingerprint",
+    "stealth",
+    "playwright",
+    "puppeteer",
+    "selenium-alternative",
+    "web-scraping",
+    "scraping",
+    "crawler",
+    "automation",
+    "bot-detection",
+    "cloudflare-bypass",
+    "browser-automation",
+    "ai-agent",
+    "agentic-ai",
+    "mcp",
+    "proxy",
+    "chromium",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+dependencies = [
+    "playwright>=1.40",
+]
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.2"]
+dev = [
+    "pytest>=7.4",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+]
+
+[project.urls]
+Homepage = "https://antibrow.com"
+Documentation = "https://antibrow.com/docs/sdk"
+Repository = "https://github.com/antibrow/antibrow"
+Issues = "https://github.com/antibrow/antibrow/issues"
+Changelog = "https://github.com/antibrow/antibrow/blob/main/python/CHANGELOG.md"
+Pricing = "https://antibrow.com/pricing"
+
+[project.scripts]
+antibrow = "antibrow.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/antibrow"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/examples",
+    "/README.md",
+    "/LICENSE",
+    "/BINARY-LICENSE.md",
+]
+# Internal working notes - never published.
+exclude = ["NOTES.md", "DELIVERY.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["error::DeprecationWarning:antibrow.*"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py39"
+
+[tool.ruff.lint]
+# `UP` (pyupgrade) is deliberately off: it pushes 3.10+ idioms such as
+# `X | None` in annotations, and this package still supports 3.9.
+select = ["E", "F", "W", "I", "B"]
+ignore = [
+    "E501",  # long lines
+    "B904",  # `raise ... from err` inside except - noisy for re-raises we intend
+]

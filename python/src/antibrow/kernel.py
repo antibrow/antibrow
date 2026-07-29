@@ -1,0 +1,532 @@
+"""Browser kernel catalogue, download and on-disk cache.
+
+The AntiBrow kernel is a Chromium fork whose fingerprint spoofing lives in
+C++/Blink rather than in injected JavaScript. It is distributed as a
+per-platform zip and cached under ``<cache_dir>/kernels/<version>/``.
+
+Two sources of versions:
+
+* the compiled-in :data:`KERNEL_VERSIONS` baseline, which also decides the
+  default kernel for brand-new profiles, and
+* a remote manifest (``fp-browser-versions.json``) fetched at runtime, so a
+  freshly published kernel becomes selectable without releasing a new SDK.
+
+Remote entries only *augment* the baseline: they add versions and fill in
+platforms the baseline lacks, but never rewrite a built-in download URL and
+never bump the default.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import random
+import shutil
+import stat
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import zipfile
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable, Dict, List, Optional
+
+from .errors import KernelDownloadError, UnsupportedPlatformError
+
+ProgressCallback = Callable[[str], None]
+
+#: Platforms the kernel is built for. macOS is not available yet.
+SUPPORTED_PLATFORMS = ("win32", "linux")
+
+#: Manifest platform token -> our platform key.
+_MANIFEST_PLATFORM = {"win64": "win32", "linux64": "linux"}
+
+#: Where new kernel builds are announced (same origin as the zips).
+KERNEL_MANIFEST_URL = "https://download.antibrow.com/fp-browser-versions.json"
+
+#: Filename of the build marker written inside an installed kernel directory.
+BUILD_MARKER = ".fp-build"
+
+_DOWNLOAD_TIMEOUT = 60
+_MANIFEST_TIMEOUT = 15
+
+
+@dataclass
+class KernelAsset:
+    """One (version x platform) download."""
+
+    download_url: str
+    #: Browser executable path relative to the extracted kernel directory.
+    exe_rel_path: str
+    #: Opaque freshness marker from the manifest, e.g. ``"2026-07-24 07:09"``.
+    #: A rebuilt same-version zip keeps the URL but bumps this.
+    build: Optional[str] = None
+
+
+@dataclass
+class KernelVersion:
+    version: str
+    label: str
+    #: Only the platforms this version was actually built for.
+    platforms: Dict[str, KernelAsset] = field(default_factory=dict)
+
+    def asset(self, platform: Optional[str] = None) -> KernelAsset:
+        plat = platform or current_platform()
+        asset = self.platforms.get(plat)
+        if asset is None:
+            raise UnsupportedPlatformError(
+                'Kernel {0} has no build for platform "{1}"'.format(self.version, plat)
+            )
+        return asset
+
+    def available_on(self, platform: Optional[str] = None) -> bool:
+        try:
+            plat = platform or current_platform()
+        except UnsupportedPlatformError:
+            return False
+        return plat in self.platforms
+
+
+#: Compiled-in baseline, newest first. Matches the Node SDK catalogue.
+KERNEL_VERSIONS: List[KernelVersion] = [
+    KernelVersion(
+        version="150.0.7871.182",
+        label="Chrome 150",
+        platforms={
+            "win32": KernelAsset(
+                "https://download.antibrow.com/fp-chromium-150-win64.zip", "chrome.exe"
+            ),
+            "linux": KernelAsset(
+                "https://download.antibrow.com/fp-chromium-150-linux64.zip", "chrome"
+            ),
+        },
+    ),
+    KernelVersion(
+        version="149.0.7827.201",
+        label="Chrome 149",
+        platforms={
+            "win32": KernelAsset(
+                "https://download.antibrow.com/fp-chromium-149-win64.zip", "chrome.exe"
+            ),
+            "linux": KernelAsset(
+                "https://download.antibrow.com/fp-chromium-149-linux64.zip", "chrome"
+            ),
+        },
+    ),
+]
+
+#: Versions discovered at runtime from the remote manifest.
+_registered: List[KernelVersion] = []
+
+
+def current_platform() -> str:
+    """Map :data:`sys.platform` onto a supported kernel platform."""
+    if sys.platform.startswith("win"):
+        return "win32"
+    if sys.platform.startswith("linux"):
+        return "linux"
+    raise UnsupportedPlatformError(
+        "Unsupported platform: {0}. The kernel ships Windows and Linux "
+        "builds only (macOS is not available yet).".format(sys.platform)
+    )
+
+
+def version_sort_key(version: str) -> tuple:
+    """Numeric tuple for comparing dotted versions ("150.0.7871.182")."""
+    parts = []
+    for chunk in version.split("."):
+        try:
+            parts.append(int(chunk))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts)
+
+
+def _copy_version(kv: KernelVersion) -> KernelVersion:
+    return KernelVersion(
+        version=kv.version,
+        label=kv.label,
+        platforms={k: KernelAsset(v.download_url, v.exe_rel_path, v.build) for k, v in kv.platforms.items()},
+    )
+
+
+def _merge_platforms(target: KernelVersion, incoming: Dict[str, KernelAsset]) -> None:
+    for plat, asset in incoming.items():
+        existing = target.platforms.get(plat)
+        if existing is None:
+            # First writer wins for the download asset: baseline beats remote.
+            target.platforms[plat] = KernelAsset(asset.download_url, asset.exe_rel_path, asset.build)
+            continue
+        # `build` is a freshness signal, so the latest seen wins.
+        if asset.build and existing.build != asset.build:
+            existing.build = asset.build
+
+
+def all_kernel_versions() -> List[KernelVersion]:
+    """Baseline merged with runtime-registered versions, newest first."""
+    merged: Dict[str, KernelVersion] = {}
+    for kv in list(KERNEL_VERSIONS) + list(_registered):
+        existing = merged.get(kv.version)
+        if existing is None:
+            merged[kv.version] = _copy_version(kv)
+        else:
+            _merge_platforms(existing, kv.platforms)
+    return sorted(merged.values(), key=lambda kv: version_sort_key(kv.version), reverse=True)
+
+
+def register_kernel_versions(versions: List[KernelVersion]) -> None:
+    """Add runtime-discovered versions to the catalogue (idempotent)."""
+    for kv in versions:
+        if not kv.version or not kv.platforms:
+            continue
+        existing = next((k for k in _registered if k.version == kv.version), None)
+        if existing is None:
+            _registered.append(_copy_version(kv))
+        else:
+            _merge_platforms(existing, kv.platforms)
+
+
+def parse_kernel_manifest(text: str, manifest_url: str = KERNEL_MANIFEST_URL) -> List[KernelVersion]:
+    """Parse ``fp-browser-versions.json`` (one row per version x platform).
+
+    Relative ``download_url`` values resolve against the manifest origin, which
+    keeps the manifest CDN-agnostic: the same file works from any mirror.
+    """
+    payload = json.loads(text.lstrip("﻿"))
+    rows = payload.get("versions") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return []
+
+    by_version: Dict[str, KernelVersion] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        plat = _MANIFEST_PLATFORM.get(str(row.get("platform", "")))
+        version = row.get("version")
+        url = row.get("download_url")
+        if not plat or not version or not url:
+            continue
+        if not str(url).lower().startswith(("http://", "https://")):
+            url = urllib.parse.urljoin(manifest_url, str(url))
+        kv = by_version.get(version)
+        if kv is None:
+            kv = KernelVersion(version=version, label=row.get("label") or version, platforms={})
+            by_version[version] = kv
+        if plat not in kv.platforms:
+            kv.platforms[plat] = KernelAsset(
+                download_url=str(url),
+                exe_rel_path=row.get("exe_rel_path") or ("chrome.exe" if plat == "win32" else "chrome"),
+                build=row.get("build"),
+            )
+    return list(by_version.values())
+
+
+def fetch_remote_kernel_versions(manifest_url: str = KERNEL_MANIFEST_URL) -> List[KernelVersion]:
+    """Download and parse the remote kernel manifest. Raises on failure."""
+    request = urllib.request.Request(
+        _cache_bust(manifest_url),
+        headers={"Cache-Control": "no-cache", "Pragma": "no-cache", "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=_MANIFEST_TIMEOUT) as response:  # noqa: S310
+        text = response.read().decode("utf-8", "replace")
+    return parse_kernel_manifest(text, manifest_url)
+
+
+def refresh_kernel_catalogue(manifest_url: str = KERNEL_MANIFEST_URL) -> bool:
+    """Best-effort manifest refresh. Returns False when offline."""
+    try:
+        register_kernel_versions(fetch_remote_kernel_versions(manifest_url))
+        return True
+    except Exception:
+        return False
+
+
+def default_kernel_version() -> KernelVersion:
+    """Kernel used for brand-new profiles: newest baseline build for this platform."""
+    try:
+        plat = current_platform()
+    except UnsupportedPlatformError:
+        return KERNEL_VERSIONS[0]
+    for kv in KERNEL_VERSIONS:
+        if plat in kv.platforms:
+            return kv
+    return KERNEL_VERSIONS[0]
+
+
+def find_kernel_version(version: Optional[str]) -> KernelVersion:
+    """Look a version up in the catalogue, falling back to the default."""
+    if version:
+        for kv in all_kernel_versions():
+            if kv.version == version:
+                return kv
+    return default_kernel_version()
+
+
+def kernels_for_platform(platform: Optional[str] = None) -> List[KernelVersion]:
+    plat = platform or current_platform()
+    return [kv for kv in all_kernel_versions() if plat in kv.platforms]
+
+
+
+
+def kernel_dir(cache_dir: Path | str, version: str) -> Path:
+    return Path(cache_dir) / "kernels" / version
+
+
+def kernel_exe_path(cache_dir: Path | str, kv: KernelVersion, platform: Optional[str] = None) -> Path:
+    return kernel_dir(cache_dir, kv.version) / kv.asset(platform).exe_rel_path
+
+
+def is_kernel_installed(cache_dir: Path | str, kv: KernelVersion, platform: Optional[str] = None) -> bool:
+    if not kv.available_on(platform):
+        return False
+    return kernel_exe_path(cache_dir, kv, platform).exists()
+
+
+def list_installed_kernels(cache_dir: Path | str, platform: Optional[str] = None) -> List[str]:
+    return [kv.version for kv in all_kernel_versions() if is_kernel_installed(cache_dir, kv, platform)]
+
+
+def kernel_dir_size(cache_dir: Path | str, version: str) -> int:
+    """Total bytes on disk for an installed kernel (0 when absent)."""
+    root = kernel_dir(cache_dir, version)
+    total = 0
+    if not root.exists():
+        return 0
+    for path in root.rglob("*"):
+        try:
+            if path.is_file():
+                total += path.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def delete_kernel(cache_dir: Path | str, version: str) -> None:
+    """Remove an installed kernel directory. Idempotent."""
+    shutil.rmtree(kernel_dir(cache_dir, version), ignore_errors=True)
+
+
+def installed_kernel_build(cache_dir: Path | str, version: str) -> Optional[str]:
+    """Build recorded when this kernel was installed, or None when unknown.
+
+    Unknown means "installed by an older SDK / without manifest metadata" and
+    should be treated as up to date rather than nagged about.
+    """
+    try:
+        value = (kernel_dir(cache_dir, version) / BUILD_MARKER).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return value or None
+
+
+def write_installed_kernel_build(cache_dir: Path | str, version: str, build: str) -> None:
+    """Record the build id of an installed kernel (best effort)."""
+    try:
+        directory = kernel_dir(cache_dir, version)
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / BUILD_MARKER).write_text(build, encoding="utf-8")
+    except OSError:
+        pass
+
+
+@dataclass
+class KernelUpdateStatus:
+    version: str
+    label: str
+    installed: bool
+    installed_build: Optional[str] = None
+    available_build: Optional[str] = None
+    update_available: bool = False
+
+
+def kernel_update_status(
+    cache_dir: Path | str, version: str, platform: Optional[str] = None
+) -> Optional[KernelUpdateStatus]:
+    """Update status of one installed kernel, or None when it isn't installed.
+
+    This comparison is offline: it is only meaningful after
+    :func:`refresh_kernel_catalogue` has merged the published builds, because
+    the compiled-in baseline carries no ``build`` at all.
+    """
+    plat = platform or current_platform()
+    kv = find_kernel_version(version)
+    if not is_kernel_installed(cache_dir, kv, plat):
+        return None
+    available = kv.platforms[plat].build if plat in kv.platforms else None
+    have = installed_kernel_build(cache_dir, kv.version)
+    if have is None:
+        # No marker: adopt the current build rather than report an
+        # unverifiable drift.
+        if available:
+            write_installed_kernel_build(cache_dir, kv.version, available)
+        return KernelUpdateStatus(kv.version, kv.label, True, available, available, False)
+    return KernelUpdateStatus(
+        kv.version, kv.label, True, have, available, bool(available and have != available)
+    )
+
+
+def installed_kernel_updates(
+    cache_dir: Path | str, platform: Optional[str] = None
+) -> List[KernelUpdateStatus]:
+    plat = platform or current_platform()
+    out = []
+    for kv in kernels_for_platform(plat):
+        status = kernel_update_status(cache_dir, kv.version, plat)
+        if status is not None:
+            out.append(status)
+    return out
+
+
+def _cache_bust(url: str) -> str:
+    """Append a random query param so a CDN edge can't serve a stale zip.
+
+    Kernels are published under a fixed filename per major version, so a rebuild
+    reuses the URL. The local cache is separate: ``ensure_kernel`` skips the
+    download entirely when the directory already exists.
+    """
+    sep = "&" if "?" in url else "?"
+    token = "{0:x}{1}".format(int(time.time() * 1000), random.randint(0x100000, 0xFFFFFF))
+    return "{0}{1}_cb={2}".format(url, sep, token)
+
+
+def _download(url: str, dest: Path, on_progress: Optional[ProgressCallback] = None) -> None:
+    request = urllib.request.Request(url, headers={"Cache-Control": "no-cache", "Pragma": "no-cache"})
+    last_report = -1
+    try:
+        with urllib.request.urlopen(request, timeout=_DOWNLOAD_TIMEOUT) as response:  # noqa: S310
+            status = getattr(response, "status", 200) or 200
+            if status >= 400:
+                raise KernelDownloadError("Download failed: HTTP {0} from {1}".format(status, url))
+            total = int(response.headers.get("Content-Length") or 0)
+            downloaded = 0
+            with open(dest, "wb") as handle:
+                while True:
+                    chunk = response.read(256 * 1024)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+                    downloaded += len(chunk)
+                    if total > 0 and on_progress is not None:
+                        percent = int(downloaded * 100 / total)
+                        if percent != last_report:
+                            last_report = percent
+                            on_progress("Downloading {0}%".format(percent))
+    except urllib.error.HTTPError as exc:
+        raise KernelDownloadError("Download failed: HTTP {0} from {1}".format(exc.code, url)) from exc
+    except urllib.error.URLError as exc:
+        raise KernelDownloadError("Download failed: {0} ({1})".format(exc.reason, url)) from exc
+
+
+def _extract_zip(zip_path: Path, dest_dir: Path, on_progress: Optional[ProgressCallback] = None) -> int:
+    """Extract a kernel zip, preserving unix permission bits when present."""
+    count = 0
+    with zipfile.ZipFile(zip_path) as archive:
+        for info in archive.infolist():
+            # ZipFile.extract() sanitizes paths, so entries cannot escape.
+            archive.extract(info, dest_dir)
+            if info.is_dir():
+                continue
+            count += 1
+            mode = info.external_attr >> 16
+            if mode:
+                try:
+                    os.chmod(dest_dir / info.filename, stat.S_IMODE(mode))
+                except OSError:
+                    pass
+            if on_progress is not None and count % 200 == 0:
+                on_progress("Extracting {0} files...".format(count))
+    if on_progress is not None:
+        on_progress("Extracted {0} files".format(count))
+    return count
+
+
+def chmod_kernel_binaries(directory: Path) -> None:
+    """Give every extension-less file in the kernel dir +x (Linux).
+
+    ``chrome_crashpad_handler`` and friends abort the browser with a posix_spawn
+    EPERM / SIGABRT when they are not executable, and zip extraction on some
+    toolchains drops the bits.
+    """
+    try:
+        entries = list(Path(directory).iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if entry.is_file() and entry.suffix == "":
+            try:
+                entry.chmod(0o755)
+            except OSError:
+                pass
+
+
+def ensure_kernel(
+    cache_dir: Path | str,
+    kv: Optional[KernelVersion] = None,
+    on_progress: Optional[ProgressCallback] = None,
+    *,
+    force: bool = False,
+    platform: Optional[str] = None,
+) -> Path:
+    """Make sure a kernel is downloaded and extracted; return the exe path.
+
+    Idempotent: an already-installed kernel is a no-op (aside from re-applying
+    +x on Linux). ``force=True`` re-downloads, which is how a rebuilt
+    same-version kernel is picked up.
+    """
+    cache = Path(cache_dir)
+    version = kv or default_kernel_version()
+    plat = platform or current_platform()
+    asset = version.asset(plat)
+    target_dir = kernel_dir(cache, version.version)
+    exe_path = target_dir / asset.exe_rel_path
+
+    if not force and exe_path.exists():
+        if plat == "linux":
+            chmod_kernel_binaries(exe_path.parent)
+        return exe_path
+
+    if on_progress is not None:
+        on_progress("Downloading kernel {0} ({1})".format(version.label, plat))
+
+    cache.mkdir(parents=True, exist_ok=True)
+    zip_path = cache / "kernel-{0}-{1}.zip".format(version.version, plat)
+    try:
+        # Extract in place: on Windows a rename fails with EPERM while
+        # antivirus holds the fresh binaries.
+        shutil.rmtree(target_dir, ignore_errors=True)
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        _download(_cache_bust(asset.download_url), zip_path, on_progress)
+        if on_progress is not None:
+            on_progress("Extracting kernel")
+        _extract_zip(zip_path, target_dir, on_progress)
+
+        if not exe_path.exists():
+            raise KernelDownloadError(
+                'Kernel downloaded but "{0}" is missing after extraction. This usually '
+                "means antivirus/Windows Defender quarantined the kernel - add an "
+                'exclusion for "{1}" (and your temp folder) and try again.'.format(
+                    asset.exe_rel_path, target_dir
+                )
+            )
+
+        if plat == "linux":
+            chmod_kernel_binaries(exe_path.parent)
+        if asset.build:
+            write_installed_kernel_build(cache, version.version, asset.build)
+    except BaseException:
+        # Never leave a half-installed directory behind.
+        shutil.rmtree(target_dir, ignore_errors=True)
+        raise
+    finally:
+        try:
+            zip_path.unlink()
+        except OSError:
+            pass
+
+    if on_progress is not None:
+        on_progress("Kernel ready: {0}".format(version.version))
+    return exe_path

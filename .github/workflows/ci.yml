@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# This repository holds two SDKs; the Python package lives in python/.
+# Note that `working-directory` only applies to `run:` steps - `uses:` steps
+# (checkout, upload-artifact) still resolve paths from the workspace root.
+defaults:
+  run:
+    working-directory: python
+
+jobs:
+  test:
+    name: pytest (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.9", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      # The suite is offline: no kernel download, no license server, no proxy.
+      # Anything that would reach the network is stubbed or served from
+      # 127.0.0.1, so CI never depends on antibrow.com being up.
+      - name: Test
+        run: python -m pytest -q
+
+      - name: Import check
+        run: python -c "import antibrow; print(antibrow.__version__)"
+
+      - name: CLI smoke test
+        run: |
+          python -m antibrow version
+          python -m antibrow info
+
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install ruff
+      - run: ruff check .
+
+  build:
+    name: build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install build twine
+      - run: python -m build
+      - run: python -m twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: python/dist/

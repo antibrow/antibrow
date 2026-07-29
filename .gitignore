@@ -1,0 +1,37 @@
+# Internal working notes - not part of the public repository.
+NOTES.md
+DELIVERY.md
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+pip-wheel-metadata/
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local runtime artifacts
+*.log
+.env
+.antibrow/
+screenshot*.png

@@ -1,0 +1,74 @@
+{
+  "name": "anti-detect-browser",
+  "version": "1.5.0",
+  "description": "Anti-detect browser client SDK powered by the Engine runtime and Playwright CDP (Windows + Linux)",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "anti-detect-browser": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "tsup"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "adm-zip": "^0.5.17",
+    "socks": "^2.8.9",
+    "unzipper": "^0.12.3",
+    "ws": "^8.0.0"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.8",
+    "@types/node": "^22.0.0",
+    "@types/unzipper": "^0.10.11",
+    "@types/ws": "^8.0.0",
+    "playwright-core": "^1.60.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.0.0"
+  },
+  "peerDependencies": {
+    "playwright-core": ">=1.40.0"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "BINARY-LICENSE.md"
+  ],
+  "keywords": [
+    "anti-detect",
+    "browser",
+    "engine",
+    "playwright",
+    "stealth"
+  ],
+  "os": [
+    "win32",
+    "linux"
+  ],
+  "homepage": "https://antibrow.com",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/antibrow/antibrow.git",
+    "directory": "js"
+  },
+  "bugs": {
+    "url": "https://github.com/antibrow/antibrow/issues"
+  }
+}
