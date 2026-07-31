@@ -5,10 +5,25 @@ import os from 'node:os'
 import path from 'node:path'
 import { packProfileCache, unpackProfileCache, exportProfileArchive, importProfileArchive } from '../../src/engine/profile-cache'
 import { generatePersona, personaToFpConfig, type Persona } from '../../src/engine/persona'
-import { DEFAULT_KERNEL_VERSION } from '../../src/engine/downloader'
+import { DEFAULT_KERNEL_VERSION, kernelsForPlatform } from '../../src/engine/downloader'
 
 function tmp(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+}
+
+/**
+ * Mirrors the (unexported) fallback rule in profile-cache.ts's
+ * `resolveImportedKernelVersion`: exact match on this platform, else the
+ * newest known build with the same Chrome major, else the default. Computed
+ * from the same public building blocks the implementation uses, so this
+ * states the real cross-platform rule instead of one platform's answer —
+ * e.g. 149 has no darwin build, so on darwin this resolves to the default.
+ */
+function expectedResolvedKernelVersion(wanted: string): string {
+  const known = kernelsForPlatform().map((kv) => kv.version)
+  if (known.includes(wanted)) return wanted
+  const major = wanted.split('.')[0]
+  return known.find((v) => v.split('.')[0] === major) ?? DEFAULT_KERNEL_VERSION.version
 }
 
 /** A persona as the launcher serializes it (snake_case). */
@@ -246,16 +261,29 @@ describe('exportProfileArchive — the portable .fpprofile format', () => {
       source: 'launcher',
       id: META.id,
       name: 'Berlin-01',
-      kernelVersion: '149.0.7827.201',
+      kernelVersion: expectedResolvedKernelVersion('149.0.7827.201'),
       proxyUrl: META.proxyUrl,
       apiLog: 'curated',
       canvasNoise: false,
       webauthnCapture: false,
       extra: META.extra,
     })
-    // Identity is byte-identical across the trip.
-    expect(JSON.parse(fs.readFileSync(path.join(dst, 'persona.json'), 'utf8')))
-      .toEqual(JSON.parse(fs.readFileSync(path.join(src, 'persona.json'), 'utf8')))
+    // Identity is byte-identical across the trip, except chromeMajor/kernelVersion/ua,
+    // which the implementation deliberately rewrites to whatever kernel this
+    // platform can actually launch (see `launcherPersonaToPersona`'s "UA major
+    // must match the kernel actually launched"). Derive the expected override
+    // the same way the implementation resolves it, rather than assuming the
+    // exact requested version is always available.
+    const srcPersona = JSON.parse(fs.readFileSync(path.join(src, 'persona.json'), 'utf8')) as Persona
+    const dstPersona = JSON.parse(fs.readFileSync(path.join(dst, 'persona.json'), 'utf8')) as Persona
+    const resolvedKernelVersion = expectedResolvedKernelVersion(META.kernelVersion)
+    const resolvedChromeMajor = parseInt(resolvedKernelVersion.split('.')[0] ?? '', 10)
+    expect(dstPersona).toEqual({
+      ...srcPersona,
+      chromeMajor: resolvedChromeMajor,
+      kernelVersion: resolvedKernelVersion,
+      ua: srcPersona.ua.replace(/Chrome\/\d+/, `Chrome/${resolvedChromeMajor}`),
+    })
     expect(fs.readFileSync(path.join(dst, 'user-data', 'Default', 'Network', 'Cookies'), 'utf8')).toBe('NETCOOKIE')
     expect(fs.readFileSync(path.join(dst, 'passkeys.json'), 'utf8')).toBe('[{"rpId":"example.com"}]')
     expect(fs.existsSync(path.join(dst, 'manifest.json'))).toBe(false)
@@ -282,21 +310,28 @@ describe('importProfileArchive - launcher format (.fpprofile)', () => {
     expect(meta).toMatchObject({
       source: 'launcher',
       name: 'Berlin-01',
-      kernelVersion: '149.0.7827.201',
+      kernelVersion: expectedResolvedKernelVersion('149.0.7827.201'),
       proxyUrl: 'socks5://user:pa%40ss@1.2.3.4:1080',
     })
 
     // Every fingerprint fact survives the snake_case → camelCase translation, so
-    // the imported profile renders the identity it had in the launcher.
+    // the imported profile renders the identity it had in the launcher — except
+    // chromeMajor/kernelVersion/ua, which the implementation deliberately
+    // rewrites to whatever kernel this platform can actually launch (see
+    // `launcherPersonaToPersona`'s "UA major must match the kernel actually
+    // launched"). Derive the expected values the same way, so the assertion
+    // states the real cross-platform rule rather than one platform's answer.
+    const resolvedKernelVersion = expectedResolvedKernelVersion('149.0.7827.201')
+    const resolvedChromeMajor = parseInt(resolvedKernelVersion.split('.')[0] ?? '', 10)
     const persona = JSON.parse(fs.readFileSync(path.join(dst, 'persona.json'), 'utf8')) as Persona
     expect(persona).toMatchObject({
       seed: '0123456789abcdef',
       canvasSeed: 'aaaaaaaaaaaaaaaa',
       audioSeed: 'bbbbbbbbbbbbbbbb',
       domrectSeed: 'cccccccccccccccc',
-      chromeMajor: 149,
-      kernelVersion: '149.0.7827.201',
-      ua: LAUNCHER_PERSONA.ua,
+      chromeMajor: resolvedChromeMajor,
+      kernelVersion: resolvedKernelVersion,
+      ua: LAUNCHER_PERSONA.ua.replace(/Chrome\/\d+/, `Chrome/${resolvedChromeMajor}`),
       hardwareConcurrency: 12,
       deviceMemory: 16,
       screenW: 1536,
@@ -372,6 +407,21 @@ describe('importProfileArchive - launcher format (.fpprofile)', () => {
     expect(plain.canvas).not.toHaveProperty('mode')
     expect(plain.webgl).not.toHaveProperty('mode')
     expect(plain.apilog).toEqual({ enabled: false, mode: 'off', path: '' })
+  })
+
+  it('supplies the full UA-CH metadata group so nothing falls back to the real host', () => {
+    const persona = generatePersona(150, '150.0.7871.182')
+    const cfg = personaToFpConfig(persona, { label: 'x', timezone: 'UTC' })
+    // Any key missing here means the kernel falls back to the real host value
+    // for that key - exactly the leak this test guards against.
+    expect((cfg.navigator as Record<string, unknown>).uaData).toEqual({
+      platform: 'Windows', // UA-CH naming, not navigator.platform's "Win32"
+      platformVersion: '15.0.0',
+      architecture: 'x86', // UA-CH reports x86 even on x64 hardware
+      bitness: '64',
+      wow64: false,
+      model: '',
+    })
   })
 
   it('derives the WebGPU identity from the WebGL renderer', () => {

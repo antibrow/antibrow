@@ -58,9 +58,10 @@ def build_launch_args(
     """Assemble the kernel command line (without the executable itself).
 
     ``platform`` is explicit rather than read from :data:`sys.platform` so the
-    Linux/Windows branches stay testable from either OS.
+    Windows/Linux/macOS branches stay testable from any OS.
     """
     is_win = platform == "win32"
+    is_linux = platform == "linux"
     args = [
         "--fp-config={0}".format(fp_config_path),
         "--fp-license={0}".format(license_token),
@@ -73,9 +74,10 @@ def build_launch_args(
         "--lang={0}".format(language),
     ]
 
-    if not is_win:
-        # Container-friendly defaults: the GPU strings come from fp-config, so
-        # software rendering costs nothing.
+    if is_linux:
+        # Linux/Docker only: the GPU strings come from fp-config, so software
+        # rendering costs nothing here. macOS needs none of this and disabling
+        # its sandbox would be a pure security downgrade.
         args += [
             "--no-sandbox",
             "--disable-setuid-sandbox",
@@ -90,6 +92,16 @@ def build_launch_args(
     if is_win and headless:
         # Not --headless=new: real headless has its own detectable fingerprint.
         args += ["--window-position=-10000,-10000", "--window-size=1,1"]
+
+    if platform == "darwin":
+        # macOS only: ICU on macOS resolves Intl.* (locale, month names,
+        # display names, etc.) from CFLocale/AppleLanguages, not from --lang
+        # or the POSIX LANG/LC_ALL environment - those are silently ignored by
+        # the system ICU build the kernel links against. This NSUserDefaults
+        # argv pair is the only thing that actually steers it, which is why it
+        # is only meaningful on darwin; on Windows/Linux it would just be an
+        # unrecognised argument.
+        args += ["-AppleLanguages", "({0})".format(language)]
 
     args += proxy_args(proxy, profile_dir=profile_dir or user_data_dir, mode=proxy_auth)
 

@@ -260,6 +260,68 @@ function killByUserDataDir(profileDir: string): Promise<void> {
   })
 }
 
+export interface BuildLaunchArgsOptions {
+  fpConfigPath: string
+  licenseToken: string
+  userDataDir: string
+  displayLabel: string
+  cdpPort: number
+  language: string
+  headless?: boolean
+  profileDir: string
+  webauthnCapture?: boolean
+  /**
+   * Explicit rather than read from `process.platform` so the linux/windows
+   * branches stay testable from either OS.
+   */
+  platform: NodeJS.Platform
+}
+
+/**
+ * Assemble the kernel command line (without the executable itself). Pure and
+ * platform-parametrized so the linux/windows/darwin branches can be asserted
+ * on directly instead of by grepping the source.
+ */
+export function buildLaunchArgs(opts: BuildLaunchArgsOptions): string[] {
+  const isWin = opts.platform === 'win32'
+  const isLinux = opts.platform === 'linux'
+
+  const args = [
+    `--fp-config=${opts.fpConfigPath}`,
+    `--fp-license=${opts.licenseToken}`,
+    `--user-data-dir=${opts.userDataDir}`,
+    `--fp-address-label=${opts.displayLabel}`,
+    `--remote-debugging-port=${opts.cdpPort}`,
+    '--remote-allow-origins=*',
+    '--no-first-run',
+    '--no-default-browser-check',
+    `--lang=${opts.language}`,
+    // Linux/Docker only: no sandbox (root, no user namespace), /tmp for shared
+    // memory (/dev/shm is capped at 64 MB) and software rendering (no real GPU).
+    // --no-zygote avoids a startup abort in the Linux builds. macOS needs none of
+    // this and disabling its sandbox would be a pure security downgrade.
+    ...(isLinux ? ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
+        '--disable-gpu', '--disable-software-rasterizer',
+        '--disable-crash-reporter',
+        '--no-zygote'] : []),
+    // Windows headless: move the window off-screen rather than --headless=new,
+    // which is detectable.
+    ...(isWin && opts.headless ? ['--window-position=-10000,-10000', '--window-size=1,1'] : []),
+    // macOS only: ICU on macOS resolves Intl.* (locale, month names, display
+    // names, etc.) from CFLocale/AppleLanguages, not from --lang or the POSIX
+    // LANG/LC_ALL environment - those are silently ignored by the system ICU
+    // build the kernel links against. This NSUserDefaults argv pair is the
+    // only thing that actually steers it, which is why it is only meaningful
+    // on darwin; on Windows/Linux it would just be an unrecognised argument.
+    ...(opts.platform === 'darwin' ? ['-AppleLanguages', `(${opts.language})`] : []),
+  ]
+
+  args.push(`--fp-webauthn-store=${path.join(opts.profileDir, PASSKEYS_FILE)}`)
+  if (opts.webauthnCapture === false) args.push('--fp-webauthn-create=choose')
+
+  return args
+}
+
 /** Launch the kernel with the given persona and connect Playwright over CDP. */
 export async function launchKernel(opts: KernelLaunchOptions): Promise<KernelSession> {
   const { exePath, profileDir, persona, timezone, publicIp, proxyUrl, licenseToken, onProgress } = opts
@@ -284,30 +346,18 @@ export async function launchKernel(opts: KernelLaunchOptions): Promise<KernelSes
 
   const isWin = process.platform === 'win32'
 
-  const args = [
-    `--fp-config=${fpConfigPath}`,
-    `--fp-license=${licenseToken}`,
-    `--user-data-dir=${userDataDir}`,
-    `--fp-address-label=${displayLabel}`,
-    `--remote-debugging-port=${cdpPort}`,
-    '--remote-allow-origins=*',
-    '--no-first-run',
-    '--no-default-browser-check',
-    `--lang=${persona.languages[0] ?? 'en-US'}`,
-    // Docker: no sandbox (root, no user namespace), /tmp for shared memory
-    // (/dev/shm is capped at 64 MB) and software rendering (no real GPU).
-    // --no-zygote avoids a startup abort in the Linux builds.
-    ...(!isWin ? ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
-        '--disable-gpu', '--disable-software-rasterizer',
-        '--disable-crash-reporter',
-        '--no-zygote'] : []),
-    // Windows headless: move the window off-screen rather than --headless=new,
-    // which is detectable.
-    ...(isWin && opts.headless ? ['--window-position=-10000,-10000', '--window-size=1,1'] : []),
-  ]
-
-  args.push(`--fp-webauthn-store=${path.join(profileDir, PASSKEYS_FILE)}`)
-  if (opts.webauthnCapture === false) args.push('--fp-webauthn-create=choose')
+  const args = buildLaunchArgs({
+    fpConfigPath,
+    licenseToken,
+    userDataDir,
+    displayLabel,
+    cdpPort,
+    language: persona.languages[0] ?? 'en-US',
+    headless: opts.headless,
+    profileDir,
+    webauthnCapture: opts.webauthnCapture,
+    platform: process.platform,
+  })
 
   // Per-profile window icon (Windows only), seeded from the label so the window
   // is recognizable. On failure the switch is omitted.

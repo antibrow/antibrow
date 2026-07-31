@@ -25,7 +25,7 @@ import {
 } from './engine'
 import { LiveViewStream, registerLiveSession, unregisterLiveSession, heartbeatLiveSession } from './liveview'
 import { checkClientVersion, SDK_VERSION, type VersionCheckResult } from './version'
-import { generateLabelScript } from './label'
+import { installLabel, labelOptions } from './label'
 
 export class AntiDetectBrowser {
   private readonly key: string
@@ -144,10 +144,10 @@ export class AntiDetectBrowser {
     const page = context.pages()[0] ?? await context.newPage()
 
     if (options.label) {
-      const labelScript = generateLabelScript(options.label, options.color)
-      if (labelScript) {
-        await context.addInitScript(labelScript)
-        for (const p of context.pages()) await p.evaluate(labelScript).catch(() => {})
+      const labelArg = labelOptions(options.label, options.color)
+      if (labelArg) {
+        await context.addInitScript(installLabel, labelArg)
+        for (const p of context.pages()) await p.evaluate(installLabel, labelArg).catch(() => {})
       }
     }
 

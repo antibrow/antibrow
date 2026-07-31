@@ -108,8 +108,13 @@ describe('AntiDetectBrowser.launch (engine)', () => {
     const ab = new AntiDetectBrowser({ key: 'k' })
     await ab.launch({ profile: 'p', label: 'acct@x.com' })
     expect(fakeSession.context.addInitScript).toHaveBeenCalled()
-    const scripts = fakeSession.context.addInitScript.mock.calls.map((c) => c[0])
-    expect(scripts.some((s) => typeof s === 'string' && s.includes('acct@x.com'))).toBe(true)
+    // The label travels as a serialised argument, never spliced into script
+    // source: the first arg is the function, the second is the data.
+    const call = fakeSession.context.addInitScript.mock.calls.find(
+      (c) => typeof c[0] === 'function',
+    )
+    expect(call).toBeDefined()
+    expect(call![1]).toEqual({ labelText: 'acct@x.com', bgColor: '#333333' })
   })
 
   it('does NOT cap concurrency in the SDK — mi is enforced by the kernel', async () => {

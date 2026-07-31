@@ -1,27 +1,57 @@
 /**
- * Script that pins a floating label to the top of the page, so a window can be
- * told apart at a glance. `document.title` is deliberately left alone, so the
- * profile name never leaks into the page title.
+ * Floating label pinned to the top of the page, so a window can be told apart
+ * at a glance. `document.title` is deliberately left alone, so the profile name
+ * never leaks into the page title.
+ *
+ * The label used to be shipped as generated JS source with the caller's text
+ * and colour spliced in. That form had two problems: the colour was never
+ * escaped at all, so a crafted `color` executed as code in every page (reachable
+ * from MCP, where an agent chooses the value), and static analysers reasonably
+ * read "build a script string, then evaluate it" as dynamic code generation.
+ * Both go away by passing the values to Playwright as a serialised argument.
  */
-export function generateLabelScript(label: string, color?: string): string {
-  if (!label) return ''
 
-  const bgColor = color || '#333333'
-  const escapedLabel = label.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"')
+// `installLabel` runs inside the page, not in Node. The project's `lib` is
+// Node-only (see tsconfig), so the browser globals it touches are declared here,
+// file-scoped, rather than pulled in program-wide.
+declare const document: any
+declare const window: any
 
-  return `
-(function() {
-  'use strict'
+export interface LabelOptions {
+  labelText: string
+  bgColor: string
+}
 
-  const labelText = '${escapedLabel}'
-  const bgColor = '${bgColor}'
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/
+const DEFAULT_COLOR = '#333333'
 
+/**
+ * Normalise a label + colour into the argument for `installLabel`, or null when
+ * there is no label to draw.
+ *
+ * The colour is validated rather than trusted: it reaches `style.cssText`, so a
+ * value that is not a plain 6-digit hex falls back to the default instead of
+ * being passed through.
+ */
+export function labelOptions(label: string, color?: string): LabelOptions | null {
+  if (!label) return null
+  return {
+    labelText: label,
+    bgColor: color && HEX_COLOR.test(color) ? color : DEFAULT_COLOR,
+  }
+}
 
-  function createLabel() {
+/**
+ * Draw the label. Runs inside the page, so it has to stay self-contained:
+ * Playwright serialises it with Function.prototype.toString and no closure
+ * variable survives that.
+ */
+export function installLabel(opts: LabelOptions): void {
+  const labelText = opts.labelText
+  const bgColor = opts.bgColor
 
+  function createLabel(): void {
     if (window !== window.top) return
-
-
     if (document.getElementById('__anti-detect-label')) return
 
     const el = document.createElement('div')
@@ -58,26 +88,16 @@ export function generateLabelScript(label: string, color?: string): string {
       'transition: opacity 0.2s',
     ].join('; ')
 
-
     const target = document.body || document.documentElement
-    if (target) {
-      target.appendChild(el)
-    }
+    if (target) target.appendChild(el)
   }
 
-
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function() {
-      createLabel()
-    })
+    document.addEventListener('DOMContentLoaded', createLabel)
   } else {
     createLabel()
   }
 
   // Retry on load in case DOMContentLoaded was missed.
-  window.addEventListener('load', function() {
-    createLabel()
-  })
-})()
-`
+  window.addEventListener('load', createLabel)
 }

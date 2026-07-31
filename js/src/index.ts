@@ -1,6 +1,6 @@
 export { AntiDetectBrowser } from './browser'
 export { listProfiles, profileExists, getProfileDir } from './profile'
-export { generateLabelScript } from './label'
+export { installLabel, labelOptions, type LabelOptions } from './label'
 export {
   createProfile,
   updateProfile,

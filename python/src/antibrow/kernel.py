@@ -23,6 +23,7 @@ import os
 import random
 import shutil
 import stat
+import subprocess
 import sys
 import time
 import urllib.error
@@ -37,11 +38,25 @@ from .errors import KernelDownloadError, UnsupportedPlatformError
 
 ProgressCallback = Callable[[str], None]
 
-#: Platforms the kernel is built for. macOS is not available yet.
-SUPPORTED_PLATFORMS = ("win32", "linux")
+#: Platforms the kernel is built for.
+SUPPORTED_PLATFORMS = ("win32", "linux", "darwin")
 
 #: Manifest platform token -> our platform key.
-_MANIFEST_PLATFORM = {"win64": "win32", "linux64": "linux"}
+_MANIFEST_PLATFORM = {
+    "win64": "win32",
+    "linux64": "linux",
+    "mac-universal": "darwin",
+}
+
+
+def _default_exe_rel_path(platform: str) -> str:
+    """Fallback when a manifest row omits exe_rel_path."""
+    if platform == "win32":
+        return "chrome.exe"
+    if platform == "darwin":
+        return "Chromium.app/Contents/MacOS/Chromium"
+    return "chrome"
+
 
 #: Where new kernel builds are announced (same origin as the zips).
 KERNEL_MANIFEST_URL = "https://download.antibrow.com/fp-browser-versions.json"
@@ -101,6 +116,13 @@ KERNEL_VERSIONS: List[KernelVersion] = [
             "linux": KernelAsset(
                 "https://download.antibrow.com/fp-chromium-150-linux64.zip", "chrome"
             ),
+            # macOS ships one universal (x86_64 + arm64) bundle, so there is a
+            # single darwin asset rather than one per arch. The executable lives
+            # inside the .app, hence the nested exe_rel_path.
+            "darwin": KernelAsset(
+                "https://download.antibrow.com/fp-chromium-150-mac-universal.zip",
+                "Chromium.app/Contents/MacOS/Chromium",
+            ),
         },
     ),
     KernelVersion(
@@ -127,9 +149,11 @@ def current_platform() -> str:
         return "win32"
     if sys.platform.startswith("linux"):
         return "linux"
+    if sys.platform == "darwin":
+        return "darwin"
     raise UnsupportedPlatformError(
-        "Unsupported platform: {0}. The kernel ships Windows and Linux "
-        "builds only (macOS is not available yet).".format(sys.platform)
+        "Unsupported platform: {0}. The kernel ships Windows, Linux and "
+        "macOS builds.".format(sys.platform)
     )
 
 
@@ -217,7 +241,7 @@ def parse_kernel_manifest(text: str, manifest_url: str = KERNEL_MANIFEST_URL) ->
         if plat not in kv.platforms:
             kv.platforms[plat] = KernelAsset(
                 download_url=str(url),
-                exe_rel_path=row.get("exe_rel_path") or ("chrome.exe" if plat == "win32" else "chrome"),
+                exe_rel_path=row.get("exe_rel_path") or _default_exe_rel_path(plat),
                 build=row.get("build"),
             )
     return list(by_version.values())
@@ -421,7 +445,18 @@ def _download(url: str, dest: Path, on_progress: Optional[ProgressCallback] = No
 
 
 def _extract_zip(zip_path: Path, dest_dir: Path, on_progress: Optional[ProgressCallback] = None) -> int:
-    """Extract a kernel zip, preserving unix permission bits when present."""
+    """Extract a kernel zip, preserving unix permission bits when present.
+
+    macOS goes through ``ditto`` instead: the mac kernel is a .app bundle whose
+    framework directories are symlinks, and it is published with ``ditto -c -k``.
+    :mod:`zipfile` writes those entries out as regular files holding the target
+    path, which breaks the bundle's code signature -- the app then dies on launch
+    with no usable error. ``ditto -x -k`` is the exact inverse of how it was
+    packed, so symlinks, permission bits and xattrs survive.
+    """
+    if sys.platform == "darwin":
+        return _extract_zip_with_ditto(zip_path, dest_dir, on_progress)
+
     count = 0
     with zipfile.ZipFile(zip_path) as archive:
         for info in archive.infolist():
@@ -441,6 +476,47 @@ def _extract_zip(zip_path: Path, dest_dir: Path, on_progress: Optional[ProgressC
     if on_progress is not None:
         on_progress("Extracted {0} files".format(count))
     return count
+
+
+def _extract_zip_with_ditto(
+    zip_path: Path, dest_dir: Path, on_progress: Optional[ProgressCallback] = None
+) -> int:
+    # No "Extracting kernel" message here: ensure_kernel already emits it right
+    # before calling us, and ditto gives no incremental progress to report.
+    proc = subprocess.run(
+        ["/usr/bin/ditto", "-x", "-k", str(zip_path), str(dest_dir)],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        detail = proc.stderr.strip() or "ditto exited {0}".format(proc.returncode)
+        raise KernelDownloadError("Failed to extract the kernel with ditto: {0}".format(detail))
+    count = sum(1 for p in dest_dir.rglob("*") if p.is_file())
+    if on_progress is not None:
+        on_progress("Extracted {0} files".format(count))
+    return count
+
+
+def verify_darwin_bundle_signature(app_path: Path) -> None:
+    """Verify an extracted .app bundle still satisfies its own code signature.
+
+    Worth the extra seconds on a fresh download: a bundle whose seal is broken is
+    killed by the OS at launch with no diagnosable error, so failing loudly here --
+    while we still know a download just happened -- is the difference between
+    "re-download the kernel" and an unexplained crash.
+    """
+    proc = subprocess.run(
+        ["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app_path)],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode == 0:
+        return
+    detail = (proc.stderr or proc.stdout).strip() or "codesign exited {0}".format(proc.returncode)
+    raise KernelDownloadError(
+        "Kernel signature verification failed for {0}: {1}. "
+        "The download is corrupt -- delete the kernel and try again.".format(app_path, detail)
+    )
 
 
 def chmod_kernel_binaries(directory: Path) -> None:
@@ -512,6 +588,13 @@ def ensure_kernel(
                     asset.exe_rel_path, target_dir
                 )
             )
+
+        # The mac kernel is a signed .app; a broken seal here means the extraction
+        # mangled the bundle. Catch it now, not at launch.
+        if plat == "darwin":
+            if on_progress is not None:
+                on_progress("Verifying kernel signature")
+            verify_darwin_bundle_signature(target_dir / asset.exe_rel_path.split("/")[0])
 
         if plat == "linux":
             chmod_kernel_binaries(exe_path.parent)

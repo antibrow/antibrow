@@ -88,7 +88,7 @@ other, with the identical fingerprint.
 
 ## Platforms
 
-Windows x64 and Linux x64 today. macOS is not yet available.
+Windows x64, macOS (universal) and Linux x64.
 
 ## Licensing
 

@@ -42,7 +42,13 @@ def test_info_works_with_nothing_installed_and_no_key(capsys):
 def test_info_lists_installed_kernels_and_profiles(tmp_path, capsys):
     cache = tmp_path / "cache"
     version = K.default_kernel_version().version
-    exe = "chrome.exe" if K.current_platform() == "win32" else "chrome"
+    plat = K.current_platform()
+    if plat == "win32":
+        exe = "chrome.exe"
+    elif plat == "darwin":
+        exe = "Chromium.app/Contents/MacOS/Chromium"
+    else:
+        exe = "chrome"
     path = K.kernel_dir(cache, version) / exe
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"x" * 2048)

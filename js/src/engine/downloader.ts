@@ -2,8 +2,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 import https from 'node:https'
 import http from 'node:http'
+import { execFile, spawnSync } from 'node:child_process'
 
-export type SupportedPlatform = 'win32' | 'linux'
+export type SupportedPlatform = 'win32' | 'linux' | 'darwin'
 
 export interface KernelPlatformAsset {
   downloadUrl: string
@@ -43,6 +44,13 @@ export const KERNEL_VERSIONS: KernelVersion[] = [
       linux: {
         downloadUrl: 'https://download.antibrow.com/fp-chromium-150-linux64.zip',
         exeRelPath: 'chrome',
+      },
+      // macOS ships one universal (x86_64 + arm64) bundle, so there is a single
+      // darwin asset rather than one per arch. The executable lives inside the
+      // .app, hence the nested exeRelPath.
+      darwin: {
+        downloadUrl: 'https://download.antibrow.com/fp-chromium-150-mac-universal.zip',
+        exeRelPath: 'Chromium.app/Contents/MacOS/Chromium',
       },
     },
   },
@@ -91,7 +99,18 @@ interface RemoteKernelEntry {
   build?: string
 }
 
-const MANIFEST_PLATFORM: Record<string, SupportedPlatform> = { win64: 'win32', linux64: 'linux' }
+const MANIFEST_PLATFORM: Record<string, SupportedPlatform> = {
+  win64: 'win32',
+  linux64: 'linux',
+  'mac-universal': 'darwin',
+}
+
+/** Fallback when a manifest row omits exe_rel_path. */
+function defaultExeRelPath(platform: SupportedPlatform): string {
+  if (platform === 'win32') return 'chrome.exe'
+  if (platform === 'darwin') return 'Chromium.app/Contents/MacOS/Chromium'
+  return 'chrome'
+}
 
 let registeredKernelVersions: KernelVersion[] = []
 
@@ -175,7 +194,7 @@ export async function fetchRemoteKernelVersions(manifestUrl: string = KERNEL_MAN
       byVersion.set(r.version, kv)
     }
     if (!kv.platforms[plat]) {
-      kv.platforms[plat] = { downloadUrl, exeRelPath: r.exe_rel_path ?? (plat === 'win32' ? 'chrome.exe' : 'chrome'), build: r.build }
+      kv.platforms[plat] = { downloadUrl, exeRelPath: r.exe_rel_path ?? defaultExeRelPath(plat), build: r.build }
     }
   }
   return [...byVersion.values()]
@@ -190,7 +209,8 @@ export function findKernelVersion(version: string): KernelVersion {
 export function currentPlatform(): SupportedPlatform {
   if (process.platform === 'win32') return 'win32'
   if (process.platform === 'linux') return 'linux'
-  throw new Error(`Unsupported platform: ${process.platform}. The kernel ships for win32 and linux.`)
+  if (process.platform === 'darwin') return 'darwin'
+  throw new Error(`Unsupported platform: ${process.platform}. The kernel ships for win32, linux and darwin.`)
 }
 
 /** Get the platform-specific asset for a kernel version. */
@@ -370,7 +390,7 @@ export async function ensureKernel(
 
     await downloadFile(cacheBustUrl(asset.downloadUrl), zipPath, onProgress)
     onProgress?.('Extracting kernel')
-    await extractZip(zipPath, kDir, onProgress)
+    await extractKernelZip(zipPath, kDir, onProgress)
 
     if (!fs.existsSync(exePath)) {
       // Downloaded and extracted, yet the exe is gone: on Windows this is nearly
@@ -385,6 +405,13 @@ export async function ensureKernel(
 
     // Helper binaries need +x or Chrome aborts on posix_spawn EPERM.
     if (platform === 'linux') chmodKernelBinaries(path.dirname(exePath))
+
+    // The mac kernel is a signed .app; a broken seal here means the extraction
+    // mangled the bundle (see extractKernelZip). Catch it now, not at launch.
+    if (platform === 'darwin') {
+      onProgress?.('Verifying kernel signature')
+      verifyDarwinBundleSignature(path.join(kDir, asset.exeRelPath.split('/')[0]))
+    }
 
     if (asset.build) writeInstalledKernelBuild(cacheDir, kv.version, asset.build)
   } catch (e) {
@@ -466,32 +493,154 @@ function downloadFile(
   })
 }
 
-async function extractZip(
+/**
+ * Extract a kernel zip. Exported for tests.
+ *
+ * macOS goes through `ditto` rather than the JS unzip path: the mac kernel is a
+ * .app bundle whose framework directories are symlinks, and it is published with
+ * `ditto -c -k`. A plain zip reader writes those symlink entries out as regular
+ * files containing the target path, which breaks the bundle's code signature —
+ * the app then dies on launch with no usable error. `ditto -x -k` is the exact
+ * inverse of how it was packed, so symlinks, permission bits and xattrs survive.
+ */
+export async function extractKernelZip(
   zipPath: string,
   destDir: string,
   onProgress?: (message: string) => void,
 ): Promise<void> {
-  const unzipper = await import('unzipper')
+  if (process.platform === 'darwin') return extractZipWithDitto(zipPath, destDir, onProgress)
+
+  const { open } = await import('yauzl')
   let count = 0
   await new Promise<void>((resolve, reject) => {
-    fs.createReadStream(zipPath)
-      .pipe(unzipper.Parse())
-      .on('entry', (entry: import('unzipper').Entry) => {
-        const entryPath = path.join(destDir, entry.path)
-        const type: string = entry.type
-        if (type === 'Directory') {
-          fs.mkdirSync(entryPath, { recursive: true })
-          entry.autodrain()
-        } else {
-          fs.mkdirSync(path.dirname(entryPath), { recursive: true })
-          entry.pipe(fs.createWriteStream(entryPath))
-            .on('error', reject)
-          count++
-          if (count % 50 === 0) onProgress?.(`Extracting ${count} files...`)
+    open(zipPath, { lazyEntries: true }, (openErr, zip) => {
+      if (openErr || !zip) {
+        reject(openErr ?? new Error(`Could not open kernel archive ${zipPath}`))
+        return
+      }
+
+      // yauzl reports failures on several channels (the archive, each read
+      // stream, each write stream) and auto-closes on 'end'. Funnel everything
+      // through one settled flag so a late error cannot double-settle or
+      // double-close.
+      let settled = false
+      const fail = (err: Error): void => {
+        if (settled) return
+        settled = true
+        zip.close()
+        reject(err)
+      }
+      const done = (): void => {
+        if (settled) return
+        settled = true
+        resolve()
+      }
+
+      zip.on('error', fail)
+      zip.on('end', done)
+      zip.on('entry', (entry) => {
+        if (settled) return
+        let target: string
+        try {
+          target = resolveEntryPath(destDir, entry.fileName)
+        } catch (err) {
+          fail(err as Error)
+          return
         }
+
+        // Directory entries are the only ones yauzl marks by a trailing slash.
+        if (entry.fileName.endsWith('/')) {
+          fs.mkdirSync(target, { recursive: true })
+          zip.readEntry()
+          return
+        }
+
+        fs.mkdirSync(path.dirname(target), { recursive: true })
+        zip.openReadStream(entry, (readErr, stream) => {
+          if (readErr || !stream) {
+            fail(readErr ?? new Error(`Could not read ${entry.fileName} from ${zipPath}`))
+            return
+          }
+          const out = fs.createWriteStream(target)
+          stream.on('error', fail)
+          out.on('error', fail)
+          // Advance only once the file is fully on disk: lazyEntries keeps the
+          // extraction sequential, so a truncated write can never be masked by
+          // the next entry starting early.
+          out.on('close', () => {
+            if (settled) return
+            count++
+            if (count % 50 === 0) onProgress?.(`Extracting ${count} files...`)
+            zip.readEntry()
+          })
+          stream.pipe(out)
+        })
       })
-      .on('close', resolve)
-      .on('error', reject)
+
+      zip.readEntry()
+    })
   })
   onProgress?.(`Extracted ${count} files`)
+}
+
+/**
+ * Resolve a zip entry name against `destDir`, refusing anything that escapes it.
+ *
+ * Zip Slip: a hostile archive can carry entries named `../../x` or `/etc/x`, and
+ * a plain `path.join(destDir, entry)` happily writes them outside the kernel
+ * directory. Kernel zips are fetched over the network, so the archive is not
+ * trusted input no matter how the download went. Exported for tests.
+ */
+export function resolveEntryPath(destDir: string, entryName: string): string {
+  // Zip stores backslash-separated names too; normalise before resolving so a
+  // `..\..\x` entry cannot slip past the prefix check on POSIX.
+  const normalized = entryName.replace(/\\/g, '/')
+  const root = path.resolve(destDir)
+  const target = path.resolve(root, normalized)
+  if (target !== root && !target.startsWith(root + path.sep)) {
+    throw new Error(
+      `Refusing to extract "${entryName}": the entry resolves outside the kernel directory. ` +
+      'The archive is malformed or tampered with - delete the kernel and try again.',
+    )
+  }
+  return target
+}
+
+function extractZipWithDitto(
+  zipPath: string,
+  destDir: string,
+  onProgress?: (message: string) => void,
+): Promise<void> {
+  // No 'Extracting kernel' message here: ensureKernel already emits it right
+  // before calling us, and ditto reports no incremental progress.
+  return new Promise((resolve, reject) => {
+    execFile('/usr/bin/ditto', ['-x', '-k', zipPath, destDir], (err, _stdout, stderr) => {
+      if (err) {
+        reject(new Error(`Failed to extract the kernel with ditto: ${stderr.trim() || err.message}`))
+        return
+      }
+      onProgress?.('Extracted kernel bundle')
+      resolve()
+    })
+  })
+}
+
+/**
+ * Verify an extracted .app bundle still satisfies its own code signature.
+ *
+ * Worth the extra seconds on a fresh download: a bundle whose seal is broken is
+ * killed by the OS at launch with no diagnosable error, so failing loudly here —
+ * while we still know a download just happened — is the difference between
+ * "re-download the kernel" and an unexplained crash. Exported for tests.
+ */
+export function verifyDarwinBundleSignature(appPath: string): void {
+  const res = spawnSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', appPath], {
+    encoding: 'utf8',
+  })
+  if (res.status === 0) return
+  const detail = (res.stderr || res.stdout || '').trim()
+  throw new Error(
+    `Kernel signature verification failed for ${appPath}: ${detail || `codesign exited ${res.status}`}. ` +
+    'The download is corrupt — delete the kernel and try again.',
+  )
 }

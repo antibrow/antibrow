@@ -42,6 +42,20 @@ def test_navigator_block_agrees_with_the_persona():
     assert navigator["uaData"]["platformVersion"] == "15.0.0"  # Windows 11
 
 
+def test_ua_data_supplies_the_full_uach_group_so_nothing_falls_back_to_the_real_host():
+    # Any key missing here means the kernel falls back to the real host value
+    # for that key - exactly the leak this test guards against.
+    _, config = config_for()
+    assert config["navigator"]["uaData"] == {
+        "platform": "Windows",  # UA-CH naming, not navigator.platform's "Win32"
+        "platformVersion": "15.0.0",
+        "architecture": "x86",  # UA-CH reports x86 even on x64 hardware
+        "bitness": "64",
+        "wow64": False,
+        "model": "",
+    }
+
+
 def test_screen_block_is_internally_consistent():
     persona, config = config_for()
     screen = config["screen"]
@@ -130,9 +144,89 @@ def test_color_scheme_distribution_is_roughly_seventy_thirty():
     assert 0.15 < dark / 400 < 0.45
 
 
+#: The Windows font whitelist the kernel is told to allow-list. An empty
+#: `allow` hides nothing, which is precisely how macOS/Linux system fonts
+#: leaked through on a non-Windows host - so this must stay the full set.
+EXPECTED_FONT_ALLOWLIST = [
+    "Arial",
+    "Arial Black",
+    "Bahnschrift",
+    "Calibri",
+    "Cambria",
+    "Cambria Math",
+    "Candara",
+    "Comic Sans MS",
+    "Consolas",
+    "Constantia",
+    "Corbel",
+    "Courier New",
+    "Ebrima",
+    "Franklin Gothic Medium",
+    "Gabriola",
+    "Gadugi",
+    "Georgia",
+    "Impact",
+    "Ink Free",
+    "Javanese Text",
+    "Leelawadee UI",
+    "Lucida Console",
+    "Lucida Sans Unicode",
+    "MV Boli",
+    "Marlett",
+    "Microsoft Sans Serif",
+    "Palatino Linotype",
+    "Segoe Print",
+    "Segoe Script",
+    "Segoe UI",
+    "Segoe UI Emoji",
+    "Segoe UI Symbol",
+    "Sitka",
+    "Sylfaen",
+    "Symbol",
+    "Tahoma",
+    "Times New Roman",
+    "Trebuchet MS",
+    "Verdana",
+    "Webdings",
+    "Wingdings",
+]
+
+#: Generic CSS family mapping. Absent entirely, generic families resolve
+#: through the host's own settings to host fonts - a second way system fonts
+#: used to leak through a Windows persona on a non-Windows host.
+EXPECTED_FONT_GENERIC = {
+    "standard": "Times New Roman",
+    "serif": "Times New Roman",
+    "sansSerif": "Arial",
+    "cursive": "Comic Sans MS",
+    "fantasy": "Impact",
+    "monospace": "Consolas,Courier New",
+    "math": "Cambria Math,Times New Roman",
+}
+
+
 def test_fonts_block_keeps_the_windows_ui_font_and_no_cjk():
     _, config = config_for()
-    assert config["fonts"] == {"uiFont": "Segoe UI", "keepCjk": 0, "block": [], "allow": []}
+    assert config["fonts"]["uiFont"] == "Segoe UI"
+    assert config["fonts"]["keepCjk"] == 0
+    assert config["fonts"]["block"] == []
+
+
+def test_fonts_allow_is_the_full_windows_font_whitelist():
+    # Must fail if `allow` ever goes back to empty - an empty allowlist hides
+    # nothing and is exactly the bug that let macOS system fonts enumerate.
+    _, config = config_for()
+    assert config["fonts"]["allow"] == EXPECTED_FONT_ALLOWLIST
+
+
+def test_fonts_generic_maps_every_css_generic_family():
+    # Must fail if any of the seven keys disappears - a missing key falls
+    # through to the host's generic-family fonts.
+    _, config = config_for()
+    assert config["fonts"]["generic"] == EXPECTED_FONT_GENERIC
+    assert set(config["fonts"]["generic"].keys()) == {
+        "standard", "serif", "sansSerif", "cursive", "fantasy", "monospace", "math",
+    }
 
 
 def test_api_logging_is_off_by_default():

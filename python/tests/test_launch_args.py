@@ -154,3 +154,60 @@ def test_devtools_active_port_absent_or_garbage_returns_none(tmp_path):
     assert read_devtools_active_port(tmp_path) is None
     (tmp_path / "DevToolsActivePort").write_text("not-a-port", encoding="utf-8")
     assert read_devtools_active_port(tmp_path) is None
+
+
+# -- macOS: no container-only sandbox switches -----------------------------
+
+
+def test_linux_keeps_the_container_switches():
+    args = args_for(platform="linux")
+    assert "--no-sandbox" in args
+    assert "--no-zygote" in args
+
+
+def test_darwin_does_not_disable_the_sandbox():
+    args = args_for(platform="darwin")
+    assert "--no-sandbox" not in args
+    assert "--disable-setuid-sandbox" not in args
+    assert "--disable-dev-shm-usage" not in args
+    assert "--no-zygote" not in args
+    # The switches that are not container-specific stay put.
+    assert switch(args, "remote-debugging-port") == "45123"
+
+
+def test_windows_still_has_no_container_switches():
+    assert "--no-sandbox" not in args_for(platform="win32")
+
+
+def test_linux_only_switches_are_exactly_the_seven_container_switches():
+    # Derived from the diff between linux and darwin argv rather than filtered
+    # against our own expected list, so an eighth switch sneaking into the
+    # linux block would fail this test instead of being silently ignored.
+    linux_only = set(args_for(platform="linux")) - set(args_for(platform="darwin"))
+    assert linux_only == {
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--disable-software-rasterizer",
+        "--disable-crash-reporter",
+        "--no-zygote",
+    }
+
+
+# -- macOS: -AppleLanguages steers ICU (Intl.*), --lang/LANG do not ----------
+
+
+def test_darwin_gets_apple_languages_derived_from_the_persona_language():
+    args = args_for(platform="darwin", language="en-US")
+    assert "-AppleLanguages" in args
+    idx = args.index("-AppleLanguages")
+    assert args[idx + 1] == "(en-US)"
+
+    de_args = args_for(platform="darwin", language="de-DE")
+    assert de_args[de_args.index("-AppleLanguages") + 1] == "(de-DE)"
+
+
+def test_apple_languages_is_absent_on_win32_and_linux():
+    assert "-AppleLanguages" not in args_for(platform="win32")
+    assert "-AppleLanguages" not in args_for(platform="linux")

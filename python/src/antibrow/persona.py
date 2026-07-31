@@ -249,7 +249,24 @@ def persona_to_fp_config(
             "hardwareConcurrency": persona.hardware_concurrency,
             "deviceMemory": persona.device_memory,
             "maxTouchPoints": 0,
-            "uaData": {"platformVersion": "15.0.0"},
+            # The kernel takes over the whole UA-CH metadata group, but only for
+            # the keys listed here - anything omitted falls back to the real
+            # host, which is how a Windows persona used to leak the host OS
+            # through userAgentData.platform on non-Windows hosts. Every key
+            # describes the same Windows 11 / x64 persona as `ua` above, so a
+            # future non-Windows persona has exactly one place to change this.
+            # Two naming traps: UA-CH `platform` says "Windows" (navigator.
+            # platform says "Win32" instead - do not copy that value here),
+            # and UA-CH `architecture` reports "x86" even on x64 hardware -
+            # `bitness` is what carries the 64.
+            "uaData": {
+                "platform": "Windows",
+                "platformVersion": "15.0.0",
+                "architecture": "x86",
+                "bitness": "64",
+                "wow64": False,
+                "model": "",
+            },
         },
         "screen": {
             "width": persona.screen_w,
@@ -271,7 +288,71 @@ def persona_to_fp_config(
         "webrtc": webrtc,
         "connection": {"effectiveType": "4g", "rtt": 100, "downlink": 10},
         "prefersColorScheme": color_scheme,
-        "fonts": {"uiFont": "Segoe UI", "keepCjk": 0, "block": [], "allow": []},
+        # ``allow`` is a whitelist over the kernel's probeable font set - left
+        # empty it hides nothing, and every host font (macOS/Linux system
+        # fonts on a non-Windows host) stays enumerable. ``generic`` maps the
+        # five CSS generic families plus "standard" so they resolve to a
+        # Windows font instead of falling through to the host's own
+        # generic-family settings. monospace and math list comma-separated
+        # fallbacks so a host missing the first still resolves to a distinct,
+        # non-host font rather than its own default.
+        "fonts": {
+            "uiFont": "Segoe UI",
+            "keepCjk": 0,
+            "block": [],
+            "allow": [
+                "Arial",
+                "Arial Black",
+                "Bahnschrift",
+                "Calibri",
+                "Cambria",
+                "Cambria Math",
+                "Candara",
+                "Comic Sans MS",
+                "Consolas",
+                "Constantia",
+                "Corbel",
+                "Courier New",
+                "Ebrima",
+                "Franklin Gothic Medium",
+                "Gabriola",
+                "Gadugi",
+                "Georgia",
+                "Impact",
+                "Ink Free",
+                "Javanese Text",
+                "Leelawadee UI",
+                "Lucida Console",
+                "Lucida Sans Unicode",
+                "MV Boli",
+                "Marlett",
+                "Microsoft Sans Serif",
+                "Palatino Linotype",
+                "Segoe Print",
+                "Segoe Script",
+                "Segoe UI",
+                "Segoe UI Emoji",
+                "Segoe UI Symbol",
+                "Sitka",
+                "Sylfaen",
+                "Symbol",
+                "Tahoma",
+                "Times New Roman",
+                "Trebuchet MS",
+                "Verdana",
+                "Webdings",
+                "Wingdings",
+            ],
+            "generic": {
+                "standard": "Times New Roman",
+                "serif": "Times New Roman",
+                "sansSerif": "Arial",
+                "cursive": "Comic Sans MS",
+                "fantasy": "Impact",
+                "monospace": "Consolas,Courier New",
+                "math": "Cambria Math,Times New Roman",
+            },
+        },
         "apilog": {"enabled": False, "mode": "off", "path": ""},
     }
 

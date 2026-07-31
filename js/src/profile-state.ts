@@ -19,8 +19,35 @@ export interface CapturedState {
   tabs: string[]
 }
 
+// `restoreOrigins` runs inside the page, not in Node. See the note in
+// tsconfig.json for why the DOM lib is not enabled program-wide.
+declare const location: { origin: string }
+declare const localStorage: { length: number; setItem(key: string, value: string): void }
+
 const isRealUrl = (u: string): boolean =>
   !!u && u !== 'about:blank' && !u.startsWith('chrome') && !u.startsWith('about')
+
+/**
+ * Seed localStorage for the current origin from a saved snapshot. Runs inside
+ * the page before its own scripts, so it must stay self-contained: Playwright
+ * serialises it with Function.prototype.toString.
+ *
+ * Existing values always win - a page that already has state is left untouched.
+ */
+function restoreOrigins(origins: ProfileStateOrigin[]): void {
+  for (const entry of origins) {
+    if (entry.origin !== location.origin) continue
+    if (localStorage.length > 0) return
+    for (const item of entry.localStorage) {
+      try {
+        localStorage.setItem(item.name, item.value)
+      } catch {
+        // Quota or a blocked origin: skip the item, keep going.
+      }
+    }
+    return
+  }
+}
 
 /** Read cookies + localStorage origins + open tab URLs from a live context. */
 export async function captureState(context: BrowserContext): Promise<CapturedState> {
@@ -50,10 +77,10 @@ export async function restoreState(
 ): Promise<void> {
   if (saved.cookies?.length) await context.addCookies(saved.cookies as Parameters<BrowserContext['addCookies']>[0]).catch(() => {})
   if (saved.origins?.length) {
-    const originsJson = JSON.stringify(saved.origins)
-    await context.addInitScript(
-      `(function(){var d=${originsJson};var o=location.origin;for(var i=0;i<d.length;i++){if(d[i].origin!==o)continue;if(localStorage.length>0)return;var ls=d[i].localStorage;for(var j=0;j<ls.length;j++){try{localStorage.setItem(ls[j].name,ls[j].value)}catch(e){}}return;}})()`,
-    ).catch(() => {})
+    // Passed as a serialised argument rather than spliced into script source:
+    // the saved snapshot is attacker-influenced (any visited site can write to
+    // its own localStorage), so it must never be parsed as code.
+    await context.addInitScript(restoreOrigins, saved.origins).catch(() => {})
   }
   if (opts.openTabs && saved.tabs?.length) {
     await page.goto(saved.tabs[0]).catch(() => {})

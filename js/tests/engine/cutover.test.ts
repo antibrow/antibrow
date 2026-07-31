@@ -25,10 +25,10 @@ describe('engine SDK cutover guards', () => {
     expect(types).not.toContain('FingerprintFilter')
   })
 
-  it('targets win32 + linux and does not ship old kernel dependencies', () => {
+  it('targets win32 + linux + darwin and does not ship old kernel dependencies', () => {
     const pkg = JSON.parse(read('package.json')) as Record<string, unknown>
-    // The kernel ships win64 + linux64 builds.
-    expect(pkg.os).toEqual(['win32', 'linux'])
+    // The kernel ships win64 + linux64 + mac-universal builds.
+    expect(pkg.os).toEqual(['win32', 'linux', 'darwin'])
     const deps = pkg.dependencies as Record<string, string>
     expect(deps['camoufox-js']).toBeUndefined()
   })

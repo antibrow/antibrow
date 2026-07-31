@@ -1,6 +1,6 @@
 {
   "name": "anti-detect-browser",
-  "version": "1.5.0",
+  "version": "2.0.0",
   "description": "Anti-detect browser client SDK powered by the Engine runtime and Playwright CDP (Windows + Linux)",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -26,14 +26,14 @@
     "@modelcontextprotocol/sdk": "^1.0.0",
     "adm-zip": "^0.5.17",
     "socks": "^2.8.9",
-    "unzipper": "^0.12.3",
-    "ws": "^8.0.0"
+    "ws": "^8.0.0",
+    "yauzl": "^3.4.0"
   },
   "devDependencies": {
     "@types/adm-zip": "^0.5.8",
     "@types/node": "^22.0.0",
-    "@types/unzipper": "^0.10.11",
     "@types/ws": "^8.0.0",
+    "@types/yauzl": "^3.4.0",
     "playwright-core": "^1.60.0",
     "tsup": "^8.0.0",
     "typescript": "^5.7.0",
@@ -56,7 +56,8 @@
   ],
   "os": [
     "win32",
-    "linux"
+    "linux",
+    "darwin"
   ],
   "homepage": "https://antibrow.com",
   "license": "MIT",

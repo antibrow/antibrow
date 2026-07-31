@@ -8,7 +8,7 @@ Kernel-level fingerprint spoofing · **unlimited local profiles, free** · stand
 
 [![npm version](https://img.shields.io/npm/v/anti-detect-browser?color=6366f1&label=npm)](https://www.npmjs.com/package/anti-detect-browser)
 [![node](https://img.shields.io/badge/node-%E2%89%A518-3c873a)](https://nodejs.org)
-![platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-6366f1)
+![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-6366f1)
 ![MCP ready](https://img.shields.io/badge/agent-MCP%20ready-a855f7)
 ![license](https://img.shields.io/badge/license-MIT-444)
 
@@ -157,7 +157,7 @@ See [antibrow.com/pricing](https://antibrow.com/pricing).
 ## Requirements
 
 - Node.js >= 18
-- Windows or Linux — macOS coming soon
+- Windows, macOS or Linux
 - `playwright-core` (peer dependency)
 
 ## Links

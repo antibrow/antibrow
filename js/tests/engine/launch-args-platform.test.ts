@@ -1,0 +1,152 @@
+import { describe, it, expect } from 'vitest'
+import { buildLaunchArgs, type BuildLaunchArgsOptions } from '../../src/engine/launcher'
+
+// The container-only switches must be gated on linux, never on "not windows" -
+// a prior version of this test asserted that by grepping the source text for
+// the isLinux token on the one line containing '--no-sandbox', which missed
+// the other six switches sitting on continuation lines. Asserting on the real
+// argv from the extracted, platform-parametrized builder closes that hole.
+
+const CONTAINER_SWITCHES = [
+  '--no-sandbox',
+  '--disable-setuid-sandbox',
+  '--disable-dev-shm-usage',
+  '--disable-gpu',
+  '--disable-software-rasterizer',
+  '--disable-crash-reporter',
+  '--no-zygote',
+]
+
+const WINDOWS_HEADLESS_SWITCHES = [
+  '--window-position=-10000,-10000',
+  '--window-size=1,1',
+]
+
+const ALWAYS_PRESENT_PREFIXES = [
+  '--fp-config',
+  '--fp-license',
+  '--user-data-dir',
+  '--fp-address-label',
+  '--remote-debugging-port',
+  '--remote-allow-origins',
+  '--no-first-run',
+  '--no-default-browser-check',
+  '--lang',
+]
+
+function baseOptions(platform: NodeJS.Platform, headless = false): BuildLaunchArgsOptions {
+  return {
+    fpConfigPath: '/profiles/p1/fp-config.json',
+    licenseToken: 'token-abc',
+    userDataDir: '/profiles/p1/user-data',
+    displayLabel: 'p1',
+    cdpPort: 9222,
+    language: 'en-US',
+    headless,
+    profileDir: '/profiles/p1',
+    platform,
+  }
+}
+
+function hasSwitch(args: string[], flag: string): boolean {
+  return args.some((a) => a === flag || a.startsWith(`${flag}=`))
+}
+
+describe('buildLaunchArgs', () => {
+  it('includes all seven container-only switches on linux', () => {
+    const args = buildLaunchArgs(baseOptions('linux'))
+    for (const flag of CONTAINER_SWITCHES) {
+      expect(args).toContain(flag)
+    }
+  })
+
+  it('gates exactly the seven container-only switches on linux, nothing more', () => {
+    // Derive the gated set from the argv delta (linux minus darwin) rather than
+    // from CONTAINER_SWITCHES itself: filtering args down to members of a known
+    // list before comparing to that same list can never catch an addition, only
+    // a member going missing (which the previous test already covers). Diffing
+    // against darwin means an eighth switch newly added inside the isLinux
+    // block shows up in the delta and fails the comparison.
+    const linuxArgs = buildLaunchArgs(baseOptions('linux'))
+    const darwinArgs = buildLaunchArgs(baseOptions('darwin'))
+    const linuxOnly = linuxArgs.filter((a) => !darwinArgs.includes(a))
+    expect(linuxOnly.sort()).toEqual([...CONTAINER_SWITCHES].sort())
+  })
+
+  it('omits every container-only switch on darwin', () => {
+    const args = buildLaunchArgs(baseOptions('darwin'))
+    for (const flag of CONTAINER_SWITCHES) {
+      expect(args).not.toContain(flag)
+    }
+  })
+
+  it('omits every container-only switch on win32', () => {
+    const args = buildLaunchArgs(baseOptions('win32'))
+    for (const flag of CONTAINER_SWITCHES) {
+      expect(args).not.toContain(flag)
+    }
+  })
+
+  it('includes the windows-only headless switches on win32 when headless', () => {
+    const args = buildLaunchArgs(baseOptions('win32', true))
+    for (const flag of WINDOWS_HEADLESS_SWITCHES) {
+      expect(args).toContain(flag)
+    }
+  })
+
+  it('omits the windows-only headless switches on linux when headless', () => {
+    const args = buildLaunchArgs(baseOptions('linux', true))
+    for (const flag of WINDOWS_HEADLESS_SWITCHES) {
+      expect(args).not.toContain(flag)
+    }
+  })
+
+  it('omits the windows-only headless switches on darwin when headless', () => {
+    const args = buildLaunchArgs(baseOptions('darwin', true))
+    for (const flag of WINDOWS_HEADLESS_SWITCHES) {
+      expect(args).not.toContain(flag)
+    }
+  })
+
+  it.each<NodeJS.Platform>(['win32', 'linux', 'darwin'])(
+    'always includes the core switches on %s',
+    (platform) => {
+      const args = buildLaunchArgs(baseOptions(platform))
+      for (const flag of ALWAYS_PRESENT_PREFIXES) {
+        expect(hasSwitch(args, flag)).toBe(true)
+      }
+    },
+  )
+
+  it.each<NodeJS.Platform>(['win32', 'linux', 'darwin'])(
+    'always includes the webauthn store switch on %s',
+    (platform) => {
+      const args = buildLaunchArgs(baseOptions(platform))
+      expect(hasSwitch(args, '--fp-webauthn-store')).toBe(true)
+    },
+  )
+
+  it('adds --fp-webauthn-create=choose only when webauthnCapture is false', () => {
+    const withCapture = buildLaunchArgs({ ...baseOptions('win32'), webauthnCapture: true })
+    const withoutCapture = buildLaunchArgs({ ...baseOptions('win32'), webauthnCapture: false })
+    expect(withCapture).not.toContain('--fp-webauthn-create=choose')
+    expect(withoutCapture).toContain('--fp-webauthn-create=choose')
+  })
+
+  it('adds -AppleLanguages (en-US) as adjacent argv entries on darwin, derived from the persona language', () => {
+    const args = buildLaunchArgs({ ...baseOptions('darwin'), language: 'en-US' })
+    const idx = args.indexOf('-AppleLanguages')
+    expect(idx).toBeGreaterThanOrEqual(0)
+    expect(args[idx + 1]).toBe('(en-US)')
+
+    const de = buildLaunchArgs({ ...baseOptions('darwin'), language: 'de-DE' })
+    expect(de[de.indexOf('-AppleLanguages') + 1]).toBe('(de-DE)')
+  })
+
+  it('omits -AppleLanguages on win32 and linux', () => {
+    for (const platform of ['win32', 'linux'] as const) {
+      const args = buildLaunchArgs(baseOptions(platform))
+      expect(args).not.toContain('-AppleLanguages')
+    }
+  })
+})

@@ -3,6 +3,9 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    // Node-only on purpose. Adding "DOM" makes lib.dom's fetch/BodyInit collide
+    // with the ones @types/node declares, which breaks the build; the few
+    // functions that run inside the page declare their own globals instead.
     "lib": ["ES2022"],
     "strict": true,
     "esModuleInterop": true,

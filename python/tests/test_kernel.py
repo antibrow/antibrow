@@ -11,6 +11,7 @@ import json
 import os
 import socketserver
 import stat
+import subprocess
 import sys
 import threading
 import zipfile
@@ -46,6 +47,13 @@ MANIFEST = json.dumps(
                 "download_url": "https://mirror.example.com/fp-chromium-150-win64.zip",
                 "build": "0116-passkey 2026-07-22 22:37",
             },
+            {
+                "version": "150.0.7871.182",
+                "label": "Chrome 150",
+                "platform": "mac-universal",
+                "download_url": "fp-chromium-150-mac-universal.zip",
+                "build": "2026-07-24 07:09",
+            },
             {"version": "bogus", "platform": "macos", "download_url": "x.zip"},
         ]
     }
@@ -63,12 +71,23 @@ def clean_registry():
 # -- catalogue ------------------------------------------------------------
 
 
-def test_baseline_has_both_platforms_for_every_shipped_version():
+def test_baseline_versions_have_expected_platforms():
+    # Each baseline version is tested with its exact platform set, not derived from version ordering.
+    expected_platforms = {
+        "150.0.7871.182": {"win32", "linux", "darwin"},
+        "149.0.7827.201": {"win32", "linux"},
+    }
     for kv in K.KERNEL_VERSIONS:
-        assert set(kv.platforms) == {"win32", "linux"}
+        assert set(kv.platforms) == expected_platforms[kv.version]
         for plat, asset in kv.platforms.items():
             assert asset.download_url.startswith("https://download.antibrow.com/")
-            assert asset.exe_rel_path == ("chrome.exe" if plat == "win32" else "chrome")
+            assert asset.exe_rel_path == (
+                "chrome.exe"
+                if plat == "win32"
+                else "Chromium.app/Contents/MacOS/Chromium"
+                if plat == "darwin"
+                else "chrome"
+            )
 
 
 def test_versions_sort_newest_first_numerically():
@@ -96,8 +115,8 @@ def test_find_kernel_version_falls_back_to_the_default():
 
 def test_manifest_rows_collapse_into_one_version_per_entry():
     versions = {kv.version: kv for kv in K.parse_kernel_manifest(MANIFEST)}
-    assert set(versions) == {"151.0.1.2", "150.0.7871.182"}  # the macos row is dropped
-    assert set(versions["150.0.7871.182"].platforms) == {"win32", "linux"}
+    assert set(versions) == {"151.0.1.2", "150.0.7871.182"}  # the bogus macos row is dropped
+    assert set(versions["150.0.7871.182"].platforms) == {"win32", "linux", "darwin"}
     assert versions["151.0.1.2"].label == "Chrome 151"
 
 
@@ -191,7 +210,12 @@ def test_registered_versions_never_change_the_default():
 
 
 def install_fake_kernel(cache_dir, version, platform):
-    exe = "chrome.exe" if platform == "win32" else "chrome"
+    if platform == "win32":
+        exe = "chrome.exe"
+    elif platform == "darwin":
+        exe = "Chromium.app/Contents/MacOS/Chromium"
+    else:
+        exe = "chrome"
     path = K.kernel_dir(cache_dir, version) / exe
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"MZ fake kernel")
@@ -301,11 +325,48 @@ def make_kernel_zip(path, exe_name, extra_files=(), exe_mode=0o644):
             archive.writestr(entry, "data")
 
 
+def make_darwin_kernel_zip(path, build_dir, extra_files=()):
+    """A minimal *signed* .app bundle, packed with ditto the way the real
+    kernel is published. A plain zipfile-built archive would not have
+    anything for ``verify_darwin_bundle_signature`` to check.
+    """
+    payload = build_dir / "payload"
+    app = payload / "Test.app"
+    (app / "Contents" / "MacOS").mkdir(parents=True)
+    (build_dir / "main.c").write_text("int main(void){return 0;}\n")
+    subprocess.run(
+        ["clang", "-o", str(app / "Contents" / "MacOS" / "Test"), str(build_dir / "main.c")],
+        check=True,
+    )
+    (app / "Contents" / "Info.plist").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+        '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        '<plist version="1.0"><dict>'
+        "<key>CFBundleExecutable</key><string>Test</string>"
+        "<key>CFBundleIdentifier</key><string>com.antibrow.test</string>"
+        "</dict></plist>\n"
+    )
+    subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", str(app)], check=True)
+    for name in extra_files:
+        entry = payload / name
+        entry.parent.mkdir(parents=True, exist_ok=True)
+        entry.write_text("data")
+    subprocess.run(
+        ["/usr/bin/ditto", "-c", "-k", "--sequesterRsrc", str(payload), str(path)],
+        check=True,
+    )
+
+
 def test_ensure_kernel_downloads_extracts_and_is_idempotent(tmp_path, zip_server):
     www, base = zip_server
     plat = K.current_platform()
-    exe_name = "chrome.exe" if plat == "win32" else "chrome"
-    make_kernel_zip(www / "kernel.zip", exe_name, extra_files=["locales/en-US.pak", "icudtl.dat"])
+    if plat == "darwin":
+        exe_name = "Test.app/Contents/MacOS/Test"
+        make_darwin_kernel_zip(www / "kernel.zip", tmp_path, extra_files=["locales/en-US.pak", "icudtl.dat"])
+    else:
+        exe_name = "chrome.exe" if plat == "win32" else "chrome"
+        make_kernel_zip(www / "kernel.zip", exe_name, extra_files=["locales/en-US.pak", "icudtl.dat"])
 
     kv = K.KernelVersion(
         "0.0.0-test",
@@ -316,7 +377,7 @@ def test_ensure_kernel_downloads_extracts_and_is_idempotent(tmp_path, zip_server
     messages = []
 
     exe_path = K.ensure_kernel(cache, kv, messages.append, platform=plat)
-    assert exe_path.exists() and exe_path.name == exe_name
+    assert exe_path.exists() and str(exe_path).endswith(exe_name)
     assert (K.kernel_dir(cache, kv.version) / "locales" / "en-US.pak").exists()
     assert K.installed_kernel_build(cache, kv.version) == "build-1"
     assert any(m.startswith("Downloading") for m in messages)

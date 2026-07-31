@@ -24,8 +24,9 @@ function install(cache: string, version: string): void {
   fs.writeFileSync(exe, 'MZ')
 }
 
-// A runtime-registered version (built for both platforms) with a known build,
-// so the test works on win32 and linux. Unique version → no cross-test bleed.
+// A runtime-registered version (built for all three platforms) with a known
+// build, so the test works on win32, linux and darwin. Unique version → no
+// cross-test bleed.
 const TEST_VERSION = '199.0.0.1'
 registerKernelVersions([
   {
@@ -34,6 +35,7 @@ registerKernelVersions([
     platforms: {
       win32: { downloadUrl: 'https://example.test/x-win64.zip', exeRelPath: 'chrome.exe', build: '2026-07-24 10:00' },
       linux: { downloadUrl: 'https://example.test/x-linux64.zip', exeRelPath: 'chrome', build: '2026-07-24 10:00' },
+      darwin: { downloadUrl: 'https://example.test/x-mac-universal.zip', exeRelPath: 'Chromium.app/Contents/MacOS/Chromium', build: '2026-07-24 10:00' },
     },
   },
 ])
