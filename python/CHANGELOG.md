@@ -6,6 +6,24 @@ All notable changes to the `antibrow` Python SDK. Format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-31
+
+macOS support, plus persona consistency fixes for hosts that aren't Windows.
+
+### Added
+
+- macOS support (Apple silicon and Intel, one universal build). `launch()` works
+  the same as on Windows and Linux; see [Platform support](README.md#platform-support)
+  for the current caveats.
+
+### Fixed
+
+- A profile's persona is now reported consistently regardless of which OS the
+  host machine runs. Previously some identity details could still reflect the
+  host rather than the persona when running on a non-Windows host.
+- Improved locale handling on macOS, so locale-derived browser output matches the
+  persona's language.
+
 ## [0.1.0] - 2026-07-28
 
 First public release of the Python SDK. Feature parity with the Node SDK's
@@ -42,5 +60,6 @@ local-profile path; cloud profile sync and Live View are not implemented yet.
 - Cloud profile sync, Live View and managed-proxy activation by `proxy_id` are
   Node SDK / desktop features and are not implemented here.
 
-[Unreleased]: https://github.com/antibrow/antibrow/compare/python-v0.1.0...HEAD
+[Unreleased]: https://github.com/antibrow/antibrow/compare/python-v0.2.0...HEAD
+[0.2.0]: https://github.com/antibrow/antibrow/releases/tag/python-v0.2.0
 [0.1.0]: https://github.com/antibrow/antibrow/releases/tag/python-v0.1.0

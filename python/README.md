@@ -11,7 +11,7 @@ Kernel-level fingerprint spoofing · unlimited local profiles, free · the Playw
 [![PyPI](https://img.shields.io/pypi/v/antibrow?color=6366f1&label=pypi)](https://pypi.org/project/antibrow/)
 [![Python](https://img.shields.io/pypi/pyversions/antibrow?color=3776ab)](https://pypi.org/project/antibrow/)
 [![CI](https://github.com/antibrow/antibrow/actions/workflows/ci.yml/badge.svg)](https://github.com/antibrow/antibrow/actions/workflows/ci.yml)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-6366f1)](#platform-support)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-6366f1)](#platform-support)
 [![Agent ready](https://img.shields.io/badge/agent-MCP%20ready-a855f7)](#ai-agents-and-mcp)
 [![License](https://img.shields.io/badge/wrapper-MIT-444)](LICENSE)
 
@@ -135,7 +135,7 @@ Starts the kernel and returns a handle that is ready to drive. Blocking (sync) A
 | Option | Type | Default | What it does |
 |---|---|---|---|
 | `profile` | `str` | `"default"` | Profile name. Same name → same identity, cookies, storage. Unlimited, free, local. |
-| `headless` | `bool` | `False` | Hide the window. On Windows the window is moved off-screen instead of `--headless=new`, because headless Chromium has its own detectable fingerprint. On Linux use Xvfb (see [Docker](#docker)). |
+| `headless` | `bool` | `False` | Hide the window. On Windows the window is moved off-screen instead of `--headless=new`, because headless Chromium has its own detectable fingerprint. On Linux use Xvfb (see [Docker](#docker)); on macOS it has no effect yet. |
 | `proxy` | `str \| dict` | `None` | `"http://user:pass@host:port"`, `"socks5://…"`, `"https://…"`, `"relay://…"`, or Playwright's `{"server": …, "username": …, "password": …}`. |
 | `geoip` | `bool` | `True` | Resolve the proxy's exit IP through the proxy and make timezone + WebRTC match it. No-op without a proxy. |
 | `timezone` | `str` | `None` | Force an IANA timezone (`"Europe/Berlin"`), overriding the geo lookup. |
@@ -229,7 +229,7 @@ What a persona pins:
 
 | Surface | Example |
 |---|---|
-| User agent + `navigator` | Windows 11 / Chrome 150, `platform`, `vendor`, `hardwareConcurrency`, `deviceMemory`, `maxTouchPoints`, UA-CH `platformVersion` |
+| User agent + `navigator` | Windows 11 / current Chrome, `platform`, `vendor`, `hardwareConcurrency`, `deviceMemory`, `maxTouchPoints`, UA-CH `platformVersion` |
 | Screen | CSS size, `availWidth/Height` minus the taskbar, `colorDepth`, `devicePixelRatio` (never 1.0) |
 | GPU | matching WebGL unmasked vendor + renderer (Intel / NVIDIA / AMD) |
 | Canvas, audio, DOMRect | per-profile seeds → deterministic noise, identical on every visit |
@@ -452,12 +452,14 @@ python -m antibrow version                                        # SDK + defaul
 | Platform | Status | Notes |
 |---|---|---|
 | Windows 10/11 x64 | Supported | Headful, or headless via off-screen window |
+| macOS 12+ (Apple silicon + Intel) | Supported | Universal build. Headful — `headless=True` has no effect here yet |
 | Linux x64 (glibc) | Supported | Needs Xvfb for headless; container flags applied automatically |
 | Docker (linux/amd64) | Supported | See [Docker](#docker) |
-| macOS | Not yet | No kernel build; `launch()` raises `UnsupportedPlatformError` |
 | Linux arm64 / musl | Not yet | No kernel build |
 
-Python 3.9 – 3.13. The kernel is a ~190 MB download (~440 MB extracted), cached once per version — `python -m antibrow info` shows what is installed and where.
+Python 3.9 – 3.13. The kernel is cached once per version — ~190 MB to download on
+Windows and Linux, ~320 MB for the macOS universal bundle (it carries both
+architectures) — and `python -m antibrow info` shows what is installed and where.
 
 ## Plans and concurrency
 

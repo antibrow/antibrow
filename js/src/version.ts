@@ -2,7 +2,7 @@
  * Client version gate: the SDK reports its version and the server decides
  * whether it is fine, should be upgraded, or must be upgraded.
  */
-export const SDK_VERSION = '2.0.0'
+export const SDK_VERSION = '2.1.0'
 
 const DEFAULT_SERVER = 'https://antibrow.com'
 
