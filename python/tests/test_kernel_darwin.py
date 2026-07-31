@@ -2,11 +2,11 @@ import os
 import subprocess
 import sys
 import zipfile
+from pathlib import Path
 
 import pytest
 
 from antibrow import kernel as _kernel
-
 
 MAC_ZIP = "https://download.antibrow.com/fp-chromium-150-mac-universal.zip"
 MAC_EXE = "Chromium.app/Contents/MacOS/Chromium"
@@ -37,7 +37,9 @@ def test_mac_asset_points_at_the_universal_zip():
 def test_exe_path_resolves_inside_the_app_bundle():
     kv = _version("150.0.7871.182")
     path = _kernel.kernel_exe_path("/cache", kv, "darwin")
-    assert str(path).endswith("kernels/150.0.7871.182/" + MAC_EXE)
+    # Compare as paths, not strings: this test also runs on Windows CI, where
+    # the separator is a backslash and a POSIX-shaped suffix never matches.
+    assert path == Path("/cache") / "kernels" / "150.0.7871.182" / MAC_EXE
 
 
 def test_kernels_for_platform_filters_out_149_on_darwin():
