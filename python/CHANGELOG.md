@@ -4,7 +4,10 @@ All notable changes to the `antibrow` Python SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.3.0] - 2026-08-01
+
+Linux arm64 support, and a kernel catalogue that no longer needs an SDK release
+to see a newly published kernel.
 
 ### Added
 
@@ -74,6 +77,6 @@ local-profile path; cloud profile sync and Live View are not implemented yet.
 - Cloud profile sync, Live View and managed-proxy activation by `proxy_id` are
   Node SDK / desktop features and are not implemented here.
 
-[Unreleased]: https://github.com/antibrow/antibrow/compare/python-v0.2.0...HEAD
+[0.3.0]: https://github.com/antibrow/antibrow/releases/tag/python-v0.3.0
 [0.2.0]: https://github.com/antibrow/antibrow/releases/tag/python-v0.2.0
 [0.1.0]: https://github.com/antibrow/antibrow/releases/tag/python-v0.1.0
