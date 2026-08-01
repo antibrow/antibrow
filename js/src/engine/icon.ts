@@ -2,10 +2,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 /**
- * Per-profile window icon (pure Node, no image dependencies). Renders a
- * deterministic sigil - dashed concentric rings derived from a hash of the
- * profile name - into a Windows `.ico`, so a browser window is recognizable at
- * a glance. Windows only; on failure the kernel keeps its default icon.
+ * Per-profile window icon: concentric rings hashed from the profile name, written
+ * as a Windows `.ico`. Windows only; on failure the default icon stays.
  */
 
 // The same name always yields the same rings.
@@ -234,11 +232,7 @@ export function buildIco(seedName: string, sizes: number[] = ICON_SIZES): Buffer
   return Buffer.concat([dir, ...images])
 }
 
-/**
- * Render the profile's deterministic sigil to `<profileDir>/fp-window-icon.ico`
- * and return its path. Returns null on any failure (caller then omits the switch
- * and the kernel keeps its default icon).
- */
+/** Writes `<profileDir>/fp-window-icon.ico`; null on any failure. */
 export function writeWindowIcon(profileDir: string, seedName: string): string | null {
   try {
     const iconPath = path.join(profileDir, 'fp-window-icon.ico')

@@ -7,11 +7,7 @@ import {
   type ProfileStateOrigin,
 } from './api'
 
-/**
- * Profile-state sync: capture cookies, localStorage and open tabs from a live
- * context, upload that snapshot, and restore it into a fresh context. Shared by
- * every client so the capture/restore behaviour is identical everywhere.
- */
+/** Capture cookies, localStorage and tabs from a live context, and restore them. */
 
 export interface CapturedState {
   cookies: ProfileStateCookie[]
@@ -28,11 +24,8 @@ const isRealUrl = (u: string): boolean =>
   !!u && u !== 'about:blank' && !u.startsWith('chrome') && !u.startsWith('about')
 
 /**
- * Seed localStorage for the current origin from a saved snapshot. Runs inside
- * the page before its own scripts, so it must stay self-contained: Playwright
- * serialises it with Function.prototype.toString.
- *
- * Existing values always win - a page that already has state is left untouched.
+ * Runs in the page before its own scripts, so it must stay self-contained.
+ * Existing values win: a page that already has state is left untouched.
  */
 function restoreOrigins(origins: ProfileStateOrigin[]): void {
   for (const entry of origins) {

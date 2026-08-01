@@ -9,13 +9,13 @@ import {
 } from '../../src/engine/downloader'
 
 describe('darwin kernel catalogue', () => {
-  it('ships a mac build for 150 but not for 149', () => {
-    const v150 = KERNEL_VERSIONS.find((kv) => kv.version === '150.0.7871.182')
-    const v149 = KERNEL_VERSIONS.find((kv) => kv.version === '149.0.7827.201')
-    expect(v150).toBeDefined()
-    expect(v149).toBeDefined()
-    expect(kernelAvailableOnPlatform(v150!, 'darwin')).toBe(true)
-    expect(kernelAvailableOnPlatform(v149!, 'darwin')).toBe(false)
+  it('ships a mac build for the compiled-in baseline', () => {
+    // The baseline is deliberately one version (the one this release was tested
+    // against); every other kernel arrives via the manifest.
+    expect(KERNEL_VERSIONS).toHaveLength(1)
+    for (const kv of KERNEL_VERSIONS) {
+      expect(kernelAvailableOnPlatform(kv, 'darwin'), kv.version).toBe(true)
+    }
   })
 
   it('points at the universal zip and the executable inside the app bundle', () => {
@@ -35,10 +35,9 @@ describe('darwin kernel catalogue', () => {
     )
   })
 
-  it('lists only mac-capable versions for darwin', () => {
+  it('lists mac-capable versions for darwin', () => {
     const versions = kernelsForPlatform('darwin').map((kv) => kv.version)
     expect(versions).toContain('150.0.7871.182')
-    expect(versions).not.toContain('149.0.7827.201')
   })
 
   it('maps the mac-universal manifest token onto darwin', () => {

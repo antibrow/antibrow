@@ -157,7 +157,7 @@ See [antibrow.com/pricing](https://antibrow.com/pricing).
 ## Requirements
 
 - Node.js >= 18
-- Windows, macOS or Linux
+- Windows x64, macOS (universal) or Linux x64 / arm64
 - `playwright-core` (peer dependency)
 
 ## Links

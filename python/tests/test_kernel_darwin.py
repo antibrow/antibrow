@@ -23,9 +23,8 @@ def test_darwin_is_a_supported_platform():
     assert "darwin" in _kernel.SUPPORTED_PLATFORMS
 
 
-def test_150_has_a_mac_build_and_149_does_not():
+def test_the_baseline_version_has_a_mac_build():
     assert _version("150.0.7871.182").available_on("darwin") is True
-    assert _version("149.0.7827.201").available_on("darwin") is False
 
 
 def test_mac_asset_points_at_the_universal_zip():
@@ -42,10 +41,9 @@ def test_exe_path_resolves_inside_the_app_bundle():
     assert path == Path("/cache") / "kernels" / "150.0.7871.182" / MAC_EXE
 
 
-def test_kernels_for_platform_filters_out_149_on_darwin():
+def test_kernels_for_platform_lists_mac_capable_versions():
     versions = [kv.version for kv in _kernel.kernels_for_platform("darwin")]
     assert "150.0.7871.182" in versions
-    assert "149.0.7827.201" not in versions
 
 
 def test_manifest_token_mac_universal_maps_to_darwin():

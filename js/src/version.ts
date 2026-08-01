@@ -1,7 +1,4 @@
-/**
- * Client version gate: the SDK reports its version and the server decides
- * whether it is fine, should be upgraded, or must be upgraded.
- */
+/** Version gate: the SDK reports its version, the server decides. */
 export const SDK_VERSION = '2.1.0'
 
 const DEFAULT_SERVER = 'https://antibrow.com'
@@ -15,11 +12,7 @@ export interface VersionCheckResult {
   notes?: string | null
 }
 
-/**
- * Ask whether `version` of `client` is still acceptable. Fails open: a transport
- * error or unrecognised status resolves to `ok`, so an outage never bricks a
- * client.
- */
+/** Fails open: any error resolves to `ok`, so an outage never bricks a client. */
 export async function checkClientVersion(options: {
   client: string
   version: string

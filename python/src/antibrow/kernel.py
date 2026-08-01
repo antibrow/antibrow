@@ -1,25 +1,16 @@
 """Browser kernel catalogue, download and on-disk cache.
 
-The AntiBrow kernel is a Chromium fork whose fingerprint spoofing lives in
-C++/Blink rather than in injected JavaScript. It is distributed as a
-per-platform zip and cached under ``<cache_dir>/kernels/<version>/``.
-
-Two sources of versions:
-
-* the compiled-in :data:`KERNEL_VERSIONS` baseline, which also decides the
-  default kernel for brand-new profiles, and
-* a remote manifest (``fp-browser-versions.json``) fetched at runtime, so a
-  freshly published kernel becomes selectable without releasing a new SDK.
-
-Remote entries only *augment* the baseline: they add versions and fill in
-platforms the baseline lacks, but never rewrite a built-in download URL and
-never bump the default.
+Kernels are per-platform zips cached under ``<cache_dir>/kernels/<version>/``.
+Versions come from the compiled-in :data:`KERNEL_VERSIONS` baseline (one entry:
+what new profiles get) plus a runtime manifest that only *augments* it - remote
+entries never rewrite a built-in URL or move the default.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import platform as _platform
 import random
 import shutil
 import stat
@@ -38,15 +29,27 @@ from .errors import KernelDownloadError, UnsupportedPlatformError
 
 ProgressCallback = Callable[[str], None]
 
-#: Platforms the kernel is built for.
-SUPPORTED_PLATFORMS = ("win32", "linux", "darwin")
+#: Only Linux is split by arch: macOS is universal, Windows is x64 only.
+SUPPORTED_PLATFORMS = ("win32", "linux", "linux-arm64", "darwin")
 
 #: Manifest platform token -> our platform key.
 _MANIFEST_PLATFORM = {
     "win64": "win32",
     "linux64": "linux",
+    "linuxarm64": "linux-arm64",
     "mac-universal": "darwin",
 }
+
+_ARM64_MACHINES = frozenset({"aarch64", "arm64", "aarch64_be", "armv8b", "armv8l"})
+
+
+def _is_linux_asset(platform: str) -> bool:
+    return platform in ("linux", "linux-arm64")
+
+
+def _machine() -> str:
+    """Patchable in tests."""
+    return _platform.machine()
 
 
 def _default_exe_rel_path(platform: str) -> str:
@@ -104,7 +107,8 @@ class KernelVersion:
         return plat in self.platforms
 
 
-#: Compiled-in baseline, newest first. Matches the Node SDK catalogue.
+#: The one version compiled in: what new profiles get. Every other kernel comes
+#: from the manifest at runtime, so the default moves only with a release.
 KERNEL_VERSIONS: List[KernelVersion] = [
     KernelVersion(
         version="150.0.7871.182",
@@ -116,24 +120,12 @@ KERNEL_VERSIONS: List[KernelVersion] = [
             "linux": KernelAsset(
                 "https://download.antibrow.com/fp-chromium-150-linux64.zip", "chrome"
             ),
-            # macOS ships one universal (x86_64 + arm64) bundle, so there is a
-            # single darwin asset rather than one per arch. The executable lives
-            # inside the .app, hence the nested exe_rel_path.
+            "linux-arm64": KernelAsset(
+                "https://download.antibrow.com/fp-chromium-150-linuxarm64.zip", "chrome"
+            ),
             "darwin": KernelAsset(
                 "https://download.antibrow.com/fp-chromium-150-mac-universal.zip",
                 "Chromium.app/Contents/MacOS/Chromium",
-            ),
-        },
-    ),
-    KernelVersion(
-        version="149.0.7827.201",
-        label="Chrome 149",
-        platforms={
-            "win32": KernelAsset(
-                "https://download.antibrow.com/fp-chromium-149-win64.zip", "chrome.exe"
-            ),
-            "linux": KernelAsset(
-                "https://download.antibrow.com/fp-chromium-149-linux64.zip", "chrome"
             ),
         },
     ),
@@ -148,7 +140,8 @@ def current_platform() -> str:
     if sys.platform.startswith("win"):
         return "win32"
     if sys.platform.startswith("linux"):
-        return "linux"
+        # arm64 needs its own build; x86_64/i686 both take the linux64 asset.
+        return "linux-arm64" if _machine().lower() in _ARM64_MACHINES else "linux"
     if sys.platform == "darwin":
         return "darwin"
     raise UnsupportedPlatformError(
@@ -265,6 +258,113 @@ def refresh_kernel_catalogue(manifest_url: str = KERNEL_MANIFEST_URL) -> bool:
         return True
     except Exception:
         return False
+
+
+#: Bare list in the Node SDK's shape (camelCase keys): one shared cache dir.
+KERNEL_VERSION_CACHE_FILE = "kernel-versions-cache.json"
+
+KERNEL_MANIFEST_TTL_SECONDS = 60 * 60
+
+
+def _cache_file(cache_dir: Path | str) -> Path:
+    return Path(cache_dir) / KERNEL_VERSION_CACHE_FILE
+
+
+def _version_to_cache_entry(kv: KernelVersion) -> dict:
+    return {
+        "version": kv.version,
+        "label": kv.label,
+        "platforms": {
+            plat: {
+                "downloadUrl": asset.download_url,
+                "exeRelPath": asset.exe_rel_path,
+                **({"build": asset.build} if asset.build else {}),
+            }
+            for plat, asset in kv.platforms.items()
+        },
+    }
+
+
+def _version_from_cache_entry(row: object) -> Optional[KernelVersion]:
+    if not isinstance(row, dict):
+        return None
+    version = row.get("version")
+    platforms = row.get("platforms")
+    if not isinstance(version, str) or not isinstance(platforms, dict):
+        return None
+    assets: Dict[str, KernelAsset] = {}
+    for plat, raw in platforms.items():
+        if plat not in SUPPORTED_PLATFORMS or not isinstance(raw, dict):
+            continue
+        url = raw.get("downloadUrl")
+        if not isinstance(url, str) or not url:
+            continue
+        exe = raw.get("exeRelPath")
+        assets[plat] = KernelAsset(
+            url,
+            exe if isinstance(exe, str) and exe else _default_exe_rel_path(plat),
+            raw.get("build") if isinstance(raw.get("build"), str) else None,
+        )
+    if not assets:
+        return None
+    label = row.get("label")
+    return KernelVersion(version, label if isinstance(label, str) else version, assets)
+
+
+def load_cached_kernel_versions(cache_dir: Path | str) -> List[KernelVersion]:
+    """Versions saved by a previous fetch."""
+    try:
+        rows = json.loads(_cache_file(cache_dir).read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(rows, list):
+        return []
+    parsed = [_version_from_cache_entry(row) for row in rows]
+    return [kv for kv in parsed if kv is not None]
+
+
+def _write_cached_kernel_versions(cache_dir: Path | str, versions: List[KernelVersion]) -> None:
+    try:
+        directory = Path(cache_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        _cache_file(directory).write_text(
+            json.dumps([_version_to_cache_entry(kv) for kv in versions]), encoding="utf-8"
+        )
+    except OSError:
+        pass  # best-effort: a missing cache only costs one fetch next time
+
+
+def _cached_age_seconds(cache_dir: Path | str) -> float:
+    try:
+        return max(0.0, time.time() - _cache_file(cache_dir).stat().st_mtime)
+    except OSError:
+        return float("inf")
+
+
+def refresh_kernel_versions(
+    cache_dir: Path | str,
+    force: bool = False,
+    ttl_seconds: Optional[float] = None,
+    manifest_url: str = KERNEL_MANIFEST_URL,
+) -> bool:
+    """Register the cached catalogue, then re-fetch once it is older than
+    ``ttl_seconds``. Never raises; True only when a fetch actually happened.
+    """
+    cached = load_cached_kernel_versions(cache_dir)
+    if cached:
+        register_kernel_versions(cached)
+
+    ttl = KERNEL_MANIFEST_TTL_SECONDS if ttl_seconds is None else ttl_seconds
+    if not force and cached and _cached_age_seconds(cache_dir) < ttl:
+        return False
+
+    try:
+        remote = fetch_remote_kernel_versions(manifest_url)
+    except Exception:
+        return False  # offline / CDN hiccup: baseline + cache still resolve
+    register_kernel_versions(remote)
+    _write_cached_kernel_versions(cache_dir, remote)
+    return True
 
 
 def default_kernel_version() -> KernelVersion:
@@ -560,7 +660,7 @@ def ensure_kernel(
     exe_path = target_dir / asset.exe_rel_path
 
     if not force and exe_path.exists():
-        if plat == "linux":
+        if _is_linux_asset(plat):
             chmod_kernel_binaries(exe_path.parent)
         return exe_path
 
@@ -596,7 +696,7 @@ def ensure_kernel(
                 on_progress("Verifying kernel signature")
             verify_darwin_bundle_signature(target_dir / asset.exe_rel_path.split("/")[0])
 
-        if plat == "linux":
+        if _is_linux_asset(plat):
             chmod_kernel_binaries(exe_path.parent)
         if asset.build:
             write_installed_kernel_build(cache, version.version, asset.build)

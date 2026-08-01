@@ -1,19 +1,13 @@
 /**
- * Floating label pinned to the top of the page, so a window can be told apart
- * at a glance. `document.title` is deliberately left alone, so the profile name
- * never leaks into the page title.
+ * Floating label pinned to the top of the page, so windows can be told apart.
+ * `document.title` is left alone so the profile name never leaks into it.
  *
- * The label used to be shipped as generated JS source with the caller's text
- * and colour spliced in. That form had two problems: the colour was never
- * escaped at all, so a crafted `color` executed as code in every page (reachable
- * from MCP, where an agent chooses the value), and static analysers reasonably
- * read "build a script string, then evaluate it" as dynamic code generation.
- * Both go away by passing the values to Playwright as a serialised argument.
+ * Values are passed to Playwright as a serialised argument, never spliced into
+ * generated script source: `color` is caller-controlled (MCP agents pick it).
  */
 
-// `installLabel` runs inside the page, not in Node. The project's `lib` is
-// Node-only (see tsconfig), so the browser globals it touches are declared here,
-// file-scoped, rather than pulled in program-wide.
+// `installLabel` runs in the page; the project's `lib` is Node-only, so declare
+// the browser globals it touches here rather than program-wide.
 declare const document: any
 declare const window: any
 
@@ -26,12 +20,8 @@ const HEX_COLOR = /^#[0-9a-fA-F]{6}$/
 const DEFAULT_COLOR = '#333333'
 
 /**
- * Normalise a label + colour into the argument for `installLabel`, or null when
- * there is no label to draw.
- *
- * The colour is validated rather than trusted: it reaches `style.cssText`, so a
- * value that is not a plain 6-digit hex falls back to the default instead of
- * being passed through.
+ * Null when there is nothing to draw. The colour reaches `style.cssText`, so
+ * anything but a 6-digit hex falls back to the default.
  */
 export function labelOptions(label: string, color?: string): LabelOptions | null {
   if (!label) return null
@@ -41,11 +31,7 @@ export function labelOptions(label: string, color?: string): LabelOptions | null
   }
 }
 
-/**
- * Draw the label. Runs inside the page, so it has to stay self-contained:
- * Playwright serialises it with Function.prototype.toString and no closure
- * variable survives that.
- */
+/** Runs in the page: must stay self-contained, no closure variables survive. */
 export function installLabel(opts: LabelOptions): void {
   const labelText = opts.labelText
   const bgColor = opts.bgColor

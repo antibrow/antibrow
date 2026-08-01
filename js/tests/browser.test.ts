@@ -20,14 +20,14 @@ const openProfileSpy = vi.fn(async () => fakeSession)
 const licenseSpy = vi.fn(async () => ({ token: 'tok', exp: Math.floor(Date.now() / 1000) + 86400, mi: 10, sync: true }))
 const installedKernelUpdatesSpy = vi.fn((): Array<Record<string, unknown>> => [])
 const ensureKernelSpy = vi.fn(async () => 'C:/kernels/chrome.exe')
+const refreshKernelVersionsSpy = vi.fn(async () => undefined)
 
 vi.mock('../src/engine', () => ({
   openProfile: (...args: unknown[]) => openProfileSpy(...args),
   getLicenseToken: (...args: unknown[]) => licenseSpy(...(args as [])),
   ensureKernel: (...args: unknown[]) => ensureKernelSpy(...(args as [])),
   findKernelVersion: (v: string) => ({ version: v, label: v, platforms: {} }),
-  fetchRemoteKernelVersions: vi.fn(async () => []),
-  registerKernelVersions: vi.fn(),
+  refreshKernelVersions: (...args: unknown[]) => refreshKernelVersionsSpy(...(args as [])),
   installedKernelUpdates: (...args: unknown[]) => installedKernelUpdatesSpy(...(args as [])),
 }))
 

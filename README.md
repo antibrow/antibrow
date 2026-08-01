@@ -88,7 +88,7 @@ other, with the identical fingerprint.
 
 ## Platforms
 
-Windows x64, macOS (universal) and Linux x64.
+Windows x64, macOS (universal) and Linux x64 / arm64.
 
 ## Licensing
 

@@ -4,34 +4,32 @@ import https from 'node:https'
 import http from 'node:http'
 import { execFile, spawnSync } from 'node:child_process'
 
-export type SupportedPlatform = 'win32' | 'linux' | 'darwin'
+/** Only linux is split by arch: mac is universal, windows is x64 only. */
+export type SupportedPlatform = 'win32' | 'linux' | 'linux-arm64' | 'darwin'
+
+function isLinuxAsset(platform: SupportedPlatform): boolean {
+  return platform === 'linux' || platform === 'linux-arm64'
+}
 
 export interface KernelPlatformAsset {
   downloadUrl: string
   /** Path to the browser executable relative to the extracted kernel directory. */
   exeRelPath: string
-  /**
-   * Opaque build identifier for this (version x platform). A rebuilt same-version
-   * zip keeps `version`/`downloadUrl` but bumps `build`, which is how an already
-   * installed kernel is detected as out of date. Undefined for the compiled-in
-   * baseline, which carries no build metadata.
-   */
+  /** Opaque freshness marker; a rebuilt same-version zip bumps it. */
   build?: string
 }
 
 export interface KernelVersion {
   version: string
   label: string
-  /**
-   * Download assets per platform. A version only carries the platforms it was
-   * actually built for; enumerate with `kernelAvailableOnPlatform` /
-   * `kernelsForPlatform` rather than indexing blindly.
-   */
+  /** Only the platforms this version was built for. */
   platforms: Partial<Record<SupportedPlatform, KernelPlatformAsset>>
 }
 
-// Newest first. Versions coexist and are selectable per profile; existing
-// profiles keep whatever version they were created with.
+/**
+ * The one version compiled in: what new profiles get. Every other kernel comes
+ * from the manifest at runtime, so the default moves only with a release.
+ */
 export const KERNEL_VERSIONS: KernelVersion[] = [
   {
     version: '150.0.7871.182',
@@ -45,32 +43,18 @@ export const KERNEL_VERSIONS: KernelVersion[] = [
         downloadUrl: 'https://download.antibrow.com/fp-chromium-150-linux64.zip',
         exeRelPath: 'chrome',
       },
-      // macOS ships one universal (x86_64 + arm64) bundle, so there is a single
-      // darwin asset rather than one per arch. The executable lives inside the
-      // .app, hence the nested exeRelPath.
+      'linux-arm64': {
+        downloadUrl: 'https://download.antibrow.com/fp-chromium-150-linuxarm64.zip',
+        exeRelPath: 'chrome',
+      },
       darwin: {
         downloadUrl: 'https://download.antibrow.com/fp-chromium-150-mac-universal.zip',
         exeRelPath: 'Chromium.app/Contents/MacOS/Chromium',
       },
     },
   },
-  {
-    version: '149.0.7827.201',
-    label: 'Chrome 149',
-    platforms: {
-      win32: {
-        downloadUrl: 'https://download.antibrow.com/fp-chromium-149-win64.zip',
-        exeRelPath: 'chrome.exe',
-      },
-      linux: {
-        downloadUrl: 'https://download.antibrow.com/fp-chromium-149-linux64.zip',
-        exeRelPath: 'chrome',
-      },
-    },
-  },
 ]
 
-/** The kernel new profiles get: newest version built for the current platform. */
 export const DEFAULT_KERNEL_VERSION: KernelVersion = pickDefaultKernel()
 
 function pickDefaultKernel(): KernelVersion {
@@ -87,7 +71,6 @@ function pickDefaultKernel(): KernelVersion {
   return KERNEL_VERSIONS[0]
 }
 
-/** Default location of the remote kernel manifest. */
 export const KERNEL_MANIFEST_URL = 'https://download.antibrow.com/fp-browser-versions.json'
 
 interface RemoteKernelEntry {
@@ -102,10 +85,10 @@ interface RemoteKernelEntry {
 const MANIFEST_PLATFORM: Record<string, SupportedPlatform> = {
   win64: 'win32',
   linux64: 'linux',
+  linuxarm64: 'linux-arm64',
   'mac-universal': 'darwin',
 }
 
-/** Fallback when a manifest row omits exe_rel_path. */
 function defaultExeRelPath(platform: SupportedPlatform): string {
   if (platform === 'win32') return 'chrome.exe'
   if (platform === 'darwin') return 'Chromium.app/Contents/MacOS/Chromium'
@@ -129,12 +112,10 @@ function mergePlatformsInto(target: KernelVersion, platforms: KernelVersion['pla
     if (!incoming) continue
     const existing = target.platforms[key]
     if (!existing) {
-      // First writer wins for the asset: baseline over remote.
+      // Baseline URLs win over remote ones; only `build` tracks the latest seen.
       target.platforms[key] = { ...incoming }
       continue
     }
-    // `build` is a freshness signal rather than an identifier, so the latest
-    // one seen wins while the URL stays first-writer-wins.
     if (incoming.build && existing.build !== incoming.build) existing.build = incoming.build
   }
 }
@@ -149,7 +130,7 @@ function compareVersionsDesc(a: string, b: string): number {
   return 0
 }
 
-/** Compiled-in versions merged with runtime-registered ones, newest first. */
+/** Baseline merged with runtime-registered versions, newest first. */
 export function allKernelVersions(): KernelVersion[] {
   const byVersion = new Map<string, KernelVersion>()
   const add = (kv: KernelVersion): void => {
@@ -162,7 +143,7 @@ export function allKernelVersions(): KernelVersion[] {
   return [...byVersion.values()].sort((a, b) => compareVersionsDesc(a.version, b.version))
 }
 
-/** Register runtime-discovered kernel versions (idempotent; augments only). */
+/** Register manifest-discovered versions (idempotent; augments only). */
 export function registerKernelVersions(versions: KernelVersion[]): void {
   for (const v of versions) {
     if (!v?.version || !v.platforms) continue
@@ -173,9 +154,8 @@ export function registerKernelVersions(versions: KernelVersion[]): void {
 }
 
 /**
- * Fetch and parse the remote kernel manifest. Relative `download_url` values are
- * resolved against the manifest origin, so the same manifest works from a mirror.
- * Throws on network/parse failure; treat that as "no remote".
+ * Relative `download_url`s resolve against the manifest origin, so a mirrored
+ * manifest works unchanged. Throws on network/parse failure.
  */
 export async function fetchRemoteKernelVersions(manifestUrl: string = KERNEL_MANIFEST_URL): Promise<KernelVersion[]> {
   const res = await fetch(cacheBustUrl(manifestUrl), { headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' } })
@@ -200,6 +180,65 @@ export async function fetchRemoteKernelVersions(manifestUrl: string = KERNEL_MAN
   return [...byVersion.values()]
 }
 
+/** Bare `KernelVersion[]`, shared with other clients in the same cache dir. */
+export const KERNEL_VERSION_CACHE_FILE = 'kernel-versions-cache.json'
+
+export const KERNEL_MANIFEST_TTL_MS = 60 * 60 * 1000
+
+function kernelVersionCachePath(cacheDir: string): string {
+  return path.join(cacheDir, KERNEL_VERSION_CACHE_FILE)
+}
+
+/** Versions saved by a previous fetch. */
+export function loadCachedKernelVersions(cacheDir: string): KernelVersion[] {
+  try {
+    const cached = JSON.parse(fs.readFileSync(kernelVersionCachePath(cacheDir), 'utf8')) as KernelVersion[]
+    return Array.isArray(cached) ? cached : []
+  } catch {
+    return []
+  }
+}
+
+function cachedKernelVersionsAge(cacheDir: string): number {
+  try {
+    return Date.now() - fs.statSync(kernelVersionCachePath(cacheDir)).mtimeMs
+  } catch {
+    return Infinity
+  }
+}
+
+function writeCachedKernelVersions(cacheDir: string, versions: KernelVersion[]): void {
+  try {
+    fs.mkdirSync(cacheDir, { recursive: true })
+    fs.writeFileSync(kernelVersionCachePath(cacheDir), JSON.stringify(versions), 'utf8')
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
+ * Register the cached catalogue, then re-fetch the manifest once that cache is
+ * older than `ttlMs`. Never throws: offline leaves baseline + cache in place.
+ */
+export async function refreshKernelVersions(
+  cacheDir: string,
+  opts?: { force?: boolean; ttlMs?: number; manifestUrl?: string },
+): Promise<void> {
+  const cached = loadCachedKernelVersions(cacheDir)
+  if (cached.length) registerKernelVersions(cached)
+
+  const ttl = opts?.ttlMs ?? KERNEL_MANIFEST_TTL_MS
+  if (!opts?.force && cached.length && cachedKernelVersionsAge(cacheDir) < ttl) return
+
+  try {
+    const remote = await fetchRemoteKernelVersions(opts?.manifestUrl)
+    registerKernelVersions(remote)
+    writeCachedKernelVersions(cacheDir, remote)
+  } catch {
+    /* offline: baseline + cache still resolve */
+  }
+}
+
 /** Look up a version string, falling back to DEFAULT_KERNEL_VERSION. */
 export function findKernelVersion(version: string): KernelVersion {
   return allKernelVersions().find((kv) => kv.version === version) ?? DEFAULT_KERNEL_VERSION
@@ -208,12 +247,12 @@ export function findKernelVersion(version: string): KernelVersion {
 /** Resolve the current process platform to a SupportedPlatform key. */
 export function currentPlatform(): SupportedPlatform {
   if (process.platform === 'win32') return 'win32'
-  if (process.platform === 'linux') return 'linux'
+  // arm64 linux needs its own build; x64/x86 both take the linux64 asset.
+  if (process.platform === 'linux') return process.arch === 'arm64' ? 'linux-arm64' : 'linux'
   if (process.platform === 'darwin') return 'darwin'
   throw new Error(`Unsupported platform: ${process.platform}. The kernel ships for win32, linux and darwin.`)
 }
 
-/** Get the platform-specific asset for a kernel version. */
 export function kernelAsset(kv: KernelVersion, platform?: SupportedPlatform): KernelPlatformAsset {
   const p = platform ?? currentPlatform()
   const asset = kv.platforms[p]
@@ -221,13 +260,12 @@ export function kernelAsset(kv: KernelVersion, platform?: SupportedPlatform): Ke
   return asset
 }
 
-/** Whether this kernel version was built for the given platform (default: current). */
 export function kernelAvailableOnPlatform(kv: KernelVersion, platform?: SupportedPlatform): boolean {
   const p = platform ?? currentPlatform()
   return Boolean(kv.platforms[p])
 }
 
-/** Versions that have a build for the given platform (newest first). */
+/** Versions with a build for this platform, newest first. */
 export function kernelsForPlatform(platform?: SupportedPlatform): KernelVersion[] {
   return allKernelVersions().filter((kv) => kernelAvailableOnPlatform(kv, platform))
 }
@@ -238,10 +276,7 @@ export function kernelDir(cacheDir: string, version: string): string {
 
 const KERNEL_BUILD_MARKER = '.fp-build'
 
-/**
- * The build recorded when this kernel was downloaded, or undefined when unknown.
- * Unknown should be treated as up to date rather than as a pending update.
- */
+/** Build recorded at download time; unknown counts as up to date. */
 export function installedKernelBuild(cacheDir: string, version: string): string | undefined {
   try {
     const raw = fs.readFileSync(path.join(kernelDir(cacheDir, version), KERNEL_BUILD_MARKER), 'utf8').trim()
@@ -251,7 +286,6 @@ export function installedKernelBuild(cacheDir: string, version: string): string 
   }
 }
 
-/** Record the build string for an installed kernel version (best-effort). */
 export function writeInstalledKernelBuild(cacheDir: string, version: string, build: string): void {
   try {
     fs.mkdirSync(kernelDir(cacheDir, version), { recursive: true })
@@ -270,7 +304,6 @@ export function isKernelInstalled(cacheDir: string, kv: KernelVersion, platform?
   return fs.existsSync(kernelExePath(cacheDir, kv, platform))
 }
 
-/** Versions currently installed for this platform. */
 export function listInstalledKernels(cacheDir: string, platform?: SupportedPlatform): string[] {
   return allKernelVersions().filter((kv) => isKernelInstalled(cacheDir, kv, platform)).map((kv) => kv.version)
 }
@@ -279,20 +312,16 @@ export interface KernelUpdateStatus {
   version: string
   label: string
   installed: boolean
-  /** Build recorded when this kernel was installed (undefined if unknown). */
   installedBuild?: string
-  /** Build currently published for this platform (undefined offline). */
+  /** Published build for this platform; undefined offline. */
   availableBuild?: string
-  /** True when a newer build than the installed one is published. */
   updateAvailable: boolean
 }
 
 /**
- * Update status for one installed kernel version, or null when it isn't installed
- * for this platform. This is offline: the comparison is only meaningful after
- * `registerKernelVersions(await fetchRemoteKernelVersions())` has merged the
- * published builds. An install with no recorded build adopts the current one, so
- * an unverifiable drift is never reported as an update.
+ * Null when not installed here. Purely local, so it is only meaningful after a
+ * refresh; an install with no recorded build adopts the current one instead of
+ * reporting a drift it cannot verify.
  */
 export function kernelUpdateStatus(
   cacheDir: string,
@@ -318,7 +347,6 @@ export function kernelUpdateStatus(
   }
 }
 
-/** Update status for every installed kernel on this platform. */
 export function installedKernelUpdates(cacheDir: string, platform?: SupportedPlatform): KernelUpdateStatus[] {
   const plat = platform ?? currentPlatform()
   return kernelsForPlatform(plat)
@@ -326,7 +354,6 @@ export function installedKernelUpdates(cacheDir: string, platform?: SupportedPla
     .filter((s): s is KernelUpdateStatus => s != null)
 }
 
-/** Total on-disk size (bytes) of an installed kernel directory. */
 export function kernelDirSize(cacheDir: string, version: string): number {
   const dir = kernelDir(cacheDir, version)
   let total = 0
@@ -353,15 +380,13 @@ export function kernelDirSize(cacheDir: string, version: string): number {
   return total
 }
 
-/** Remove an installed kernel directory. Idempotent. */
 export function deleteKernel(cacheDir: string, version: string): void {
   fs.rmSync(kernelDir(cacheDir, version), { recursive: true, force: true })
 }
 
 /**
- * Ensure the kernel for the current platform is downloaded and extracted, and
- * return the path to the browser executable. Idempotent unless `force` is set,
- * which re-downloads a rebuilt kernel published under the same version number.
+ * Download + extract if needed; returns the executable path. `force` re-downloads
+ * a rebuilt kernel published under the same version number.
  */
 export async function ensureKernel(
   cacheDir: string,
@@ -374,7 +399,7 @@ export async function ensureKernel(
   const exePath = path.join(kernelDir(cacheDir, kv.version), asset.exeRelPath)
 
   if (!opts?.force && fs.existsSync(exePath)) {
-    if (platform === 'linux') chmodKernelBinaries(path.dirname(exePath))
+    if (isLinuxAsset(platform)) chmodKernelBinaries(path.dirname(exePath))
     return exePath
   }
 
@@ -383,8 +408,8 @@ export async function ensureKernel(
   const zipPath = path.join(cacheDir, `kernel-${kv.version}-${platform}.zip`)
 
   try {
-    // Extract in place rather than into a temp dir and rename: on Windows the
-    // rename fails with EPERM while antivirus holds a lock on fresh binaries.
+    // In place, not temp-dir-then-rename: on Windows the rename hits EPERM while
+    // antivirus holds a lock on the fresh binaries.
     fs.rmSync(kDir, { recursive: true, force: true })
     fs.mkdirSync(kDir, { recursive: true })
 
@@ -393,9 +418,8 @@ export async function ensureKernel(
     await extractKernelZip(zipPath, kDir, onProgress)
 
     if (!fs.existsSync(exePath)) {
-      // Downloaded and extracted, yet the exe is gone: on Windows this is nearly
-      // always antivirus quarantining the unsigned binary. Say so, instead of
-      // re-downloading forever on every launch.
+      // Extracted but the exe is gone: on Windows this is antivirus quarantine.
+      // Say so rather than re-downloading forever.
       throw new Error(
         `Kernel downloaded but ${asset.exeRelPath} is missing after extraction. ` +
         `This usually means antivirus/Windows Defender quarantined the kernel — ` +
@@ -403,11 +427,11 @@ export async function ensureKernel(
       )
     }
 
-    // Helper binaries need +x or Chrome aborts on posix_spawn EPERM.
-    if (platform === 'linux') chmodKernelBinaries(path.dirname(exePath))
+    // Helper binaries need +x or the browser aborts on posix_spawn EPERM.
+    if (isLinuxAsset(platform)) chmodKernelBinaries(path.dirname(exePath))
 
-    // The mac kernel is a signed .app; a broken seal here means the extraction
-    // mangled the bundle (see extractKernelZip). Catch it now, not at launch.
+    // A broken seal means the extraction mangled the bundle (see
+    // extractKernelZip). Catch it here, not at launch.
     if (platform === 'darwin') {
       onProgress?.('Verifying kernel signature')
       verifyDarwinBundleSignature(path.join(kDir, asset.exeRelPath.split('/')[0]))
@@ -415,7 +439,7 @@ export async function ensureKernel(
 
     if (asset.build) writeInstalledKernelBuild(cacheDir, kv.version, asset.build)
   } catch (e) {
-    // Never leave a half-installed dir: the next launch would treat it as ready.
+    // A half-installed dir would look ready to the next launch.
     try { fs.rmSync(kDir, { recursive: true, force: true }) } catch { /* ignore */ }
     throw e
   } finally {
@@ -436,10 +460,7 @@ function chmodKernelBinaries(dir: string): void {
   } catch {}
 }
 
-/**
- * Kernels are published under a fixed filename, so a rebuild can still be served
- * from a CDN edge cache. A random query param keeps the cache key unique.
- */
+/** Kernels keep a fixed filename, so a rebuild can sit in a CDN edge cache. */
 function cacheBustUrl(url: string): string {
   const sep = url.includes('?') ? '&' : '?'
   return `${url}${sep}_cb=${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
@@ -494,14 +515,9 @@ function downloadFile(
 }
 
 /**
- * Extract a kernel zip. Exported for tests.
- *
- * macOS goes through `ditto` rather than the JS unzip path: the mac kernel is a
- * .app bundle whose framework directories are symlinks, and it is published with
- * `ditto -c -k`. A plain zip reader writes those symlink entries out as regular
- * files containing the target path, which breaks the bundle's code signature —
- * the app then dies on launch with no usable error. `ditto -x -k` is the exact
- * inverse of how it was packed, so symlinks, permission bits and xattrs survive.
+ * macOS must go through `ditto`: the .app has symlinked framework dirs and is
+ * packed with `ditto -c -k`, so a plain zip reader writes those symlinks out as
+ * regular files and breaks the code signature (the app then dies silently).
  */
 export async function extractKernelZip(
   zipPath: string,
@@ -519,10 +535,8 @@ export async function extractKernelZip(
         return
       }
 
-      // yauzl reports failures on several channels (the archive, each read
-      // stream, each write stream) and auto-closes on 'end'. Funnel everything
-      // through one settled flag so a late error cannot double-settle or
-      // double-close.
+      // yauzl fails on several channels (archive, each read/write stream) and
+      // auto-closes on 'end'; one flag keeps a late error from double-settling.
       let settled = false
       const fail = (err: Error): void => {
         if (settled) return
@@ -564,9 +578,8 @@ export async function extractKernelZip(
           const out = fs.createWriteStream(target)
           stream.on('error', fail)
           out.on('error', fail)
-          // Advance only once the file is fully on disk: lazyEntries keeps the
-          // extraction sequential, so a truncated write can never be masked by
-          // the next entry starting early.
+          // Advance only once the file is on disk: sequential extraction means a
+          // truncated write cannot be masked by the next entry.
           out.on('close', () => {
             if (settled) return
             count++
@@ -584,16 +597,12 @@ export async function extractKernelZip(
 }
 
 /**
- * Resolve a zip entry name against `destDir`, refusing anything that escapes it.
- *
- * Zip Slip: a hostile archive can carry entries named `../../x` or `/etc/x`, and
- * a plain `path.join(destDir, entry)` happily writes them outside the kernel
- * directory. Kernel zips are fetched over the network, so the archive is not
- * trusted input no matter how the download went. Exported for tests.
+ * Zip Slip guard: entries named `../../x` or `/etc/x` would otherwise be written
+ * outside `destDir`. Archives arrive over the network, so they are not trusted.
  */
 export function resolveEntryPath(destDir: string, entryName: string): string {
-  // Zip stores backslash-separated names too; normalise before resolving so a
-  // `..\..\x` entry cannot slip past the prefix check on POSIX.
+  // Zip also stores backslash names; normalise so `..\..\x` cannot slip past
+  // the prefix check on POSIX.
   const normalized = entryName.replace(/\\/g, '/')
   const root = path.resolve(destDir)
   const target = path.resolve(root, normalized)
@@ -611,8 +620,7 @@ function extractZipWithDitto(
   destDir: string,
   onProgress?: (message: string) => void,
 ): Promise<void> {
-  // No 'Extracting kernel' message here: ensureKernel already emits it right
-  // before calling us, and ditto reports no incremental progress.
+  // ensureKernel already reported 'Extracting kernel'; ditto has no progress.
   return new Promise((resolve, reject) => {
     execFile('/usr/bin/ditto', ['-x', '-k', zipPath, destDir], (err, _stdout, stderr) => {
       if (err) {
@@ -626,12 +634,8 @@ function extractZipWithDitto(
 }
 
 /**
- * Verify an extracted .app bundle still satisfies its own code signature.
- *
- * Worth the extra seconds on a fresh download: a bundle whose seal is broken is
- * killed by the OS at launch with no diagnosable error, so failing loudly here —
- * while we still know a download just happened — is the difference between
- * "re-download the kernel" and an unexplained crash. Exported for tests.
+ * A broken seal is fatal at launch with no diagnosable error, so fail here while
+ * we still know a download just happened.
  */
 export function verifyDarwinBundleSignature(appPath: string): void {
   const res = spawnSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', appPath], {

@@ -405,7 +405,7 @@ Selenium cannot attach to a CDP-only endpoint without a matching chromedriver, s
 
 ## Docker
 
-The Linux kernel runs headful under Xvfb — real headless Chromium has its own fingerprint, so the image renders to a virtual display instead.
+The Linux kernel runs headful under Xvfb - real headless Chromium has its own fingerprint, so the image renders to a virtual display instead. The image below works on both `linux/amd64` and `linux/arm64`; the matching kernel build is chosen from the container's CPU, so nothing here is architecture-specific.
 
 ```dockerfile
 FROM python:3.12-slim
@@ -454,8 +454,9 @@ python -m antibrow version                                        # SDK + defaul
 | Windows 10/11 x64 | Supported | Headful, or headless via off-screen window |
 | macOS 12+ (Apple silicon + Intel) | Supported | Universal build. Headful — `headless=True` has no effect here yet |
 | Linux x64 (glibc) | Supported | Needs Xvfb for headless; container flags applied automatically |
-| Docker (linux/amd64) | Supported | See [Docker](#docker) |
-| Linux arm64 / musl | Not yet | No kernel build |
+| Linux arm64 (glibc) | Supported | Separate arm64 build, picked automatically from the CPU |
+| Docker (linux/amd64, linux/arm64) | Supported | See [Docker](#docker) |
+| Linux musl (Alpine) | Not yet | No kernel build |
 
 Python 3.9 – 3.13. The kernel is cached once per version — ~190 MB to download on
 Windows and Linux, ~320 MB for the macOS universal bundle (it carries both

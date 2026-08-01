@@ -61,7 +61,9 @@ def build_launch_args(
     Windows/Linux/macOS branches stay testable from any OS.
     """
     is_win = platform == "win32"
-    is_linux = platform == "linux"
+    # Both Linux asset keys: the container-only switches below are just as
+    # necessary on arm64, whose kernel ships as a separate build.
+    is_linux = platform in ("linux", "linux-arm64")
     args = [
         "--fp-config={0}".format(fp_config_path),
         "--fp-license={0}".format(license_token),

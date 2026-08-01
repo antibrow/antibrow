@@ -17,8 +17,7 @@ import {
   getLicenseToken,
   ensureKernel,
   findKernelVersion,
-  fetchRemoteKernelVersions,
-  registerKernelVersions,
+  refreshKernelVersions,
   installedKernelUpdates,
   type EngineSession,
   type KernelUpdateStatus,
@@ -42,10 +41,7 @@ export class AntiDetectBrowser {
   }> = new Map()
   private versionCheckPromise?: Promise<VersionCheckResult>
   private versionWarned = false
-  /**
-   * Profiles already ensured server-side this process. Only sync-capable plans
-   * need a server row, and skipping the round-trip keeps relaunch loops cheap.
-   */
+  /** Profiles already ensured server-side this process; keeps relaunches cheap. */
   private ensuredProfiles: Set<string> = new Set()
   private kernelUpdateChecked = false
 
@@ -224,16 +220,10 @@ export class AntiDetectBrowser {
     }
   }
 
-  /**
-   * Report which installed kernels have a newer build published. One entry per
-   * installed kernel; check `.updateAvailable`. Offline, nothing is flagged.
-   */
+  /** One entry per installed kernel; check `.updateAvailable`. */
   async checkKernelUpdates(): Promise<KernelUpdateStatus[]> {
-    try {
-      registerKernelVersions(await fetchRemoteKernelVersions())
-    } catch {
-      /* offline: compare against whatever is known locally */
-    }
+    // Forced: an explicit check must not answer from a cached manifest.
+    await refreshKernelVersions(this.cacheDir, { force: true })
     return installedKernelUpdates(this.cacheDir)
   }
 
@@ -259,10 +249,7 @@ export class AntiDetectBrowser {
       .catch(() => { /* offline: stay quiet */ })
   }
 
-  /**
-   * Update installed kernels to their latest published build, or just `version`
-   * when given. Returns the versions actually updated.
-   */
+  /** Update installed kernels (or just `version`); returns what was updated. */
   async updateKernel(version?: string, onProgress?: (message: string) => void): Promise<string[]> {
     const updates = await this.checkKernelUpdates()
     const targets = (version ? updates.filter((u) => u.version === version) : updates)

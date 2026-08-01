@@ -276,10 +276,7 @@ export async function downloadProfileState(options: {
   return await dataResponse.json() as ProfileState
 }
 
-/**
- * A managed proxy, as the server exposes it. The upstream endpoint is resolved
- * server-side, so clients only ever see the id, protocol and status.
- */
+/** The upstream endpoint stays server-side; clients see only id/protocol/status. */
 export interface ManagedProxy {
   id: string
   protocol: string
@@ -300,9 +297,8 @@ export interface ProxyQuota {
 export const DEFAULT_RELAY_HOST = 'proxy.antibrow.com'
 
 /**
- * Address a managed proxy as `relay://<apiKey>:<proxyId>@<host>`. The kernel
- * takes this as its `--proxy-server`; the exit endpoint is resolved server-side,
- * so no upstream credentials are ever handed to the browser.
+ * `relay://<apiKey>:<proxyId>@<host>` for `--proxy-server`: the exit endpoint is
+ * resolved server-side, so no upstream credentials reach the browser.
  */
 export function managedProxyToRelayUrl(
   apiKey: string,

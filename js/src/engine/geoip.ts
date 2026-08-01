@@ -116,10 +116,8 @@ function lookupViaHttpProxy(parsed: URL, timeoutMs: number): Promise<ProxyGeo> {
 }
 
 /**
- * Managed `relay://` proxies: the request goes to the relay host itself with the
- * real target in `X-Proxy-Target`, which is the same path the browser takes, so
- * the exit IP matches. Sent through `node:https` because `fetch` drops
- * `Proxy-Authorization`.
+ * Relay proxies: target rides in `X-Proxy-Target`, the same path the browser
+ * takes, so the exit IP matches. `node:https` because `fetch` drops auth.
  */
 function lookupViaRelayHeader(parsed: URL, timeoutMs: number): Promise<ProxyGeo> {
   const creds = `${decodeURIComponent(parsed.username)}:${decodeURIComponent(parsed.password ?? '')}`
@@ -181,9 +179,8 @@ function lookupViaSocks5(parsed: URL, timeoutMs: number): Promise<ProxyGeo> {
 }
 
 /**
- * Probe a proxy's exit node by sending a request through it. There is no
- * fallback that geo-locates the proxy hostname: that answers just as
- * confidently for a dead proxy, which is how a broken proxy looks healthy.
+ * Always goes through the proxy: a hostname fallback answers just as confidently
+ * for a dead proxy, which is how a broken one looks healthy.
  */
 export async function probeProxyExit(proxyUrl: string, timeoutMs = 10_000): Promise<ProxyProbeResult> {
   const start = Date.now()
@@ -212,10 +209,7 @@ export async function probeProxyExit(proxyUrl: string, timeoutMs = 10_000): Prom
   }
 }
 
-/**
- * Look up the GeoIP of a proxy's exit node. Supports HTTP(S), SOCKS5 and relay
- * proxies. Returns null on any error; use `probeProxyExit` when the reason matters.
- */
+/** HTTP(S)/SOCKS5/relay. Null on error; use `probeProxyExit` for the reason. */
 export async function lookupProxyGeo(proxyUrl: string, timeoutMs = 10_000): Promise<ProxyGeo | null> {
   return (await probeProxyExit(proxyUrl, timeoutMs)).geo ?? null
 }

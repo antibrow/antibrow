@@ -112,6 +112,12 @@ def prepare_launch(
     directory = Path(profile_dir).expanduser() if profile_dir else _config.profile_dir(profile, root)
     directory.mkdir(parents=True, exist_ok=True)
 
+    # Kernels published after this SDK was built are only known from the manifest,
+    # so resolve the catalogue before mapping a version string onto an asset. The
+    # result is cached for KERNEL_MANIFEST_TTL_SECONDS and offline is a no-op.
+    if not update_kernel:
+        _kernel.refresh_kernel_versions(root)
+
     # A profile that already exists keeps the kernel version frozen into its
     # persona; `kernel_version` only decides what a brand-new profile gets.
     default_kv = (
@@ -124,9 +130,10 @@ def prepare_launch(
     kv = _kernel.find_kernel_version(persona.kernel_version)
 
     if update_kernel:
-        # Opt-in: pull a rebuilt same-version kernel before launching. Offline
-        # is fine - we just keep whatever is installed.
-        if _kernel.refresh_kernel_catalogue():
+        # Opt-in: pull a rebuilt same-version kernel before launching. Acting on
+        # the published build must not read a stale cached manifest, hence force.
+        # Offline is fine - we just keep whatever is installed.
+        if _kernel.refresh_kernel_versions(root, force=True):
             kv = _kernel.find_kernel_version(persona.kernel_version)
         status = _kernel.kernel_update_status(root, kv.version)
         if status is not None and status.update_available:

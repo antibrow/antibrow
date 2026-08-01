@@ -73,10 +73,9 @@ export function unpackProfileCache(buf: Buffer, profileDir: string): void {
   new AdmZip(buf).extractAllTo(profileDir, /* overwrite */ true)
 }
 
-// Portable profile archive (.fpprofile): a zip holding manifest.json, the
-// passkey store, and a whitelist of browser state. The manifest's `profile`
-// object uses the launcher's snake_case schema; app-specific extras ride in a
-// separate top-level `antibrow` key that other readers ignore.
+// Portable archive (.fpprofile): manifest.json + passkeys + whitelisted browser
+// state. `manifest.profile` is the interchange snake_case schema; app-specific
+// extras ride in a top-level `antibrow` key that other readers ignore.
 
 /** Recommended file extension for a portable profile archive. */
 export const PROFILE_ARCHIVE_EXT = 'fpprofile'

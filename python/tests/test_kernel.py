@@ -72,11 +72,13 @@ def clean_registry():
 
 
 def test_baseline_versions_have_expected_platforms():
-    # Each baseline version is tested with its exact platform set, not derived from version ordering.
+    # The baseline is deliberately a single version - the one this release was
+    # tested against. Every other kernel, older majors included, comes from the
+    # manifest. Its platform set is asserted exactly, not derived from ordering.
     expected_platforms = {
-        "150.0.7871.182": {"win32", "linux", "darwin"},
-        "149.0.7827.201": {"win32", "linux"},
+        "150.0.7871.182": {"win32", "linux", "linux-arm64", "darwin"},
     }
+    assert {kv.version for kv in K.KERNEL_VERSIONS} == set(expected_platforms)
     for kv in K.KERNEL_VERSIONS:
         assert set(kv.platforms) == expected_platforms[kv.version]
         for plat, asset in kv.platforms.items():
@@ -105,7 +107,8 @@ def test_default_kernel_is_the_newest_baseline_build_for_this_platform():
 
 
 def test_find_kernel_version_falls_back_to_the_default():
-    assert K.find_kernel_version("149.0.7827.201").version == "149.0.7827.201"
+    # Not in the baseline and not registered: an unknown version resolves to the default.
+    assert K.find_kernel_version("149.0.7827.201").version == K.default_kernel_version().version
     assert K.find_kernel_version("999.0.0.0").version == K.default_kernel_version().version
     assert K.find_kernel_version(None).version == K.default_kernel_version().version
 

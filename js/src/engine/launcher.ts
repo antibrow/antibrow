@@ -74,8 +74,7 @@ function waitForDevToolsPort(
       }
     }
 
-    // The kernel does not write a DevToolsActivePort file, so readiness has to
-    // be polled over HTTP.
+    // No DevToolsActivePort file is written, so readiness must be polled.
     const tryHttp = () => {
       const req = http.get(
         `http://127.0.0.1:${cdpPort}/json/version`,
@@ -296,10 +295,9 @@ export function buildLaunchArgs(opts: BuildLaunchArgsOptions): string[] {
     '--no-first-run',
     '--no-default-browser-check',
     `--lang=${opts.language}`,
-    // Linux/Docker only: no sandbox (root, no user namespace), /tmp for shared
-    // memory (/dev/shm is capped at 64 MB) and software rendering (no real GPU).
-    // --no-zygote avoids a startup abort in the Linux builds. macOS needs none of
-    // this and disabling its sandbox would be a pure security downgrade.
+    // Linux/Docker: no user namespace, /dev/shm capped at 64 MB, no real GPU.
+    // --no-zygote avoids a startup abort in the Linux builds. macOS needs none
+    // of this and would only lose its sandbox.
     ...(isLinux ? ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
         '--disable-gpu', '--disable-software-rasterizer',
         '--disable-crash-reporter',
@@ -307,12 +305,9 @@ export function buildLaunchArgs(opts: BuildLaunchArgsOptions): string[] {
     // Windows headless: move the window off-screen rather than --headless=new,
     // which is detectable.
     ...(isWin && opts.headless ? ['--window-position=-10000,-10000', '--window-size=1,1'] : []),
-    // macOS only: ICU on macOS resolves Intl.* (locale, month names, display
-    // names, etc.) from CFLocale/AppleLanguages, not from --lang or the POSIX
-    // LANG/LC_ALL environment - those are silently ignored by the system ICU
-    // build the kernel links against. This NSUserDefaults argv pair is the
-    // only thing that actually steers it, which is why it is only meaningful
-    // on darwin; on Windows/Linux it would just be an unrecognised argument.
+    // macOS ICU resolves Intl.* from CFLocale/AppleLanguages and silently
+    // ignores --lang and LANG/LC_ALL, so this NSUserDefaults pair is the only
+    // way to steer it. Meaningless on Windows/Linux.
     ...(opts.platform === 'darwin' ? ['-AppleLanguages', `(${opts.language})`] : []),
   ]
 

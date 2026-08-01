@@ -185,15 +185,10 @@ export function personaToFpConfig(
       hardwareConcurrency: persona.hardwareConcurrency,
       deviceMemory: persona.deviceMemory,
       maxTouchPoints: 0,
-      // The kernel takes over the whole UA-CH metadata group, but only for the
-      // keys listed here - anything omitted falls back to the real host, which
-      // is how a Windows persona used to leak the host OS through
-      // userAgentData.platform on non-Windows hosts. Every key describes the
-      // same Windows 11 / x64 persona as `ua` above, so a future non-Windows
-      // persona has exactly one place to change this. Two naming traps:
-      // UA-CH `platform` says "Windows" (navigator.platform says "Win32"
-      // instead - do not copy that value here), and UA-CH `architecture`
-      // reports "x86" even on x64 hardware - `bitness` is what carries the 64.
+      // Every UA-CH key must be listed: an omitted one falls back to the real
+      // host, which is how a Windows persona used to leak the host OS. Two
+      // naming traps: `platform` is "Windows" (not navigator.platform's "Win32")
+      // and `architecture` is "x86" even on x64 - `bitness` carries the 64.
       uaData: {
         platform: 'Windows',
         platformVersion: '15.0.0',

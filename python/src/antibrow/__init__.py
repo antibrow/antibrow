@@ -66,7 +66,9 @@ from .kernel import (
     kernel_dir_size,
     kernels_for_platform,
     list_installed_kernels,
+    load_cached_kernel_versions,
     refresh_kernel_catalogue,
+    refresh_kernel_versions,
 )
 from .license import LicenseInfo, fetch_license_token, get_license_token
 from .persona import Persona, generate_persona, load_or_generate_persona, persona_to_fp_config
@@ -97,6 +99,8 @@ __all__ = [
     "list_installed_kernels",
     "installed_kernel_updates",
     "refresh_kernel_catalogue",
+    "refresh_kernel_versions",
+    "load_cached_kernel_versions",
     "kernel_dir",
     "kernel_dir_size",
     "delete_kernel",

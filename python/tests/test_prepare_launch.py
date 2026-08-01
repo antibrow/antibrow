@@ -42,10 +42,22 @@ def fake_license(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def no_network(monkeypatch):
-    """Any real geo lookup in this file is a bug - make it loud."""
+    """Any real geo lookup in this file is a bug - make it loud.
+
+    The manifest refresh that every launch now does is recorded instead of being
+    banned, so tests can assert when it is forced. Returns that call log.
+    """
     monkeypatch.setattr(
         B, "lookup_proxy_geo", lambda *a, **k: pytest.fail("unexpected network call")
     )
+    refreshes = []
+
+    def refresh(cache_dir, force=False, **kwargs):
+        refreshes.append({"cache_dir": cache_dir, "force": force})
+        return False
+
+    monkeypatch.setattr(B._kernel, "refresh_kernel_versions", refresh)
+    return refreshes
 
 
 def plan_for(tmp_path, **kwargs):
@@ -105,7 +117,24 @@ def test_explicit_profile_dir_wins_over_cache_dir(tmp_path, fake_kernel, fake_li
     assert plan.label == target.name
 
 
-def test_kernel_version_pins_new_profiles_only(tmp_path, fake_kernel, fake_license):
+def test_kernel_version_pins_new_profiles_only(tmp_path, fake_kernel, fake_license, monkeypatch):
+    # 149 is not compiled in any more: it reaches the catalogue the way the
+    # manifest delivers it, which is also what makes it pinnable.
+    monkeypatch.setattr(
+        K,
+        "_registered",
+        [
+            K.KernelVersion(
+                "149.0.7827.201",
+                "Chrome 149",
+                {
+                    K.current_platform(): K.KernelAsset(
+                        "https://download.antibrow.com/fp-chromium-149-test.zip", "chrome"
+                    )
+                },
+            )
+        ],
+    )
     old = plan_for(tmp_path, profile="pinned", kernel_version="149.0.7827.201")
     assert old.kernel_version == "149.0.7827.201"
     assert old.persona.chrome_major == 149
@@ -176,13 +205,16 @@ def test_secrets_are_redacted_for_logging(tmp_path, fake_kernel, fake_license):
     assert "shopper" not in repr(plan_for(tmp_path, profile="p1")) or True  # repr never raises
 
 
-def test_update_kernel_is_opt_in(tmp_path, fake_kernel, fake_license, monkeypatch):
-    calls = []
-    monkeypatch.setattr(B._kernel, "refresh_kernel_catalogue", lambda *a, **k: calls.append("refresh"))
+def test_every_launch_refreshes_the_catalogue_but_only_opt_in_forces_it(
+    tmp_path, fake_kernel, fake_license, no_network
+):
+    # Kernels published after this release are only resolvable via the manifest,
+    # so the default path refreshes too (cached inside refresh_kernel_versions).
+    # update_kernel acts on the published build, so it must not read a stale cache.
     plan_for(tmp_path, profile="p1")
-    assert calls == []
+    assert [c["force"] for c in no_network] == [False]
     plan_for(tmp_path, profile="p1", update_kernel=True)
-    assert calls == ["refresh"]
+    assert [c["force"] for c in no_network] == [False, True]
 
 
 def test_cache_dir_can_be_set_from_the_environment(tmp_path, monkeypatch):

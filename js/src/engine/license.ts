@@ -8,10 +8,7 @@ import os from 'node:os'
 
 const EXPIRY_SAFETY_MARGIN = 300
 
-/**
- * Resolved license, cached locally. `exp` gates the cache, `mi` is the
- * concurrency cap the kernel enforces, `sync` whether cloud sync is available.
- */
+/** `exp` gates the cache, `mi` is the kernel-enforced concurrency cap. */
 export interface LicenseInfo {
   token: string
   exp: number
@@ -19,10 +16,7 @@ export interface LicenseInfo {
   sync: boolean
 }
 
-/**
- * Read `exp`/`mi` out of a token payload, for the on-disk cache. The signature
- * is not checked here; the kernel does that.
- */
+/** For the on-disk cache only; the signature is checked by the kernel. */
 function parseTokenPayload(token: string): { exp?: number; mi?: number } {
   try {
     const b64 = token.split('.')[0]
@@ -110,10 +104,7 @@ function isFresh(info: LicenseInfo): boolean {
   return info.exp - Math.floor(Date.now() / 1000) > EXPIRY_SAFETY_MARGIN
 }
 
-/**
- * Get a license token. Cached locally and reused until it nears expiry, so a
- * launch only hits the network when the cached token is missing or stale.
- */
+/** Cached until it nears expiry, so most launches skip the network. */
 export async function getLicenseToken(opts?: {
   key?: string
   server?: string

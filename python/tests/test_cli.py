@@ -19,7 +19,8 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setenv(C.ENV_CACHE_DIR, str(tmp_path / "cache"))
     for var in (C.ENV_API_KEY, C.ENV_API_KEY_LEGACY, C.ENV_LICENSE_TOKEN):
         monkeypatch.delenv(var, raising=False)
-    # `info` refreshes the kernel manifest; keep the suite offline.
+    # `info` / `install` refresh the kernel manifest; keep the suite offline.
+    monkeypatch.setattr(K, "refresh_kernel_versions", lambda *a, **k: False)
     monkeypatch.setattr(K, "refresh_kernel_catalogue", lambda *a, **k: False)
 
 

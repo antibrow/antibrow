@@ -15,8 +15,7 @@ vi.mock('../../src/engine/downloader', () => ({
   KERNEL_VERSIONS: [],
   findKernelVersion: (v: string) => ({ version: v, label: `Chrome ${v}`, platforms: {} }),
   ensureKernel: async () => 'C:/kernels/chrome.exe',
-  fetchRemoteKernelVersions: async () => [],
-  registerKernelVersions: () => {},
+  refreshKernelVersions: async () => undefined,
   kernelUpdateStatus: () => null,
 }))
 

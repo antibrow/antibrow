@@ -6,8 +6,7 @@ import {
   KERNEL_VERSIONS,
   DEFAULT_KERNEL_VERSION,
   findKernelVersion,
-  fetchRemoteKernelVersions,
-  registerKernelVersions,
+  refreshKernelVersions,
   kernelUpdateStatus,
   type KernelVersion,
 } from './downloader'
@@ -17,7 +16,7 @@ import { getLicenseToken } from './license'
 import { launchKernel, type KernelSession } from './launcher'
 import { downloadProfileCache, uploadProfileCache } from './profile-cache'
 
-export { KERNEL_VERSIONS, DEFAULT_KERNEL_VERSION, ensureKernel, isKernelInstalled, findKernelVersion, listInstalledKernels, kernelDirSize, deleteKernel, kernelDir, kernelAvailableOnPlatform, kernelsForPlatform, allKernelVersions, registerKernelVersions, fetchRemoteKernelVersions, KERNEL_MANIFEST_URL, currentPlatform, installedKernelBuild, writeInstalledKernelBuild, kernelUpdateStatus, installedKernelUpdates } from './downloader'
+export { KERNEL_VERSIONS, DEFAULT_KERNEL_VERSION, ensureKernel, isKernelInstalled, findKernelVersion, listInstalledKernels, kernelDirSize, deleteKernel, kernelDir, kernelAvailableOnPlatform, kernelsForPlatform, allKernelVersions, registerKernelVersions, fetchRemoteKernelVersions, refreshKernelVersions, loadCachedKernelVersions, KERNEL_MANIFEST_URL, KERNEL_MANIFEST_TTL_MS, KERNEL_VERSION_CACHE_FILE, currentPlatform, installedKernelBuild, writeInstalledKernelBuild, kernelUpdateStatus, installedKernelUpdates } from './downloader'
 export type { KernelVersion, KernelUpdateStatus } from './downloader'
 export type { KernelSession as EngineSession } from './launcher'
 export { downloadProfileCache, uploadProfileCache, packProfileCache, unpackProfileCache, exportProfileArchive, importProfileArchive, PROFILE_ARCHIVE_EXT } from './profile-cache'
@@ -32,13 +31,13 @@ export function defaultCacheDir(): string {
 }
 
 export interface OpenProfileOptions {
-  /** API key — used to fetch a license token from the server. */
+  /** API key, exchanged for a license token. */
   key?: string
-  /** Server base URL — used with key to fetch the license token. */
+  /** License server base URL. */
   server?: string
-  /** Profile identity — used as the local cache subdirectory name. */
+  /** Profile name; also the cache subdirectory. */
   profileName: string
-  /** Human-friendly window/address label shown by the kernel. Defaults to profileName. */
+  /** Address-bar label. Defaults to profileName. */
   label?: string
   /** Pre-fetched license token, used instead of requesting a new one. */
   licenseToken?: string
@@ -47,24 +46,15 @@ export interface OpenProfileOptions {
   headless?: boolean
   /** Presigned download URL for the profile archive (restores browser state). */
   archiveGetUrl?: string
-  /**
-   * Presigned upload URL for the profile archive. Prefer `getArchivePutUrl`: a
-   * presign is short-lived and a browsing session routinely outlives it.
-   */
+  /** Prefer `getArchivePutUrl`: a presign rarely outlives a browsing session. */
   archivePutUrl?: string
-  /**
-   * Resolve the upload URL after the browser has exited. Takes precedence over
-   * `archivePutUrl`; returning undefined skips the upload.
-   */
+  /** Resolved after exit; wins over `archivePutUrl`. Undefined skips the upload. */
   getArchivePutUrl?: () => Promise<string | undefined>
   /** Root cache directory. Defaults to ~/.anti-detect-browser */
   cacheDir?: string
   /** Explicit profile directory; takes precedence over cacheDir + profileName. */
   profileDir?: string
-  /**
-   * Kernel version for new profiles. Existing profiles always use the version
-   * recorded in their persona.json.
-   */
+  /** For new profiles only; existing ones use their persona's version. */
   kernelVersion?: string
   /** Pull a newer build of this profile's kernel before launching. */
   updateKernelBeforeLaunch?: boolean
@@ -73,30 +63,21 @@ export interface OpenProfileOptions {
   apiLog?: ApiLogMode
   webauthnCapture?: boolean
   onProgress?: (message: string) => void
-  /**
-   * Archive transfer lifecycle: `download` runs before the browser starts,
-   * `upload` after it exits, i.e. after openProfile has already returned.
-   */
+  /** `download` runs before launch, `upload` after openProfile has returned. */
   onArchiveSync?: (e: ArchiveSyncEvent) => void
 }
 
 export interface ArchiveSyncEvent {
   phase: 'download' | 'upload'
   state: 'start' | 'done' | 'error'
-  /** Present when state is 'error'. The flow itself never throws on sync failure. */
+  /** Set when state is 'error'; sync failure never throws. */
   error?: string
 }
 
 export interface OpenedProfile extends KernelSession {
-  /**
-   * Exit geo of the proxy this session launched with. Same lookup that decides
-   * the browser timezone, so it is fresh for this launch.
-   */
+  /** Proxy exit geo from this launch; the same lookup that set the timezone. */
   geo?: ProxyGeo
-  /**
-   * The exit-triggered archive upload, once started. Drive off `onArchiveSync`
-   * rather than polling this.
-   */
+  /** The exit-triggered upload; prefer `onArchiveSync` over polling it. */
   archiveUpload?: Promise<void>
 }
 
@@ -119,6 +100,11 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
     )
   }
 
+  // Versions newer than this release exist only in the manifest, so resolve the
+  // catalogue first. `updateKernelBeforeLaunch` acts on the published build, so
+  // it cannot read a cached one.
+  await refreshKernelVersions(cacheDir, { force: opts.updateKernelBeforeLaunch })
+
   const defaultKv = opts.kernelVersion
     ? findKernelVersion(opts.kernelVersion)
     : DEFAULT_KERNEL_VERSION
@@ -126,15 +112,9 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
   opts.onProgress?.('Loading persona')
   const persona = loadOrGeneratePersona(profileDir, defaultKv.version)
 
-  let kv = findKernelVersion(persona.kernelVersion)
+  const kv = findKernelVersion(persona.kernelVersion)
 
   if (opts.updateKernelBeforeLaunch) {
-    try {
-      registerKernelVersions(await fetchRemoteKernelVersions())
-      kv = findKernelVersion(persona.kernelVersion)
-    } catch {
-      /* offline: keep the installed build */
-    }
     const status = kernelUpdateStatus(cacheDir, kv.version)
     if (status?.updateAvailable) {
       opts.onProgress?.(`Updating kernel ${kv.label} to the latest build`)
@@ -177,8 +157,8 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
   })
   if (geo) session.geo = geo
 
-  // Decided at launch so the exit hook exists before the browser can exit; the
-  // URL itself is resolved inside the hook.
+  // Decided at launch so the hook exists before the browser can exit; the URL
+  // is resolved inside it.
   if (opts.getArchivePutUrl || opts.archivePutUrl) {
     session.onExit(() => {
       opts.onArchiveSync?.({ phase: 'upload', state: 'start' })
@@ -196,11 +176,7 @@ function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
 }
 
-/**
- * Post-exit archive upload. The presign is fetched here rather than carried from
- * launch, because a session easily outlives it, and a rejected PUT is retried
- * once against a freshly issued URL.
- */
+/** Presign is fetched here, not carried from launch; a 40x retries once. */
 async function uploadArchive(profileDir: string, opts: OpenProfileOptions): Promise<void> {
   const resolve = async (): Promise<string | undefined> =>
     opts.getArchivePutUrl ? await opts.getArchivePutUrl() : opts.archivePutUrl

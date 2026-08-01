@@ -53,7 +53,9 @@ def cmd_install(args: argparse.Namespace) -> int:
         print("error: {0}".format(exc), file=sys.stderr)
         return 2
 
-    _kernel.refresh_kernel_catalogue()  # so `--version` can name a freshly published build
+    # Forced so `--version` can name a freshly published build; also seeds the
+    # on-disk catalogue cache that later (possibly offline) launches read.
+    _kernel.refresh_kernel_versions(cache_dir, force=True)
     kv = _kernel.find_kernel_version(args.version) if args.version else _kernel.default_kernel_version()
     if args.version and kv.version != args.version:
         print(
@@ -95,8 +97,14 @@ def cmd_info(args: argparse.Namespace) -> int:
     print("  config dir   {0}".format(_config.config_dir()))
     print("  server       {0}".format(_config.default_server()))
 
-    online = _kernel.refresh_kernel_catalogue()
-    print("\nKernels ({0}):".format("manifest reachable" if online else "offline, built-in list only"))
+    online = _kernel.refresh_kernel_versions(cache_dir, force=True)
+    print(
+        "\nKernels ({0}):".format(
+            "manifest reachable"
+            if online
+            else "offline, showing the built-in version plus any cached ones"
+        )
+    )
     versions = _kernel.kernels_for_platform(platform) if platform else _kernel.all_kernel_versions()
     for kv in versions:
         installed = platform is not None and _kernel.is_kernel_installed(cache_dir, kv, platform)

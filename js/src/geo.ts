@@ -10,12 +10,9 @@ export interface GeoInfo {
 }
 
 /**
- * Look up the geolocation of a proxy's exit IP: through the proxy when possible,
- * otherwise by the proxy hostname.
- *
- * Best-effort, and not a reachability test: a socks5:// url falls through to the
- * hostname lookup, which answers just as confidently for a dead proxy. Use
- * `probeProxyExit` for anything a user reads as "this proxy is up".
+ * Exit IP geo, through the proxy when possible, else by hostname. Not a
+ * reachability test - a dead proxy still answers via hostname. Use
+ * `probeProxyExit` for anything read as "this proxy is up".
  */
 export async function lookupProxyGeo(proxyUrl: string, serverUrl?: string): Promise<GeoInfo | null> {
   const proxy = new URL(proxyUrl)
@@ -63,10 +60,7 @@ function geoEndpoint(serverUrl: string): string {
   return `${serverUrl.replace(/\/+$/, '')}/api/v1/geo`
 }
 
-/**
- * Geolocation of the current connection, used when a profile has no proxy so the
- * browser's language and timezone still match the real exit IP.
- */
+/** Own connection geo, so a proxyless profile still matches its real exit IP. */
 export async function lookupCurrentGeo(serverUrl?: string): Promise<GeoInfo | null> {
   if (serverUrl) {
     try {
@@ -205,10 +199,7 @@ function httpForwardProxy(proxy: URL, targetUrl: string): Promise<string> {
   })
 }
 
-/**
- * GET a target through a `relay://` proxy, with the target in a header. Uses
- * `node:https` because `fetch` drops `Proxy-Authorization`.
- */
+/** Relay GET (target in a header); `node:https` because `fetch` drops auth. */
 function cfRelayGet(proxy: URL, targetUrl: string): Promise<string> {
   const cred = `${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password || '')}`
   return new Promise((resolve, reject) => {

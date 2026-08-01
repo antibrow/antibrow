@@ -6,6 +6,20 @@ All notable changes to the `antibrow` Python SDK. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- Linux arm64 support. The kernel now ships a separate arm64 build, picked
+  automatically from the CPU, so the same code and the same Docker image work on
+  `linux/amd64` and `linux/arm64`.
+
+### Changed
+
+- Kernel versions published after an SDK release are now discovered on every
+  launch instead of only when `update_kernel=True`. The manifest is cached in the
+  cache directory for an hour, failures are silent, and an offline run falls back
+  to the last catalogue it saw. The version a brand-new profile is created with
+  still changes only with an SDK release.
+
 ## [0.2.0] - 2026-07-31
 
 macOS support, plus persona consistency fixes for hosts that aren't Windows.
