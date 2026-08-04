@@ -228,3 +228,12 @@ def test_list_profiles_reports_what_is_on_disk(tmp_path, fake_kernel, fake_licen
     plan_for(tmp_path, profile="b-profile")
     plan_for(tmp_path, profile="a-profile")
     assert C.list_profiles(tmp_path) == ["a-profile", "b-profile"]
+
+
+def test_passkey_store_is_wired_and_capture_is_opt_out(tmp_path, fake_kernel, fake_license):
+    plan = plan_for(tmp_path, profile="p1")
+    assert "--fp-webauthn-store={0}".format(plan.profile_dir / "passkeys.json") in plan.args
+    assert "--fp-webauthn-create=choose" not in plan.args
+
+    off = plan_for(tmp_path, profile="p2", webauthn_capture=False)
+    assert "--fp-webauthn-create=choose" in off.args

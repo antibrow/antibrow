@@ -40,3 +40,11 @@ class ConcurrencyLimitError(LaunchError):
 
 class ProxyError(AntibrowError):
     """A proxy URL could not be parsed or is not supported by the kernel."""
+
+
+class ProfileCacheError(AntibrowError):
+    """A profile archive could not be transferred, read or written.
+
+    A launch never fails over this: cloud sync is best-effort and the local
+    profile directory stays usable either way.
+    """

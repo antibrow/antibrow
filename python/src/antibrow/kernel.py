@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
+from .config import USER_AGENT
 from .errors import KernelDownloadError, UnsupportedPlatformError
 
 ProgressCallback = Callable[[str], None]
@@ -244,7 +245,12 @@ def fetch_remote_kernel_versions(manifest_url: str = KERNEL_MANIFEST_URL) -> Lis
     """Download and parse the remote kernel manifest. Raises on failure."""
     request = urllib.request.Request(
         _cache_bust(manifest_url),
-        headers={"Cache-Control": "no-cache", "Pragma": "no-cache", "Accept": "application/json"},
+        headers={
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Accept": "application/json",
+            "User-Agent": USER_AGENT,
+        },
     )
     with urllib.request.urlopen(request, timeout=_MANIFEST_TIMEOUT) as response:  # noqa: S310
         text = response.read().decode("utf-8", "replace")
@@ -517,7 +523,10 @@ def _cache_bust(url: str) -> str:
 
 
 def _download(url: str, dest: Path, on_progress: Optional[ProgressCallback] = None) -> None:
-    request = urllib.request.Request(url, headers={"Cache-Control": "no-cache", "Pragma": "no-cache"})
+    request = urllib.request.Request(
+        url,
+        headers={"Cache-Control": "no-cache", "Pragma": "no-cache", "User-Agent": USER_AGENT},
+    )
     last_report = -1
     try:
         with urllib.request.urlopen(request, timeout=_DOWNLOAD_TIMEOUT) as response:  # noqa: S310

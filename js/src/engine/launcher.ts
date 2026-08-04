@@ -3,7 +3,7 @@ import http from 'node:http'
 import path from 'node:path'
 import net from 'node:net'
 import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { chromium, type BrowserContext } from 'playwright-core'
+import { chromium, type BrowserContext, type Page } from 'playwright-core'
 import { SocksClient } from 'socks'
 import { personaToFpConfig, API_LOG_FILE, type FpConfigSettings, type Persona } from './persona'
 import { writeWindowIcon } from './icon'
@@ -308,6 +308,18 @@ export function buildLaunchArgs(opts: BuildLaunchArgsOptions): string[] {
     // macOS ICU resolves Intl.* from CFLocale/AppleLanguages and silently
     // ignores --lang and LANG/LC_ALL, so this NSUserDefaults pair is the only
     // way to steer it. Meaningless on Windows/Linux.
+    //
+    // The `(xx-XX)` half has no leading dash, so Chromium's own parser takes it
+    // for a positional arg and opens it as a URL (`http://(en-us)/`) in a stray
+    // tab; closeStrayLocaleTab() gets rid of it after connecting, at the cost of
+    // it being briefly visible.
+    //
+    // `--no-startup-window` would stop that tab from ever existing, and it was
+    // tried: it also defers session restore, so Chromium restores the profile's
+    // previous tabs into a window of its own beside the one created over CDP and
+    // every existing profile opens with two windows. Not worth trading for a
+    // flash. Kernels carrying the mac-locale patch read the locale from fp-config
+    // and retire the pair entirely.
     ...(opts.platform === 'darwin' ? ['-AppleLanguages', `(${opts.language})`] : []),
   ]
 
@@ -315,6 +327,85 @@ export function buildLaunchArgs(opts: BuildLaunchArgsOptions): string[] {
   if (opts.webauthnCapture === false) args.push('--fp-webauthn-create=choose')
 
   return args
+}
+
+/**
+ * True for the tab Chromium opens because of the `-AppleLanguages (xx-XX)` pair
+ * (see buildLaunchArgs). Chromium's URL fixup turns the bare `(en-US)` argument
+ * into `http://(en-us)/`, so match that shape as well as the raw argument.
+ */
+export function isStrayLocaleTabUrl(url: string, language: string): boolean {
+  let decoded = url
+  try {
+    decoded = decodeURIComponent(url)
+  } catch {
+    // Keep the raw URL: a malformed escape is not our tab anyway.
+  }
+  const lang = language.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`^(?:https?://)?\\(${lang}\\)/?$`, 'i').test(decoded.trim())
+}
+
+/**
+ * `(en-us)` is not a resolvable host, so by the time we look the tab has usually
+ * committed an error page and `page.url()` reads `chrome-error://chromewebdata/`
+ * -- the address bar still shows `(en-us)`, but the document URL no longer does.
+ * Ask the navigation history what that tab was actually trying to load.
+ */
+async function isStrayLocalePage(context: BrowserContext, page: Page, language: string): Promise<boolean> {
+  const url = page.url()
+  if (isStrayLocaleTabUrl(url, language)) return true
+  if (!url.startsWith('chrome-error:')) return false
+  try {
+    const cdp = await context.newCDPSession(page)
+    try {
+      const history = (await cdp.send('Page.getNavigationHistory')) as {
+        entries?: Array<{ url?: string; userTypedURL?: string }>
+      }
+      return (history.entries ?? []).some(
+        (e) => isStrayLocaleTabUrl(e.url ?? '', language) || isStrayLocaleTabUrl(e.userTypedURL ?? '', language),
+      )
+    } finally {
+      await cdp.detach().catch(() => {})
+    }
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Open the first page when the kernel handed over none. Normally a no-op -- the
+ * kernel's own startup window provides it -- but callers expect a page to exist
+ * as soon as a session is handed over, so cover the zero-page case (e.g. extra
+ * args suppressing the startup window).
+ */
+export async function ensureStartupPage(context: BrowserContext): Promise<void> {
+  if (context.pages().length > 0) return
+  // A real failure surfaces on the caller's own newPage(); never fail a launch
+  // over the courtesy tab.
+  await context.newPage().catch(() => {})
+}
+
+/**
+ * Get rid of that tab. On darwin it is always there, so the short poll is worth
+ * it: the startup navigation may not have committed when CDP starts answering,
+ * and `page.url()` would still read `about:blank`.
+ */
+async function closeStrayLocaleTab(context: BrowserContext, language: string, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const pages = context.pages()
+    const flags = await Promise.all(pages.map((p) => isStrayLocalePage(context, p, language)))
+    const stray = pages.filter((_, i) => flags[i])
+    if (stray.length) {
+      // Something has to stay open: closing the last tab takes the window --
+      // and with it the kernel -- down.
+      if (stray.length === pages.length) await context.newPage()
+      for (const p of stray) await p.close().catch(() => {})
+      return
+    }
+    if (Date.now() >= deadline) return
+    await new Promise((r) => setTimeout(r, 100))
+  }
 }
 
 /** Launch the kernel with the given persona and connect Playwright over CDP. */
@@ -431,6 +522,13 @@ export async function launchKernel(opts: KernelLaunchOptions): Promise<KernelSes
   onProgress?.(`Connecting Playwright over CDP to ${wsEndpoint}`)
   const pw = await chromium.connectOverCDP(wsEndpoint)
   const context = pw.contexts()[0] ?? (await pw.newContext())
+
+  if (process.platform === 'darwin') {
+    // Order matters: close first (in case a startup window did appear), then make
+    // sure exactly one page is left for the caller.
+    await closeStrayLocaleTab(context, persona.languages[0] ?? 'en-US').catch(() => {})
+    await ensureStartupPage(context)
+  }
 
   return {
     context,

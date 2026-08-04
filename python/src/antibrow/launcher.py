@@ -15,11 +15,13 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence
 
 from .errors import ConcurrencyLimitError, LaunchError
+from .profile_cache import PASSKEYS_ENTRY
 from .proxy import ProxySpec, proxy_args
 
 ProgressCallback = Callable[[str], None]
@@ -53,6 +55,7 @@ def build_launch_args(
     proxy: Optional[ProxySpec] = None,
     proxy_auth: str = "native",
     profile_dir: Optional[Path | str] = None,
+    webauthn_capture: Optional[bool] = None,
     extra_args: Optional[Sequence[str]] = None,
 ) -> List[str]:
     """Assemble the kernel command line (without the executable itself).
@@ -103,13 +106,43 @@ def build_launch_args(
         # argv pair is the only thing that actually steers it, which is why it
         # is only meaningful on darwin; on Windows/Linux it would just be an
         # unrecognised argument.
+        #
+        # The "(xx-XX)" half has no leading dash, so Chromium's own parser takes
+        # it for a positional argument and opens it as a URL in a stray tab;
+        # browser.py closes that tab after connecting, at the cost of it being
+        # briefly visible.
+        #
+        # `--no-startup-window` would stop the tab from ever existing, and it was
+        # tried: it also defers session restore, so Chromium restores the
+        # profile's previous tabs into a window of its own beside the one created
+        # over CDP, and every existing profile opens with two windows. Kernels
+        # carrying the mac-locale patch read the locale from fp-config, which
+        # retires the pair entirely.
         args += ["-AppleLanguages", "({0})".format(language)]
+
+    # The passkey store sits at the profile root, outside --user-data-dir, so an
+    # export or a cloud sync can carry it to another machine.
+    root = Path(profile_dir) if profile_dir else Path(user_data_dir)
+    args.append("--fp-webauthn-store={0}".format(root / PASSKEYS_ENTRY))
+    if webauthn_capture is False:
+        args.append("--fp-webauthn-create=choose")
 
     args += proxy_args(proxy, profile_dir=profile_dir or user_data_dir, mode=proxy_auth)
 
     if extra_args:
         args += list(extra_args)
     return args
+
+
+def is_stray_locale_tab_url(url: str, language: str) -> bool:
+    """True for the tab Chromium opens because of ``-AppleLanguages (xx-XX)``.
+
+    Chromium's URL fixup turns the bare ``(en-US)`` positional argument into
+    ``http://(en-us)/`` (confirmed against a real build), so match that shape as
+    well as the raw argument.
+    """
+    decoded = urllib.parse.unquote(url or "").strip()
+    return bool(re.fullmatch(r"(?:https?://)?\({0}\)/?".format(re.escape(language)), decoded, re.IGNORECASE))
 
 
 def spawn_kernel(exe_path: Path | str, args: Sequence[str]) -> subprocess.Popen:

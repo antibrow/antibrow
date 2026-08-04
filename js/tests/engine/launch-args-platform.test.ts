@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildLaunchArgs, type BuildLaunchArgsOptions } from '../../src/engine/launcher'
+import { buildLaunchArgs, isStrayLocaleTabUrl, type BuildLaunchArgsOptions } from '../../src/engine/launcher'
 
 // The container-only switches must be gated on linux, never on "not windows" -
 // a prior version of this test asserted that by grepping the source text for
@@ -147,6 +147,41 @@ describe('buildLaunchArgs', () => {
     for (const platform of ['win32', 'linux'] as const) {
       const args = buildLaunchArgs(baseOptions(platform))
       expect(args).not.toContain('-AppleLanguages')
+    }
+  })
+
+  // --no-startup-window WOULD stop the positional `(en-US)` from ever being
+  // loaded, but it also defers session restore: Chromium then restores the
+  // profile's previous tabs into a window of its own, next to the one the SDK
+  // creates over CDP, so opening an existing profile ends up with two windows.
+  // Verified on a real profile. The stray tab is closed after connecting instead.
+  it('never suppresses the startup window, on any platform', () => {
+    for (const platform of ['win32', 'linux', 'darwin'] as const) {
+      expect(buildLaunchArgs(baseOptions(platform))).not.toContain('--no-startup-window')
+    }
+  })
+})
+
+// The `(en-US)` half of the pair has no leading dash, so Chromium's own parser
+// takes it for a positional arg and opens it as a URL. Confirmed against a real
+// Chromium build: the tab lands on `http://(en-us)/` - lowercased by URL fixup.
+describe('isStrayLocaleTabUrl', () => {
+  it('matches the tab Chromium opens for the AppleLanguages value', () => {
+    expect(isStrayLocaleTabUrl('http://(en-us)/', 'en-US')).toBe(true)
+    expect(isStrayLocaleTabUrl('http://(de-de)/', 'de-DE')).toBe(true)
+    expect(isStrayLocaleTabUrl('(en-US)', 'en-US')).toBe(true)
+    expect(isStrayLocaleTabUrl('http%3A%2F%2F(en-us)%2F', 'en-US')).toBe(true)
+  })
+
+  it('leaves real pages alone', () => {
+    for (const url of [
+      'about:blank',
+      'https://whoer.net/',
+      'https://example.com/?q=(en-us)',
+      'http://en-us/',
+      'chrome://newtab/',
+    ]) {
+      expect(isStrayLocaleTabUrl(url, 'en-US')).toBe(false)
     }
   })
 })

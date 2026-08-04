@@ -29,7 +29,9 @@ describe('darwin kernel catalogue', () => {
 
   it('resolves the exe path inside the extracted bundle', () => {
     const v150 = KERNEL_VERSIONS.find((kv) => kv.version === '150.0.7871.182')!
-    const p = kernelExePath('/cache', v150, 'darwin')
+    // Normalised: kernelExePath joins with the host separator, and this suite
+    // also runs on Windows.
+    const p = kernelExePath('/cache', v150, 'darwin').replace(/\\/g, '/')
     expect(p).toBe(
       '/cache/kernels/150.0.7871.182/Chromium.app/Contents/MacOS/Chromium',
     )

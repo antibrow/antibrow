@@ -242,3 +242,43 @@ def test_write_fp_config_is_valid_json_on_disk(tmp_path):
     assert written["label"] == "shopper-01"
     assert written["timezone"] == "Asia/Tokyo"
     assert written["navigator"]["userAgent"] == persona.ua
+
+
+# A persona imported from a real-device capture replays that machine's WebGL
+# report verbatim; a synthesized report next to captured GPU strings is exactly
+# the kind of disagreement a scanner looks for.
+
+
+def test_a_captured_webgl_report_is_replayed_verbatim():
+    persona = generate_persona(150, "150.0.7871.182")
+    persona.captured_webgl = {
+        "VERSION": "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
+        "SHADING_LANGUAGE_VERSION": "WebGL GLSL ES 1.0",
+        "params": {"MAX_TEXTURE_SIZE": 16384},
+        "shaderPrecision": {"VERTEX_HIGH_FLOAT": [127, 127, 23], "broken": [1, 2]},
+    }
+
+    webgl = persona_to_fp_config(persona, label="p", timezone="UTC")["webgl"]
+
+    assert webgl["version"] == "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+    assert webgl["shadingLanguageVersion"] == "WebGL GLSL ES 1.0"
+    assert webgl["params"] == {"MAX_TEXTURE_SIZE": 16384}
+    # Triples become "min,max,precision"; a malformed entry is dropped.
+    assert webgl["shaderPrecision"] == {"VERTEX_HIGH_FLOAT": "127,127,23"}
+    # The GPU strings still come from the persona.
+    assert webgl["unmaskedRenderer"] == persona.gpu_renderer
+
+
+def test_a_persona_without_a_capture_adds_no_webgl_replay_fields():
+    _, config = config_for()
+    assert set(config["webgl"]) == {"unmaskedVendor", "unmaskedRenderer"}
+
+
+def test_a_captured_report_survives_persona_json(tmp_path):
+    persona = generate_persona(150, "150.0.7871.182")
+    persona.captured_webgl = {"VERSION": "WebGL 1.0"}
+    from antibrow.persona import write_persona
+
+    write_persona(tmp_path, persona)
+
+    assert load_or_generate_persona(tmp_path, "150.0.7871.182").captured_webgl == {"VERSION": "WebGL 1.0"}

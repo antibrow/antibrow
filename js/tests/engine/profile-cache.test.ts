@@ -101,6 +101,33 @@ describe('profile-cache', () => {
     expect(fs.existsSync(path.join(dst, 'user-data', 'lockfile'))).toBe(false)
   })
 
+  it('syncs passkeys.json: the kernel keeps passkeys outside user-data, so cloud sync must carry it', () => {
+    const src = tmp('pc-pk-')
+    fs.mkdirSync(path.join(src, 'user-data', 'Default'), { recursive: true })
+    fs.writeFileSync(path.join(src, 'user-data', 'Default', 'Cookies'), 'ck')
+    fs.writeFileSync(path.join(src, 'persona.json'), '{"ua":"UA"}')
+    fs.writeFileSync(path.join(src, 'passkeys.json'), '[{"rpId":"google.com"}]')
+
+    const buf = packProfileCache(src)
+    const dst = tmp('pc-pk-dst-')
+    unpackProfileCache(buf, dst)
+
+    expect(fs.readFileSync(path.join(dst, 'passkeys.json'), 'utf8')).toBe('[{"rpId":"google.com"}]')
+  })
+
+  it('leaves a local passkeys.json alone when the archive predates passkey sync', () => {
+    const src = tmp('pc-pk-old-')
+    fs.mkdirSync(path.join(src, 'user-data'), { recursive: true })
+    fs.writeFileSync(path.join(src, 'user-data', 'Local State'), 'ls')
+    const buf = packProfileCache(src)
+
+    const dst = tmp('pc-pk-old-dst-')
+    fs.writeFileSync(path.join(dst, 'passkeys.json'), '[{"rpId":"local-only"}]')
+    unpackProfileCache(buf, dst)
+
+    expect(fs.readFileSync(path.join(dst, 'passkeys.json'), 'utf8')).toBe('[{"rpId":"local-only"}]')
+  })
+
   it('skips missing items without throwing', () => {
     const src = tmp('pc-empty-')
     fs.mkdirSync(path.join(src, 'user-data'), { recursive: true })

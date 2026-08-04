@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
 from antibrow.errors import ProxyError
-from antibrow.launcher import build_launch_args, read_devtools_active_port
+from antibrow.launcher import build_launch_args, is_stray_locale_tab_url, read_devtools_active_port
 from antibrow.proxy import parse_proxy
 
 
@@ -211,3 +212,61 @@ def test_darwin_gets_apple_languages_derived_from_the_persona_language():
 def test_apple_languages_is_absent_on_win32_and_linux():
     assert "-AppleLanguages" not in args_for(platform="win32")
     assert "-AppleLanguages" not in args_for(platform="linux")
+
+
+# -- the stray tab that pair costs us ---------------------------------------
+#
+# "(en-US)" has no leading dash, so Chromium's own parser takes it for a
+# positional argument and opens it as a URL. Confirmed against a real Chromium
+# build: the tab lands on "http://(en-us)/", lowercased by URL fixup.
+
+
+def test_stray_locale_tab_url_matches_what_chromium_opens():
+    assert is_stray_locale_tab_url("http://(en-us)/", "en-US")
+    assert is_stray_locale_tab_url("http://(de-de)/", "de-DE")
+    assert is_stray_locale_tab_url("(en-US)", "en-US")
+    assert is_stray_locale_tab_url("http%3A%2F%2F(en-us)%2F", "en-US")
+
+
+def test_stray_locale_tab_url_leaves_real_pages_alone():
+    for url in [
+        "about:blank",
+        "https://whoer.net/",
+        "https://example.com/?q=(en-us)",
+        "http://en-us/",
+        "chrome://newtab/",
+    ]:
+        assert not is_stray_locale_tab_url(url, "en-US")
+
+
+# The portable passkey store lives at the profile root, not under user-data:
+# that is what lets an export or a cloud sync carry passkeys to another machine.
+
+
+def test_passkey_store_points_at_the_profile_root():
+    # Built with pathlib, so the separator is the host's - compare the same way
+    # rather than against a POSIX literal, which fails on Windows runners.
+    args = args_for(profile_dir="/tmp/p")
+    assert switch(args, "fp-webauthn-store") == str(Path("/tmp/p") / "passkeys.json")
+
+
+def test_passkey_store_falls_back_to_the_user_data_dir_when_no_profile_dir():
+    expected = str(Path("/tmp/p/user-data") / "passkeys.json")
+    assert switch(args_for(), "fp-webauthn-store") == expected
+
+
+def test_capturing_passkeys_is_the_default_and_opt_out_asks_the_user_instead():
+    assert "--fp-webauthn-create=choose" not in args_for(profile_dir="/tmp/p")
+    assert "--fp-webauthn-create=choose" not in args_for(profile_dir="/tmp/p", webauthn_capture=True)
+    assert "--fp-webauthn-create=choose" in args_for(profile_dir="/tmp/p", webauthn_capture=False)
+
+
+# --no-startup-window would stop the locale argument from ever being opened as a
+# URL, but it also defers session restore: Chromium then restores the profile's
+# previous tabs into a window of its own, next to the one the SDK creates over
+# CDP, so an existing profile opens with two windows. Verified on a real profile.
+
+
+def test_the_startup_window_is_never_suppressed():
+    for platform in ("win32", "linux", "darwin"):
+        assert "--no-startup-window" not in args_for(platform=platform), platform

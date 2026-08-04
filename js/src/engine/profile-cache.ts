@@ -7,8 +7,13 @@ import { generatePersona, loadOrGeneratePersona, type ApiLogMode, type Persona }
 // Browser state items stored under <profileDir>/user-data/
 const USER_DATA_ITEMS = ['Default', 'GrShaderCache', 'Local State', 'Variations'] as const
 
-// Root-level items (relative to profileDir)
-const ROOT_ITEMS = ['persona.json'] as const
+// The kernel's portable passkey store (`--fp-webauthn-store`), written at the
+// profile root rather than inside user-data.
+const PASSKEYS_ENTRY = 'passkeys.json'
+
+// Root-level items (relative to profileDir). passkeys.json belongs here or a
+// passkey registered on one machine never reaches the next one.
+const ROOT_ITEMS = ['persona.json', PASSKEYS_ENTRY] as const
 
 // Lock files that are always in use while Chrome runs.
 const SKIP_FILES = new Set(['LOCK', 'lock', '.lock', 'SingletonLock', 'SingletonCookie', 'SingletonSocket'])
@@ -81,7 +86,6 @@ export function unpackProfileCache(buf: Buffer, profileDir: string): void {
 export const PROFILE_ARCHIVE_EXT = 'fpprofile'
 
 const LAUNCHER_MANIFEST_ENTRY = 'manifest.json'
-const LAUNCHER_PASSKEYS_ENTRY = 'passkeys.json'
 const LAUNCHER_FORMAT_ID = 'fp-launcher-profile'
 const LAUNCHER_FORMAT_VERSION = 1
 /** Metadata entry of the legacy `.zip` export, still importable. */
@@ -184,9 +188,9 @@ export function exportProfileArchive(profileDir: string, meta: PortableProfileMe
   }
   zip.addFile(LAUNCHER_MANIFEST_ENTRY, Buffer.from(JSON.stringify(manifest, null, 2)))
 
-  const passkeys = path.join(profileDir, LAUNCHER_PASSKEYS_ENTRY)
+  const passkeys = path.join(profileDir, PASSKEYS_ENTRY)
   try {
-    if (fs.existsSync(passkeys)) zip.addFile(LAUNCHER_PASSKEYS_ENTRY, fs.readFileSync(passkeys))
+    if (fs.existsSync(passkeys)) zip.addFile(PASSKEYS_ENTRY, fs.readFileSync(passkeys))
   } catch { /* unreadable — skip, best-effort */ }
 
   const userData = path.join(profileDir, 'user-data')
@@ -355,7 +359,7 @@ function importLauncherArchive(zip: AdmZip, manifest: LauncherManifest, profileD
   for (const entry of zip.getEntries()) {
     if (entry.isDirectory) continue
     const name = entry.entryName.replace(/\\/g, '/')
-    if (name !== LAUNCHER_PASSKEYS_ENTRY && !name.startsWith('user-data/')) continue
+    if (name !== PASSKEYS_ENTRY && !name.startsWith('user-data/')) continue
     const dest = safeJoin(profileDir, name)
     if (!dest) continue
     fs.mkdirSync(path.dirname(dest), { recursive: true })

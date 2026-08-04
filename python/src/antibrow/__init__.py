@@ -20,12 +20,14 @@ See https://antibrow.com and the project README for the full API.
 
 from __future__ import annotations
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 from .browser import (
     Antibrow,
+    ArchivePlan,
     AsyncAntibrow,
     LaunchPlan,
+    SyncEvent,
     launch,
     launch_async,
     launch_persistent_context,
@@ -46,6 +48,7 @@ from .errors import (
     KernelDownloadError,
     LaunchError,
     LicenseError,
+    ProfileCacheError,
     ProxyError,
     UnsupportedPlatformError,
 )
@@ -72,6 +75,20 @@ from .kernel import (
 )
 from .license import LicenseInfo, fetch_license_token, get_license_token
 from .persona import Persona, generate_persona, load_or_generate_persona, persona_to_fp_config
+from .portable import (
+    PROFILE_ARCHIVE_EXT,
+    ImportedProfileMeta,
+    PortableProfileMeta,
+    export_profile_archive,
+    import_profile_archive,
+)
+from .profile_cache import (
+    download_profile_cache,
+    pack_profile_cache,
+    unpack_profile_cache,
+    upload_profile_cache,
+)
+from .profile_sync import ArchiveUrls, ensure_server_profile, get_profile_archive_urls
 from .proxy import ProxySpec, parse_proxy
 
 __all__ = [
@@ -85,6 +102,8 @@ __all__ = [
     "Antibrow",
     "AsyncAntibrow",
     "LaunchPlan",
+    "ArchivePlan",
+    "SyncEvent",
     # kernels
     "KERNEL_VERSIONS",
     "KERNEL_MANIFEST_URL",
@@ -115,6 +134,19 @@ __all__ = [
     "default_cache_dir",
     "config_dir",
     "default_server",
+    # cloud sync and portable archives
+    "ArchiveUrls",
+    "get_profile_archive_urls",
+    "ensure_server_profile",
+    "pack_profile_cache",
+    "unpack_profile_cache",
+    "download_profile_cache",
+    "upload_profile_cache",
+    "PROFILE_ARCHIVE_EXT",
+    "PortableProfileMeta",
+    "ImportedProfileMeta",
+    "export_profile_archive",
+    "import_profile_archive",
     # proxies and geo
     "ProxySpec",
     "parse_proxy",
@@ -130,6 +162,7 @@ __all__ = [
     "LicenseError",
     "ConcurrencyLimitError",
     "KernelDownloadError",
+    "ProfileCacheError",
     "ProxyError",
     "UnsupportedPlatformError",
 ]

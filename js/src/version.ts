@@ -1,5 +1,5 @@
 /** Version gate: the SDK reports its version, the server decides. */
-export const SDK_VERSION = '2.2.0'
+export const SDK_VERSION = '2.2.1'
 
 const DEFAULT_SERVER = 'https://antibrow.com'
 

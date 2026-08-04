@@ -36,6 +36,11 @@ CONFIG_DIR_NAME = ".antibrow"
 #: Default SaaS server used to mint license tokens.
 DEFAULT_SERVER = "https://antibrow.com"
 
+#: Sent on every request. Not cosmetic: the CDN in front of the kernel downloads
+#: refuses urllib's default ``Python-urllib/3.x`` signature outright, which turns
+#: a first kernel install into a bare HTTP 403.
+USER_AGENT = "antibrow-python"
+
 ENV_CACHE_DIR = "ANTIBROW_CACHE_DIR"
 ENV_API_KEY = "ANTIBROW_API_KEY"
 ENV_SERVER = "ANTIBROW_SERVER"

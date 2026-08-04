@@ -4,6 +4,21 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.2.1] - 2026-08-04
+
+### Fixed
+
+- macOS: the stray `http://(en-us)/` tab is closed once the browser is up. The
+  locale argument macOS needs for `Intl.*` has a half without a leading dash,
+  which Chromium's own parser takes for a URL and opens; 2.2.0 left that tab
+  open for the whole session.
+
+### Changed
+
+- A launch that hands over no page at all now gets a blank one, so a caller
+  always finds a page where it expects one. No effect on a normal launch, where
+  the browser's own startup window provides it.
+
 ## [2.2.0] - 2026-08-01
 
 Linux arm64 support, and a kernel catalogue that no longer needs an SDK release
@@ -41,5 +56,6 @@ to see a newly published kernel.
   machine runs, so a Windows persona no longer leaks the real host through UA-CH
   metadata.
 
+[2.2.1]: https://github.com/antibrow/antibrow/releases/tag/js-v2.2.1
 [2.2.0]: https://github.com/antibrow/antibrow/releases/tag/js-v2.2.0
 [2.1.0]: https://github.com/antibrow/antibrow/releases/tag/js-v2.1.0

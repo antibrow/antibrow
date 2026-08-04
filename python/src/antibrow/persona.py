@@ -114,10 +114,16 @@ class Persona:
     languages: List[str] = field(default_factory=lambda: ["en-US", "en"])
     #: Fallback timezone; overridden at launch from the proxy's exit-IP geo.
     timezone: str = "America/Los_Angeles"
+    #: A real device's WebGL report, replayed verbatim so the GL facts stay
+    #: anchored to one machine. Absent for personas generated here.
+    captured_webgl: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """camelCase dict, byte-compatible with the Node SDK's persona.json."""
-        return {json_key: getattr(self, attr) for attr, json_key in _JSON_KEYS}
+        out = {json_key: getattr(self, attr) for attr, json_key in _JSON_KEYS}
+        if self.captured_webgl:
+            out["capturedWebgl"] = self.captured_webgl
+        return out
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Persona":
@@ -125,6 +131,9 @@ class Persona:
         for attr, json_key in _JSON_KEYS:
             if json_key in data:
                 kwargs[attr] = data[json_key]
+        captured = data.get("capturedWebgl")
+        if isinstance(captured, dict):
+            kwargs["captured_webgl"] = captured
         # Older profiles predate kernelVersion: load them with an empty
         # version so the caller can backfill it without touching the seeds.
         kwargs.setdefault("kernel_version", "")
@@ -174,6 +183,38 @@ def chrome_major_of(kernel_version: str) -> int:
         return int(head)
     except ValueError:
         raise ValueError("Malformed kernel version: {0!r}".format(kernel_version))
+
+
+def captured_webgl_config(captured: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Translate a captured ``webgl`` blob into the fields the kernel replays.
+
+    Each ``shaderPrecision`` triple becomes a ``"min,max,precision"`` string;
+    anything malformed is dropped rather than passed on to the kernel.
+    """
+    if not captured:
+        return {}
+    out: Dict[str, Any] = {}
+    version = captured.get("VERSION")
+    if isinstance(version, str):
+        out["version"] = version
+    shading = captured.get("SHADING_LANGUAGE_VERSION")
+    if isinstance(shading, str):
+        out["shadingLanguageVersion"] = shading
+    params = captured.get("params")
+    if isinstance(params, dict):
+        out["params"] = params
+    precision_in = captured.get("shaderPrecision")
+    if isinstance(precision_in, dict):
+        precision = {
+            key: ",".join(str(n) for n in value)
+            for key, value in precision_in.items()
+            if isinstance(value, list)
+            and len(value) == 3
+            and all(isinstance(n, (int, float)) and not isinstance(n, bool) for n in value)
+        }
+        if precision:
+            out["shaderPrecision"] = precision
+    return out
 
 
 def webgpu_identity(renderer: str) -> Tuple[str, str]:
@@ -271,10 +312,13 @@ def persona_to_fp_config(
             "pixelDepth": 24,
             "devicePixelRatio": persona.device_pixel_ratio,
         },
-        "webgl": {
-            "unmaskedVendor": persona.gpu_vendor,
-            "unmaskedRenderer": persona.gpu_renderer,
-        },
+        "webgl": dict(
+            {
+                "unmaskedVendor": persona.gpu_vendor,
+                "unmaskedRenderer": persona.gpu_renderer,
+            },
+            **captured_webgl_config(persona.captured_webgl),
+        ),
         "webgpu": webgpu,
         "canvas": {"seed": persona.canvas_seed},
         "audio": {"seed": persona.audio_seed},

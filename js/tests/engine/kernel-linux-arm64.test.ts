@@ -26,7 +26,10 @@ describe('linux arm64 kernel catalogue', () => {
     )
     // Same bare binary name as x86_64: the kernel dir layout does not change.
     expect(kernelAsset(v150, 'linux-arm64').exeRelPath).toBe('chrome')
-    expect(kernelExePath('/cache', v150, 'linux-arm64')).toBe('/cache/kernels/150.0.7871.182/chrome')
+    // Normalised: kernelExePath joins with the host separator, and this suite
+    // also runs on Windows.
+    expect(kernelExePath('/cache', v150, 'linux-arm64').replace(/\\/g, '/'))
+      .toBe('/cache/kernels/150.0.7871.182/chrome')
   })
 
   it('lists arm64-capable versions for linux-arm64', () => {

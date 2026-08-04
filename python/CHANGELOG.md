@@ -4,6 +4,40 @@ All notable changes to the `antibrow` Python SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-08-04
+
+Cloud profile sync, portable `.fpprofile` archives, and a portable passkey store -
+the profile parts of the Node SDK that were missing here.
+
+### Added
+
+- Cloud profile sync. On a paid plan a launch restores the profile before
+  starting and saves it again on `close()`, so another machine opens the same
+  cookies, storage, history and passkeys. `sync=False` keeps a launch local,
+  `on_sync=` reports each transfer, and `session.sync_error` says whether the
+  closing upload made it. A sync failure never fails a launch.
+- Passkeys are kept in the profile's own portable store (`passkeys.json` at the
+  profile root), so they travel with a sync or an export instead of being stranded
+  on the machine that registered them. `webauthn_capture=False` opts out and lets
+  the browser ask where to save each passkey.
+- Portable profile archives: `export_profile_archive()` / `import_profile_archive()`
+  read and write the same `.fpprofile` format the desktop app uses, so a profile
+  can be handed over as a file. The older `.zip` export still imports.
+- A persona can now carry a captured real-device WebGL report
+  (`Persona.captured_webgl`), replayed verbatim into the kernel config. Imported
+  profiles keep theirs instead of falling back to a synthesized report.
+
+### Fixed
+
+- macOS: the stray `http://(en-us)/` tab is closed once the browser is up. The
+  locale argument macOS needs for `Intl.*` has a half without a leading dash,
+  which Chromium's own parser takes for a URL and opens; 0.3.0 left that tab open
+  for the whole session.
+- Kernel downloads failed with a bare `HTTP 403` on a first install, and the
+  kernel catalogue refresh failed silently: the CDN refuses urllib's default
+  `Python-urllib/3.x` client signature. Every request the SDK makes now
+  identifies itself.
+
 ## [0.3.0] - 2026-08-01
 
 Linux arm64 support, and a kernel catalogue that no longer needs an SDK release
@@ -77,6 +111,7 @@ local-profile path; cloud profile sync and Live View are not implemented yet.
 - Cloud profile sync, Live View and managed-proxy activation by `proxy_id` are
   Node SDK / desktop features and are not implemented here.
 
+[0.4.0]: https://github.com/antibrow/antibrow/releases/tag/python-v0.4.0
 [0.3.0]: https://github.com/antibrow/antibrow/releases/tag/python-v0.3.0
 [0.2.0]: https://github.com/antibrow/antibrow/releases/tag/python-v0.2.0
 [0.1.0]: https://github.com/antibrow/antibrow/releases/tag/python-v0.1.0

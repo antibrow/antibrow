@@ -2,36 +2,46 @@
 
 One call does the whole sequence:
 
-1. resolve the profile directory and load (or mint and freeze) its persona;
-2. make sure the kernel build that profile is pinned to is on disk;
-3. look up the proxy's exit timezone, when a proxy is in play;
-4. get a license token (server-issued - see :mod:`antibrow.license`);
-5. serialize the persona to ``fp-config.json`` and spawn the kernel;
-6. attach Playwright over CDP and hand back a ready-to-drive browser.
+1. get a license token (server-issued - see :mod:`antibrow.license`);
+2. restore the profile from the cloud, when the plan syncs (persona.json comes
+   out of that archive, so it has to happen before the next step);
+3. resolve the profile directory and load (or mint and freeze) its persona;
+4. make sure the kernel build that profile is pinned to is on disk;
+5. look up the proxy's exit timezone, when a proxy is in play;
+6. serialize the persona to ``fp-config.json`` and spawn the kernel;
+7. attach Playwright over CDP and hand back a ready-to-drive browser.
+
+``close()`` then packs the profile and uploads it again.
 """
 
 from __future__ import annotations
 
 import asyncio
 import subprocess
-from dataclasses import dataclass
+import sys
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, List, Optional, Sequence
 
 from . import config as _config
 from . import kernel as _kernel
+from . import profile_sync as _sync
+from .errors import ProfileCacheError
 from .geoip import lookup_proxy_geo
 from .launcher import (
     DEFAULT_LAUNCH_TIMEOUT,
     _drain_output,
     build_launch_args,
+    is_stray_locale_tab_url,
     kill_process_tree,
     pick_free_port,
     spawn_kernel,
     wait_for_cdp,
 )
-from .license import LicenseInfo, LicenseProvider, get_license_token
+from .license import LicenseInfo, LicenseProvider, get_license_token, resolve_api_key
 from .persona import Persona, load_or_generate_persona, write_fp_config
+from .profile_cache import download_profile_cache, upload_profile_cache
 from .proxy import ProxyLike, ProxySpec, parse_proxy
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -41,6 +51,37 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 ProgressCallback = Callable[[str], None]
 
 DEFAULT_PROFILE = "default"
+
+
+@dataclass
+class SyncEvent:
+    """Progress of one cloud transfer. ``error`` is set only for ``"error"``."""
+
+    phase: str  # "download" | "upload"
+    state: str  # "start" | "done" | "error"
+    error: Optional[str] = None
+
+
+SyncCallback = Callable[[SyncEvent], None]
+
+
+@dataclass
+class ArchivePlan:
+    """The cloud archive slot this launch got, and how to sign the next upload.
+
+    ``sign_upload`` is called after the browser exits rather than at launch: the
+    server signs for 900 seconds and a real session outlives that easily.
+    """
+
+    profile: str
+    restored: bool = False
+    can_upload: bool = False
+    sign_upload: Optional[Callable[[], Optional[str]]] = field(default=None, repr=False)
+    on_event: Optional[SyncCallback] = field(default=None, repr=False)
+
+    def emit(self, phase: str, state: str, error: Optional[str] = None) -> None:
+        if self.on_event is not None:
+            self.on_event(SyncEvent(phase=phase, state=state, error=error))
 
 
 @dataclass
@@ -63,6 +104,8 @@ class LaunchPlan:
     license: LicenseInfo
     public_ip: Optional[str] = None
     proxy: Optional[ProxySpec] = None
+    #: None when this profile is local-only (free plan, ``sync=False``, offline).
+    archive: Optional[ArchivePlan] = None
 
     @property
     def cdp_url(self) -> str:
@@ -99,6 +142,9 @@ def prepare_launch(
     license_token: Optional[str] = None,
     license_provider: Optional[LicenseProvider] = None,
     update_kernel: bool = False,
+    webauthn_capture: Optional[bool] = None,
+    sync: Optional[bool] = None,
+    on_sync: Optional[SyncCallback] = None,
     on_progress: Optional[ProgressCallback] = None,
 ) -> LaunchPlan:
     """Do every blocking step of a launch except starting the process.
@@ -111,6 +157,28 @@ def prepare_launch(
     root = Path(cache_dir).expanduser() if cache_dir else _config.default_cache_dir()
     directory = Path(profile_dir).expanduser() if profile_dir else _config.profile_dir(profile, root)
     directory.mkdir(parents=True, exist_ok=True)
+
+    # The license comes first because its `sync` flag decides whether there is a
+    # cloud archive to restore, and the restore has to land before the persona is
+    # read - persona.json is itself part of the archive.
+    notify("Obtaining license token")
+    license_info = get_license_token(
+        api_key,
+        server,
+        license_token=license_token,
+        license_provider=license_provider,
+    )
+
+    archive = _restore_archive(
+        profile_name=profile if profile_dir is None else directory.name,
+        directory=directory,
+        api_key=api_key,
+        server=server,
+        license_info=license_info,
+        sync=sync,
+        on_sync=on_sync,
+        notify=notify,
+    )
 
     # Kernels published after this SDK was built are only known from the manifest,
     # so resolve the catalogue before mapping a version string onto an asset. The
@@ -155,14 +223,6 @@ def prepare_launch(
             if geo.ip:
                 public_ip = geo.ip
 
-    notify("Obtaining license token")
-    license_info = get_license_token(
-        api_key,
-        server,
-        license_token=license_token,
-        license_provider=license_provider,
-    )
-
     display_label = label or (profile if profile_dir is None else directory.name)
     fp_config_path = write_fp_config(
         directory,
@@ -188,6 +248,7 @@ def prepare_launch(
         proxy=proxy_spec,
         proxy_auth=proxy_auth,
         profile_dir=directory,
+        webauthn_capture=webauthn_capture,
         extra_args=args,
     )
 
@@ -204,7 +265,61 @@ def prepare_launch(
         license=license_info,
         public_ip=public_ip,
         proxy=proxy_spec,
+        archive=archive,
     )
+
+
+def _restore_archive(
+    *,
+    profile_name: str,
+    directory: Path,
+    api_key: Optional[str],
+    server: Optional[str],
+    license_info: LicenseInfo,
+    sync: Optional[bool],
+    on_sync: Optional[SyncCallback],
+    notify: ProgressCallback,
+) -> Optional[ArchivePlan]:
+    """Claim this profile's cloud archive slot and restore what is in it.
+
+    Returns None whenever the profile is local-only, which is the normal outcome
+    for a free plan, ``sync=False``, a pre-minted token with no key, or a server
+    that cannot be reached. Sync failures are reported, never raised: a launch
+    must still work from the local profile directory.
+    """
+    if sync is False:
+        return None
+    if sync is None and not license_info.sync:
+        return None
+
+    key = resolve_api_key(api_key)
+    if not key:
+        return None
+
+    if not _sync.ensure_server_profile(key, server, name=profile_name):
+        return None
+    urls = _sync.get_profile_archive_urls(key, server, name=profile_name)
+    if not urls:
+        return None
+
+    plan = ArchivePlan(
+        profile=profile_name,
+        can_upload=bool(urls.upload_url),
+        sign_upload=lambda: _sync.get_profile_archive_urls(key, server, name=profile_name).upload_url,
+        on_event=on_sync,
+    )
+
+    if urls.download_url:
+        notify("Restoring profile from the cloud")
+        plan.emit("download", "start")
+        try:
+            plan.restored = download_profile_cache(urls.download_url, directory)
+        except ProfileCacheError as error:
+            plan.emit("download", "error", str(error))
+        else:
+            plan.emit("download", "done")
+
+    return plan
 
 
 class _BaseSession:
@@ -215,6 +330,8 @@ class _BaseSession:
         self._process = process
         self._endpoint = endpoint
         self._closed = False
+        self._uploaded = False
+        self._sync_error: Optional[str] = None
 
     # -- introspection ----------------------------------------------------
     @property
@@ -257,6 +374,56 @@ class _BaseSession:
     @property
     def pid(self) -> Optional[int]:
         return self._process.pid if self._process else None
+
+    @property
+    def synced(self) -> bool:
+        """Whether this profile has a cloud archive slot (paid plans only)."""
+        return self._plan.archive is not None
+
+    @property
+    def sync_error(self) -> Optional[str]:
+        """Why the closing upload failed, if it did.
+
+        Worth checking after ``close()``: the local profile is still intact, but
+        the work done in this session did not reach the cloud, so another machine
+        would open a stale copy.
+        """
+        return self._sync_error
+
+    def _upload_archive(self) -> None:
+        """Pack and upload the profile, after the kernel process is gone.
+
+        Only ever called once, and never raises - a browsing session that ends
+        with a failed upload is still a session that happened.
+        """
+        archive = self._plan.archive
+        if archive is None or not archive.can_upload or self._uploaded:
+            return
+        self._uploaded = True
+        archive.emit("upload", "start")
+        try:
+            self._put_archive(archive)
+        except ProfileCacheError as error:
+            self._sync_error = str(error)
+            archive.emit("upload", "error", str(error))
+        else:
+            archive.emit("upload", "done")
+
+    def _put_archive(self, archive: ArchivePlan) -> None:
+        url = archive.sign_upload() if archive.sign_upload else None
+        if not url:
+            raise ProfileCacheError("No upload URL for the profile archive")
+        try:
+            upload_profile_cache(self._plan.profile_dir, url)
+        except ProfileCacheError as error:
+            # A signature that expired between signing and the last byte: sign
+            # once more rather than losing the session's cookies and passkeys.
+            if "HTTP 401" not in str(error) and "HTTP 403" not in str(error):
+                raise
+            fresh = archive.sign_upload() if archive.sign_upload else None
+            if not fresh:
+                raise
+            upload_profile_cache(self._plan.profile_dir, fresh)
 
     def __repr__(self) -> str:
         return "<{0} profile={1!r} kernel={2} cdp={3}>".format(
@@ -314,7 +481,11 @@ class Antibrow(_BaseSession):
         return self.context.new_page()
 
     def close(self) -> None:
-        """Close the browser and stop the kernel process. Idempotent."""
+        """Close the browser, stop the kernel, then save to the cloud. Idempotent.
+
+        The upload runs last on purpose: the profile directory is only consistent
+        (and unlocked, on Windows) once the kernel is gone.
+        """
         if self._closed:
             return
         self._closed = True
@@ -327,6 +498,7 @@ class Antibrow(_BaseSession):
         except Exception:
             pass
         kill_process_tree(self._process)
+        self._upload_archive()
 
     def __enter__(self) -> "Antibrow":
         return self
@@ -395,7 +567,10 @@ class AsyncAntibrow(_BaseSession):
             await self._playwright.stop()
         except Exception:
             pass
-        await asyncio.get_running_loop().run_in_executor(None, kill_process_tree, self._process)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, kill_process_tree, self._process)
+        # Packing and uploading are blocking; keep the event loop free.
+        await loop.run_in_executor(None, self._upload_archive)
 
     async def __aenter__(self) -> "AsyncAntibrow":
         return self
@@ -411,6 +586,128 @@ class AsyncAntibrow(_BaseSession):
         except AttributeError:
             raise AttributeError(name)
         return getattr(context, name)
+
+
+def _stray_locale_tab_language(plan: LaunchPlan) -> Optional[str]:
+    """The language whose stray tab needs closing, or None when there isn't one.
+
+    Only darwin passes ``-AppleLanguages``, and only that pair produces the tab.
+    """
+    if sys.platform != "darwin" or "-AppleLanguages" not in plan.args:
+        return None
+    return plan.persona.languages[0] if plan.persona.languages else "en-US"
+
+
+def _history_mentions_stray_locale(entries: Any, language: str) -> bool:
+    """True if a navigation history entry was aimed at the ``(xx-XX)`` argument."""
+    for entry in entries or []:
+        for key in ("url", "userTypedURL"):
+            if is_stray_locale_tab_url(entry.get(key) or "", language):
+                return True
+    return False
+
+
+def _close_stray_locale_tab(context: Any, plan: LaunchPlan, timeout: float = 3.0) -> None:
+    """Close the tab Chromium opened for the ``-AppleLanguages`` value.
+
+    Worth a short poll: the startup navigation may not have committed yet when
+    CDP starts answering, and ``page.url`` would still read ``about:blank``.
+    Once it has committed, ``(en-us)`` is not a resolvable host, so the tab reads
+    ``chrome-error://chromewebdata/`` even though the address bar still shows
+    ``(en-us)`` - hence the navigation-history check.
+    """
+    language = _stray_locale_tab_language(plan)
+    if language is None:
+        return
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            pages = list(context.pages)
+            stray = []
+            for page in pages:
+                url = page.url
+                if is_stray_locale_tab_url(url, language):
+                    stray.append(page)
+                elif url.startswith("chrome-error:"):
+                    session = context.new_cdp_session(page)
+                    try:
+                        history = session.send("Page.getNavigationHistory")
+                    finally:
+                        session.detach()
+                    if _history_mentions_stray_locale(history.get("entries"), language):
+                        stray.append(page)
+            if stray:
+                # Something has to stay open: closing the last tab takes the
+                # window - and with it the kernel - down.
+                if len(stray) == len(pages):
+                    context.new_page()
+                for page in stray:
+                    page.close()
+                return
+        except Exception:
+            return  # never let cosmetics fail a launch
+        if time.monotonic() >= deadline:
+            return
+        time.sleep(0.1)
+
+
+async def _close_stray_locale_tab_async(context: Any, plan: LaunchPlan, timeout: float = 3.0) -> None:
+    """asyncio twin of :func:`_close_stray_locale_tab`."""
+    language = _stray_locale_tab_language(plan)
+    if language is None:
+        return
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        try:
+            pages = list(context.pages)
+            stray = []
+            for page in pages:
+                url = page.url
+                if is_stray_locale_tab_url(url, language):
+                    stray.append(page)
+                elif url.startswith("chrome-error:"):
+                    session = await context.new_cdp_session(page)
+                    try:
+                        history = await session.send("Page.getNavigationHistory")
+                    finally:
+                        await session.detach()
+                    if _history_mentions_stray_locale(history.get("entries"), language):
+                        stray.append(page)
+            if stray:
+                if len(stray) == len(pages):
+                    await context.new_page()
+                for page in stray:
+                    await page.close()
+                return
+        except Exception:
+            return
+        if loop.time() >= deadline:
+            return
+        await asyncio.sleep(0.1)
+
+
+def _ensure_startup_page(context: Any) -> None:
+    """Open the first page when the kernel handed over none.
+
+    Normally a no-op: the kernel's own startup window provides it. This covers a
+    launch that ends up with zero pages (e.g. extra ``args`` suppressing the
+    startup window), because callers and ``reuse_initial_page`` expect one.
+    """
+    if not list(context.pages):
+        try:
+            context.new_page()
+        except Exception:
+            pass  # the caller's own new_page() will report a real failure
+
+
+async def _ensure_startup_page_async(context: Any) -> None:
+    """asyncio twin of :func:`_ensure_startup_page`."""
+    if not list(context.pages):
+        try:
+            await context.new_page()
+        except Exception:
+            pass
 
 
 def _start_process(plan: LaunchPlan, timeout: float, on_progress: Optional[ProgressCallback]):
@@ -449,6 +746,9 @@ def launch(
     license_token: Optional[str] = None,
     license_provider: Optional[LicenseProvider] = None,
     update_kernel: bool = False,
+    webauthn_capture: Optional[bool] = None,
+    sync: Optional[bool] = None,
+    on_sync: Optional[SyncCallback] = None,
     reuse_initial_page: bool = True,
     timeout: float = DEFAULT_LAUNCH_TIMEOUT,
     on_progress: Optional[ProgressCallback] = None,
@@ -489,6 +789,17 @@ def launch(
         license_provider: Callable returning a token - plug in your own issuer.
         update_kernel: Check for a newer build of this profile's kernel and
             install it before launching.
+        webauthn_capture: Keep newly registered passkeys in this profile's
+            portable store (the default), so they travel with an export or a
+            cloud sync. ``False`` lets the browser ask where to save instead
+            (phone / security key) and those stay on this device.
+        sync: Cloud profile sync - restore the profile before launching and save
+            it after closing, so another machine opens the same cookies, storage
+            and passkeys. Default (``None``) follows the plan the API key is on;
+            ``False`` keeps this launch local; ``True`` attempts it regardless.
+        on_sync: Called with a :class:`SyncEvent` as each transfer starts and
+            finishes. Sync problems are reported here and on
+            ``session.sync_error``, never raised.
         reuse_initial_page: Let the first ``new_page()`` return Chromium's
             initial blank tab instead of opening a second one.
         timeout: Seconds to wait for the browser to come up.
@@ -516,6 +827,9 @@ def launch(
         license_token=license_token,
         license_provider=license_provider,
         update_kernel=update_kernel,
+        webauthn_capture=webauthn_capture,
+        sync=sync,
+        on_sync=on_sync,
         on_progress=on_progress,
     )
     process, endpoint = _start_process(plan, timeout, on_progress)
@@ -525,6 +839,10 @@ def launch(
         browser = playwright.chromium.connect_over_cdp(endpoint, timeout=timeout * 1000)
         contexts = list(browser.contexts)
         context = contexts[0] if contexts else browser.new_context()
+        # Order matters: the guard runs first so a kernel that did open the
+        # locale tab has it closed, then we make sure exactly one page is left.
+        _close_stray_locale_tab(context, plan)
+        _ensure_startup_page(context)
     except BaseException:
         try:
             playwright.stop()
@@ -553,6 +871,9 @@ async def launch_async(
     license_token: Optional[str] = None,
     license_provider: Optional[LicenseProvider] = None,
     update_kernel: bool = False,
+    webauthn_capture: Optional[bool] = None,
+    sync: Optional[bool] = None,
+    on_sync: Optional[SyncCallback] = None,
     reuse_initial_page: bool = True,
     timeout: float = DEFAULT_LAUNCH_TIMEOUT,
     on_progress: Optional[ProgressCallback] = None,
@@ -589,6 +910,9 @@ async def launch_async(
             license_token=license_token,
             license_provider=license_provider,
             update_kernel=update_kernel,
+            webauthn_capture=webauthn_capture,
+            sync=sync,
+            on_sync=on_sync,
             on_progress=on_progress,
         )
 
@@ -602,6 +926,8 @@ async def launch_async(
         browser = await playwright.chromium.connect_over_cdp(endpoint, timeout=timeout * 1000)
         contexts = list(browser.contexts)
         context = contexts[0] if contexts else await browser.new_context()
+        await _close_stray_locale_tab_async(context, plan)
+        await _ensure_startup_page_async(context)
     except BaseException:
         try:
             await playwright.stop()

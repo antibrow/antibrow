@@ -150,6 +150,9 @@ Starts the kernel and returns a handle that is ready to drive. Blocking (sync) A
 | `license_token` | `str` | `None` | Use a pre-minted token instead of calling the server. |
 | `license_provider` | `callable` | `None` | Return a token from your own issuer (self-hosted, vault, CI). |
 | `update_kernel` | `bool` | `False` | Check for a newer build of this profile's kernel and install it before launching. |
+| `sync` | `bool` | plan default | Cloud profile sync: restore before launching, save after closing. `None` follows the plan the key is on, `False` keeps the launch local, `True` attempts it regardless. |
+| `on_sync` | `callable` | `None` | Receives a `SyncEvent` as each transfer starts and finishes. |
+| `webauthn_capture` | `bool` | `True` | Keep new passkeys in the profile's portable store, so they travel with a sync or an export. `False` lets the browser ask where to save instead (phone / security key) and those stay on this device. |
 | `reuse_initial_page` | `bool` | `True` | Let the first `new_page()` return Chromium's initial blank tab instead of opening a second one. |
 | `timeout` | `float` | `120.0` | Seconds to wait for the browser to come up. |
 | `on_progress` | `callable` | `None` | Receives progress lines (`"Downloading 42%"`, `"CDP endpoint ready …"`). |
@@ -176,11 +179,15 @@ browser.profile_dir                 # Path to this profile on disk
 browser.persona                     # the frozen identity (UA, GPU, screen, seeds…)
 browser.timezone, browser.public_ip # resolved from the proxy when geoip=True
 browser.kernel_version, browser.pid
+browser.synced                      # True when this profile has a cloud archive slot
+browser.sync_error                  # why the closing upload failed, if it did
 browser.plan                        # everything resolved for this launch
 browser.plan.redacted_args()        # the command line, secrets masked - paste into bug reports
 
 browser.close()                     # closes the browser and reaps the process tree
 ```
+
+`close()` also packs the profile and uploads it when sync is on, so it is the point at which cookies, storage and passkeys reach the cloud. It never raises for a sync failure — check `browser.sync_error` (or `on_sync`) if you need to know.
 
 `new_page()` hands back Chromium's initial blank tab the first time it is called (Chromium always opens with one), then opens real new tabs. Use `browser.context.new_page()` if you always want a fresh one.
 
@@ -475,7 +482,39 @@ Local profiles are unlimited on every plan, including free. What scales with the
 
 Details at [antibrow.com/pricing](https://antibrow.com/pricing). Exceeding the cap raises `ConcurrencyLimitError` instead of hanging.
 
-Cloud profile sync and Live View are implemented in the Node SDK and the desktop app; this package is local-only for now.
+### Cloud profile sync
+
+On a paid plan a launch restores the profile before starting and saves it again on
+`close()`, so the next machine opens the same cookies, storage, history and
+passkeys. It is on by default there and needs no extra code:
+
+```python
+from antibrow import launch
+
+browser = launch(profile="shopper-01")   # restored from the cloud
+...
+browser.close()                          # saved back
+if browser.sync_error:
+    print("not saved:", browser.sync_error)
+```
+
+Watch the transfers with `on_sync=`, or keep a launch local with `sync=False`.
+Sync problems never fail a launch: the local profile directory is always usable.
+
+Profiles also move by file. `export_profile_archive()` writes a `.fpprofile`
+(identity, browser state, passkey store) that `import_profile_archive()` reads
+back, on this SDK or the desktop app:
+
+```python
+from antibrow import PortableProfileMeta, export_profile_archive, import_profile_archive, profile_dir
+
+data = export_profile_archive(profile_dir("shopper-01"), PortableProfileMeta(name="shopper-01"))
+open("shopper-01.fpprofile", "wb").write(data)          # export with the browser closed
+
+meta = import_profile_archive(data, profile_dir("shopper-02"))
+```
+
+Live View remains Node-SDK and desktop only.
 
 ## FAQ
 

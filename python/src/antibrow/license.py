@@ -44,6 +44,7 @@ from .config import (
     ENV_API_KEY,
     ENV_API_KEY_LEGACY,
     ENV_LICENSE_TOKEN,
+    USER_AGENT,
     config_dir,
     default_server,
 )
@@ -73,7 +74,8 @@ class LicenseInfo:
 
     ``exp`` gates the local cache, ``mi`` is the concurrent-instance cap the
     kernel enforces, ``sync`` says whether the plan includes cloud profile sync
-    (which this SDK does not implement - see README).
+    (it decides whether a launch claims an archive slot - see
+    :mod:`antibrow.profile_sync`).
     """
 
     token: str
@@ -199,7 +201,11 @@ def fetch_license_token(api_key: str, server: Optional[str] = None) -> LicenseIn
         url,
         data=b"",  # POST with an empty body
         method="POST",
-        headers={"Authorization": "Bearer {0}".format(api_key), "Accept": "application/json"},
+        headers={
+            "Authorization": "Bearer {0}".format(api_key),
+            "Accept": "application/json",
+            "User-Agent": USER_AGENT,
+        },
     )
     try:
         with urllib.request.urlopen(request, timeout=_REQUEST_TIMEOUT) as response:  # noqa: S310
