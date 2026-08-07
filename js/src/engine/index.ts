@@ -14,17 +14,26 @@ import { loadOrGeneratePersona, type ApiLogMode } from './persona'
 import { lookupProxyGeo, type ProxyGeo } from './geoip'
 import { getLicenseToken } from './license'
 import { launchKernel, type KernelSession } from './launcher'
-import { downloadProfileCache, uploadProfileCache } from './profile-cache'
+import {
+  downloadProfileCache,
+  uploadProfileCache,
+  readArchiveVersion,
+  writeArchiveVersion,
+  clearArchiveVersion,
+} from './profile-cache'
+import { resolveProfileDir, readProfileMeta } from './profile-dir'
 
 export { KERNEL_VERSIONS, DEFAULT_KERNEL_VERSION, ensureKernel, isKernelInstalled, findKernelVersion, listInstalledKernels, kernelDirSize, deleteKernel, kernelDir, kernelAvailableOnPlatform, kernelsForPlatform, allKernelVersions, registerKernelVersions, fetchRemoteKernelVersions, refreshKernelVersions, loadCachedKernelVersions, KERNEL_MANIFEST_URL, KERNEL_MANIFEST_TTL_MS, KERNEL_VERSION_CACHE_FILE, currentPlatform, installedKernelBuild, writeInstalledKernelBuild, kernelUpdateStatus, installedKernelUpdates } from './downloader'
 export type { KernelVersion, KernelUpdateStatus } from './downloader'
 export type { KernelSession as EngineSession } from './launcher'
-export { downloadProfileCache, uploadProfileCache, packProfileCache, unpackProfileCache, exportProfileArchive, importProfileArchive, PROFILE_ARCHIVE_EXT } from './profile-cache'
+export { downloadProfileCache, uploadProfileCache, packProfileCache, unpackProfileCache, exportProfileArchive, importProfileArchive, PROFILE_ARCHIVE_EXT, ARCHIVE_VERSION_FILE, readArchiveVersion, writeArchiveVersion, clearArchiveVersion, normalizeArchiveVersion } from './profile-cache'
 export type { PortableProfileMeta, ImportedProfileMeta } from './profile-cache'
 export { generatePersona, loadOrGeneratePersona } from './persona'
 export type { Persona, ApiLogMode } from './persona'
 export { getLicenseToken, fetchLicenseToken, type LicenseInfo } from './license'
 export { lookupProxyGeo as lookupEngineProxyGeo, probeProxyExit, type ProxyGeo, type ProxyProbeResult } from './geoip'
+export { resolveProfileDir, resolveProfileDirSync, listProfileEntries, readProfileMeta, writeProfileMeta, sanitizeProfileName } from './profile-dir'
+export type { ProfileEntry, ProfileMeta, ResolvedProfile } from './profile-dir'
 
 export function defaultCacheDir(): string {
   return path.join(os.homedir(), '.anti-detect-browser')
@@ -46,6 +55,9 @@ export interface OpenProfileOptions {
   headless?: boolean
   /** Presigned download URL for the profile archive (restores browser state). */
   archiveGetUrl?: string
+  /** The cloud archive's generation. Equal to the local marker means this
+   *  machine already holds it and the restore is skipped. */
+  archiveVersion?: string
   /** Prefer `getArchivePutUrl`: a presign rarely outlives a browsing session. */
   archivePutUrl?: string
   /** Resolved after exit; wins over `archivePutUrl`. Undefined skips the upload. */
@@ -62,6 +74,8 @@ export interface OpenProfileOptions {
   canvasNoise?: boolean
   apiLog?: ApiLogMode
   webauthnCapture?: boolean
+  /** Reopen the previous session's tabs. Default true. */
+  restoreTabs?: boolean
   onProgress?: (message: string) => void
   /** `download` runs before launch, `upload` after openProfile has returned. */
   onArchiveSync?: (e: ArchiveSyncEvent) => void
@@ -87,17 +101,45 @@ export interface OpenedProfile extends KernelSession {
  */
 export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfile> {
   const cacheDir = opts.cacheDir ?? defaultCacheDir()
-  const profileDir = opts.profileDir ?? path.join(cacheDir, 'profiles', opts.profileName)
+  // An explicit directory wins: callers that keep their own profile registry
+  // (the desktop app) already know which directory this profile owns. Its own
+  // record still names it, though - that record is the directory's identity,
+  // and the archive is addressed by name.
+  const resolved = opts.profileDir
+    ? {
+        dir: opts.profileDir,
+        id: readProfileMeta(opts.profileDir)?.id ?? path.basename(opts.profileDir),
+        name: readProfileMeta(opts.profileDir)?.name ?? opts.profileName,
+      }
+    : await resolveProfileDir({
+        cacheDir,
+        profileName: opts.profileName,
+        key: opts.key,
+        server: opts.server,
+        onProgress: opts.onProgress,
+      })
+  const profileDir = resolved.dir
   fs.mkdirSync(profileDir, { recursive: true })
 
   // Restore first: persona.json carries the kernel version read below.
   if (opts.archiveGetUrl) {
-    opts.onProgress?.('Restoring profile archive')
-    opts.onArchiveSync?.({ phase: 'download', state: 'start' })
-    await downloadProfileCache(opts.archiveGetUrl, profileDir).then(
-      () => opts.onArchiveSync?.({ phase: 'download', state: 'done' }),
-      (e: unknown) => opts.onArchiveSync?.({ phase: 'download', state: 'error', error: errText(e) }),
-    )
+    const local = readArchiveVersion(profileDir)
+    // Equality, not ordering - an ETag has none. The case that matters: the last
+    // upload failed, so the cloud still holds the generation this machine has,
+    // and restoring it would erase newer local work.
+    if (opts.archiveVersion && local && local === opts.archiveVersion) {
+      opts.onProgress?.('Profile archive already current; skipping restore')
+    } else {
+      opts.onProgress?.('Restoring profile archive')
+      opts.onArchiveSync?.({ phase: 'download', state: 'start' })
+      await downloadProfileCache(opts.archiveGetUrl, profileDir).then(
+        (restored) => {
+          if (restored && opts.archiveVersion) writeArchiveVersion(profileDir, opts.archiveVersion)
+          opts.onArchiveSync?.({ phase: 'download', state: 'done' })
+        },
+        (e: unknown) => opts.onArchiveSync?.({ phase: 'download', state: 'error', error: errText(e) }),
+      )
+    }
   }
 
   // Versions newer than this release exist only in the manifest, so resolve the
@@ -148,11 +190,13 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
     publicIp,
     proxyUrl: opts.proxyUrl,
     licenseToken,
-    label: opts.label ?? opts.profileName,
+    label: opts.label ?? resolved.name,
     headless: opts.headless,
     canvasNoise: opts.canvasNoise,
     apiLog: opts.apiLog,
     webauthnCapture: opts.webauthnCapture,
+    restoreTabs: opts.restoreTabs,
+    rttMs: geo?.rttMs,
     onProgress: opts.onProgress,
   })
   if (geo) session.geo = geo
@@ -183,13 +227,18 @@ async function uploadArchive(profileDir: string, opts: OpenProfileOptions): Prom
 
   const url = await resolve()
   if (!url) throw new Error('No upload URL for the profile archive')
+  let version: string | undefined
   try {
-    await uploadProfileCache(profileDir, url)
+    version = await uploadProfileCache(profileDir, url)
   } catch (e) {
     const expired = /HTTP 40[13]/.test(errText(e))
     if (!expired || !opts.getArchivePutUrl) throw e
     const fresh = await opts.getArchivePutUrl()
     if (!fresh) throw e
-    await uploadProfileCache(profileDir, fresh)
+    version = await uploadProfileCache(profileDir, fresh)
   }
+  // No ETag means we cannot name what we just wrote; drop the marker so the next
+  // launch restores rather than trusting a stale generation.
+  if (version) writeArchiveVersion(profileDir, version)
+  else clearArchiveVersion(profileDir)
 }

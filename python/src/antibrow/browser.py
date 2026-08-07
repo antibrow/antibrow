@@ -35,13 +35,21 @@ from .launcher import (
     build_launch_args,
     is_stray_locale_tab_url,
     kill_process_tree,
+    shutdown_kernel,
     pick_free_port,
     spawn_kernel,
     wait_for_cdp,
 )
 from .license import LicenseInfo, LicenseProvider, get_license_token, resolve_api_key
 from .persona import Persona, load_or_generate_persona, write_fp_config
-from .profile_cache import download_profile_cache, upload_profile_cache
+from .profile_cache import (
+    clear_archive_version,
+    download_profile_cache,
+    read_archive_version,
+    upload_profile_cache,
+    write_archive_version,
+)
+from .profile_dir import read_profile_meta, resolve_profile_dir
 from .proxy import ProxyLike, ProxySpec, parse_proxy
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -78,6 +86,9 @@ class ArchivePlan:
     can_upload: bool = False
     sign_upload: Optional[Callable[[], Optional[str]]] = field(default=None, repr=False)
     on_event: Optional[SyncCallback] = field(default=None, repr=False)
+    #: The cloud archive's generation, from the server. Equal to the local
+    #: marker means this machine already holds it and the restore is skipped.
+    version: Optional[str] = None
 
     def emit(self, phase: str, state: str, error: Optional[str] = None) -> None:
         if self.on_event is not None:
@@ -143,6 +154,7 @@ def prepare_launch(
     license_provider: Optional[LicenseProvider] = None,
     update_kernel: bool = False,
     webauthn_capture: Optional[bool] = None,
+    restore_tabs: bool = True,
     sync: Optional[bool] = None,
     on_sync: Optional[SyncCallback] = None,
     on_progress: Optional[ProgressCallback] = None,
@@ -155,7 +167,19 @@ def prepare_launch(
     notify = on_progress or (lambda _message: None)
 
     root = Path(cache_dir).expanduser() if cache_dir else _config.default_cache_dir()
-    directory = Path(profile_dir).expanduser() if profile_dir else _config.profile_dir(profile, root)
+    if profile_dir:
+        directory = Path(profile_dir).expanduser()
+        meta = read_profile_meta(directory)
+        resolved_name = meta.name if meta else profile
+    else:
+        # Resolve both the way every other call site does: an env-only key and
+        # the default server are the documented setup, and forwarding the raw
+        # arguments would silently skip the lookup and strand this profile on a
+        # local id the Node SDK never resolves to.
+        resolved = resolve_profile_dir(
+            profile, root, api_key=resolve_api_key(api_key), server=server or _config.default_server()
+        )
+        directory, resolved_name = resolved.dir, resolved.name
     directory.mkdir(parents=True, exist_ok=True)
 
     # The license comes first because its `sync` flag decides whether there is a
@@ -170,7 +194,7 @@ def prepare_launch(
     )
 
     archive = _restore_archive(
-        profile_name=profile if profile_dir is None else directory.name,
+        profile_name=resolved_name,
         directory=directory,
         api_key=api_key,
         server=server,
@@ -214,6 +238,7 @@ def prepare_launch(
     proxy_spec = parse_proxy(proxy)
     resolved_timezone = timezone or persona.timezone
     public_ip: Optional[str] = None
+    geo = None
     if proxy_spec is not None and geoip:
         notify("Looking up proxy geo")
         geo = lookup_proxy_geo(proxy_spec)
@@ -223,13 +248,14 @@ def prepare_launch(
             if geo.ip:
                 public_ip = geo.ip
 
-    display_label = label or (profile if profile_dir is None else directory.name)
+    display_label = label or resolved_name
     fp_config_path = write_fp_config(
         directory,
         persona,
         label=display_label,
         timezone=resolved_timezone,
         public_ip=public_ip,
+        rtt_ms=geo.rtt_ms if geo else None,
     )
 
     user_data_dir = directory / "user-data"
@@ -249,6 +275,7 @@ def prepare_launch(
         proxy_auth=proxy_auth,
         profile_dir=directory,
         webauthn_capture=webauthn_capture,
+        restore_tabs=restore_tabs,
         extra_args=args,
     )
 
@@ -307,17 +334,27 @@ def _restore_archive(
         can_upload=bool(urls.upload_url),
         sign_upload=lambda: _sync.get_profile_archive_urls(key, server, name=profile_name).upload_url,
         on_event=on_sync,
+        version=urls.version,
     )
 
     if urls.download_url:
-        notify("Restoring profile from the cloud")
-        plan.emit("download", "start")
-        try:
-            plan.restored = download_profile_cache(urls.download_url, directory)
-        except ProfileCacheError as error:
-            plan.emit("download", "error", str(error))
+        local_version = read_archive_version(directory)
+        # Equality, not ordering - an ETag has none. The case that matters: the
+        # last upload failed, so the cloud still holds the generation this
+        # machine already has, and restoring it would erase newer local work.
+        if urls.version and local_version and local_version == urls.version:
+            notify("Profile archive already current; skipping restore")
         else:
-            plan.emit("download", "done")
+            notify("Restoring profile from the cloud")
+            plan.emit("download", "start")
+            try:
+                plan.restored = download_profile_cache(urls.download_url, directory)
+            except ProfileCacheError as error:
+                plan.emit("download", "error", str(error))
+            else:
+                plan.emit("download", "done")
+                if plan.restored and urls.version:
+                    write_archive_version(directory, urls.version)
 
     return plan
 
@@ -402,19 +439,25 @@ class _BaseSession:
         self._uploaded = True
         archive.emit("upload", "start")
         try:
-            self._put_archive(archive)
+            version = self._put_archive(archive)
         except ProfileCacheError as error:
             self._sync_error = str(error)
             archive.emit("upload", "error", str(error))
         else:
+            # No ETag means we cannot name what was just written; drop the marker
+            # so the next launch restores rather than trusting a stale generation.
+            if version:
+                write_archive_version(self._plan.profile_dir, version)
+            else:
+                clear_archive_version(self._plan.profile_dir)
             archive.emit("upload", "done")
 
-    def _put_archive(self, archive: ArchivePlan) -> None:
+    def _put_archive(self, archive: ArchivePlan) -> Optional[str]:
         url = archive.sign_upload() if archive.sign_upload else None
         if not url:
             raise ProfileCacheError("No upload URL for the profile archive")
         try:
-            upload_profile_cache(self._plan.profile_dir, url)
+            return upload_profile_cache(self._plan.profile_dir, url)
         except ProfileCacheError as error:
             # A signature that expired between signing and the last byte: sign
             # once more rather than losing the session's cookies and passkeys.
@@ -423,7 +466,7 @@ class _BaseSession:
             fresh = archive.sign_upload() if archive.sign_upload else None
             if not fresh:
                 raise
-            upload_profile_cache(self._plan.profile_dir, fresh)
+            return upload_profile_cache(self._plan.profile_dir, fresh)
 
     def __repr__(self) -> str:
         return "<{0} profile={1!r} kernel={2} cdp={3}>".format(
@@ -489,6 +532,20 @@ class Antibrow(_BaseSession):
         if self._closed:
             return
         self._closed = True
+        # Browser.close over the live CDP connection first: browser.close() only
+        # drops the connection for a browser we attached to, so disconnecting
+        # before asking would leave nothing to ask with.
+        #
+        # It has to happen on this thread. Playwright's sync API is greenlet-bound,
+        # so handing this call to shutdown_kernel's watchdog thread makes it raise
+        # without ever reaching the browser - the kernel then sits out the whole
+        # grace period and is SIGKILLed, which is the exact outcome asking politely
+        # exists to avoid. AsyncAntibrow.close does the same thing on its loop.
+        try:
+            self.browser.new_browser_cdp_session().send("Browser.close")
+        except Exception:
+            pass  # the connection drops with the browser; the wait below decides
+        shutdown_kernel(lambda: None, self._process)
         try:
             self.browser.close()
         except Exception:
@@ -497,7 +554,6 @@ class Antibrow(_BaseSession):
             self._playwright.stop()
         except Exception:
             pass
-        kill_process_tree(self._process)
         self._upload_archive()
 
     def __enter__(self) -> "Antibrow":
@@ -559,6 +615,13 @@ class AsyncAntibrow(_BaseSession):
         if self._closed:
             return
         self._closed = True
+        loop = asyncio.get_running_loop()
+        try:
+            cdp = await self.browser.new_browser_cdp_session()
+            await cdp.send("Browser.close")
+        except Exception:
+            pass  # The connection drops with the browser; the wait below decides.
+        await loop.run_in_executor(None, shutdown_kernel, lambda: None, self._process)
         try:
             await self.browser.close()
         except Exception:
@@ -567,8 +630,6 @@ class AsyncAntibrow(_BaseSession):
             await self._playwright.stop()
         except Exception:
             pass
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, kill_process_tree, self._process)
         # Packing and uploading are blocking; keep the event loop free.
         await loop.run_in_executor(None, self._upload_archive)
 
@@ -747,6 +808,7 @@ def launch(
     license_provider: Optional[LicenseProvider] = None,
     update_kernel: bool = False,
     webauthn_capture: Optional[bool] = None,
+    restore_tabs: bool = True,
     sync: Optional[bool] = None,
     on_sync: Optional[SyncCallback] = None,
     reuse_initial_page: bool = True,
@@ -777,7 +839,10 @@ def launch(
         server: License server base URL (for self-hosted deployments).
         cache_dir: Where kernels and profiles live. Default
             ``~/.anti-detect-browser``, shared with the Node SDK and desktop app.
-        profile_dir: Exact profile directory, bypassing ``cache_dir``/``profile``.
+        profile_dir: Exact profile directory, bypassing ``cache_dir``. Still
+            consults ``profile`` as the name (for the archive slot and the
+            label) when the directory carries no ``profile.json`` record;
+            a directory with a record keeps its recorded name instead.
         kernel_version: Kernel for a *new* profile, e.g. ``"150.0.7871.182"``.
             Existing profiles keep the version frozen in their persona.
         label: Text shown in the kernel's address-bar tag. Defaults to the
@@ -828,6 +893,7 @@ def launch(
         license_provider=license_provider,
         update_kernel=update_kernel,
         webauthn_capture=webauthn_capture,
+        restore_tabs=restore_tabs,
         sync=sync,
         on_sync=on_sync,
         on_progress=on_progress,
@@ -872,6 +938,7 @@ async def launch_async(
     license_provider: Optional[LicenseProvider] = None,
     update_kernel: bool = False,
     webauthn_capture: Optional[bool] = None,
+    restore_tabs: bool = True,
     sync: Optional[bool] = None,
     on_sync: Optional[SyncCallback] = None,
     reuse_initial_page: bool = True,
@@ -911,6 +978,7 @@ async def launch_async(
             license_provider=license_provider,
             update_kernel=update_kernel,
             webauthn_capture=webauthn_capture,
+            restore_tabs=restore_tabs,
             sync=sync,
             on_sync=on_sync,
             on_progress=on_progress,

@@ -158,6 +158,107 @@ describe('profile-cache', () => {
     expect(fs.existsSync(path.join(dst, 'user-data', 'Default', 'Code Cache'))).toBe(false)
   })
 
+  // Restoring used to merge into whatever was already on disk. Chromium picks
+  // the session to restore by the timestamp in the file name, so a leftover
+  // Sessions/Session_<newer> from this machine silently outranked the restored
+  // one and the profile opened with the wrong machine's tabs - the "tabs are
+  // sometimes there, sometimes not" report.
+  it('replaces user-data state instead of merging, so stale local files cannot outrank the archive', () => {
+    const src = tmp('pc-repl-src-')
+    const srcUd = path.join(src, 'user-data')
+    fs.mkdirSync(path.join(srcUd, 'Default', 'Sessions'), { recursive: true })
+    fs.writeFileSync(path.join(srcUd, 'Default', 'Sessions', 'Session_100'), 'from-cloud')
+    fs.writeFileSync(path.join(srcUd, 'Default', 'Cookies'), 'cloud-cookies')
+    fs.writeFileSync(path.join(srcUd, 'Local State'), 'cloud-local-state')
+    const buf = packProfileCache(src)
+
+    const dst = tmp('pc-repl-dst-')
+    const dstUd = path.join(dst, 'user-data')
+    fs.mkdirSync(path.join(dstUd, 'Default', 'Sessions'), { recursive: true })
+    // A newer session this machine wrote, absent from the archive.
+    fs.writeFileSync(path.join(dstUd, 'Default', 'Sessions', 'Session_999'), 'stale-local')
+    // A write-ahead log for a database the archive replaces: replaying it over
+    // the restored Cookies is how a cross-machine profile half loses its logins.
+    fs.writeFileSync(path.join(dstUd, 'Default', 'Cookies-wal'), 'stale-wal')
+    fs.mkdirSync(path.join(dstUd, 'Default', 'Local Storage', 'leveldb'), { recursive: true })
+    fs.writeFileSync(path.join(dstUd, 'Default', 'Local Storage', 'leveldb', '000009.log'), 'stale-ldb')
+    // Disposable, and expensive to refetch: must survive.
+    fs.mkdirSync(path.join(dstUd, 'Default', 'Cache'), { recursive: true })
+    fs.writeFileSync(path.join(dstUd, 'Default', 'Cache', 'data_0'), 'keep-cache')
+
+    unpackProfileCache(buf, dst)
+
+    expect(fs.readFileSync(path.join(dstUd, 'Default', 'Sessions', 'Session_100'), 'utf8')).toBe('from-cloud')
+    expect(fs.existsSync(path.join(dstUd, 'Default', 'Sessions', 'Session_999'))).toBe(false)
+    expect(fs.existsSync(path.join(dstUd, 'Default', 'Cookies-wal'))).toBe(false)
+    expect(fs.existsSync(path.join(dstUd, 'Default', 'Local Storage', 'leveldb', '000009.log'))).toBe(false)
+    expect(fs.readFileSync(path.join(dstUd, 'Default', 'Cookies'), 'utf8')).toBe('cloud-cookies')
+    expect(fs.readFileSync(path.join(dstUd, 'Default', 'Cache', 'data_0'), 'utf8')).toBe('keep-cache')
+  })
+
+  // A live Chromium can hold `Local State` open while the browser is killed
+  // past its grace period, so `addDirSafe`/`zip.addFile` silently omit it from
+  // the archive that still uploads fine. The old unconditional clear would then
+  // delete the local copy on the next restore and put nothing back -
+  // `os_crypt.encrypted_key` lives there, so every cookie/password becomes
+  // undecryptable with no error anywhere.
+  it('leaves a local item alone when the archive never mentions it at all, while still replacing items it does carry', () => {
+    const src = tmp('pc-partial-src-')
+    const srcUd = path.join(src, 'user-data')
+    fs.mkdirSync(path.join(srcUd, 'Default'), { recursive: true })
+    fs.writeFileSync(path.join(srcUd, 'Default', 'Cookies'), 'cloud-cookies')
+    // Local State deliberately absent from the source, simulating a pack that
+    // silently skipped it.
+    const buf = packProfileCache(src)
+    expect(new AdmZip(buf).getEntries().map((e) => e.entryName)).not.toContain('user-data/Local State')
+
+    const dst = tmp('pc-partial-dst-')
+    const dstUd = path.join(dst, 'user-data')
+    fs.mkdirSync(path.join(dstUd, 'Default'), { recursive: true })
+    fs.writeFileSync(path.join(dstUd, 'Default', 'Cookies'), 'stale-local-cookies')
+    fs.writeFileSync(path.join(dstUd, 'Local State'), 'local-encrypted-key')
+
+    unpackProfileCache(buf, dst)
+
+    // Default was in the archive: replaced, not merged.
+    expect(fs.readFileSync(path.join(dstUd, 'Default', 'Cookies'), 'utf8')).toBe('cloud-cookies')
+    // Local State was not in the archive at all: left exactly as it was.
+    expect(fs.readFileSync(path.join(dstUd, 'Local State'), 'utf8')).toBe('local-encrypted-key')
+  })
+
+  it('keeps the profile intact when the archive is unreadable', () => {
+    const dst = tmp('pc-bad-')
+    const ud = path.join(dst, 'user-data')
+    fs.mkdirSync(path.join(ud, 'Default'), { recursive: true })
+    fs.writeFileSync(path.join(ud, 'Default', 'Cookies'), 'local-cookies')
+
+    expect(() => unpackProfileCache(Buffer.from('not a zip at all'), dst)).toThrow()
+    expect(fs.readFileSync(path.join(ud, 'Default', 'Cookies'), 'utf8')).toBe('local-cookies')
+  })
+
+  // Device-bound session keys live in the OS keystore and cannot be exported.
+  // Shipping the records only guarantees the next machine is refused.
+  it('never carries device-bound session records, and drops any it finds on restore', () => {
+    const src = tmp('pc-dbsc-src-')
+    const srcNet = path.join(src, 'user-data', 'Default', 'Network')
+    fs.mkdirSync(srcNet, { recursive: true })
+    fs.writeFileSync(path.join(srcNet, 'Cookies'), 'ck')
+    fs.writeFileSync(path.join(srcNet, 'Device Bound Sessions'), 'bound-to-machine-a')
+    fs.writeFileSync(path.join(srcNet, 'Device Bound Sessions-journal'), '')
+
+    const entries = new AdmZip(packProfileCache(src)).getEntries().map((e) => e.entryName)
+    expect(entries).toContain('user-data/Default/Network/Cookies')
+    expect(entries.some((n) => n.includes('Device Bound Sessions'))).toBe(false)
+
+    const dst = tmp('pc-dbsc-dst-')
+    const dstNet = path.join(dst, 'user-data', 'Default', 'Network')
+    fs.mkdirSync(dstNet, { recursive: true })
+    fs.writeFileSync(path.join(dstNet, 'Device Bound Sessions'), 'bound-to-machine-b')
+    unpackProfileCache(packProfileCache(src), dst)
+
+    expect(fs.existsSync(path.join(dstNet, 'Device Bound Sessions'))).toBe(false)
+  })
+
   it('still imports the legacy AntiBrow .zip export (profile.json entry)', () => {
     const legacy = new AdmZip()
     legacy.addFile('profile.json', Buffer.from(JSON.stringify({
@@ -177,6 +278,33 @@ describe('profile-cache', () => {
     expect(fs.readFileSync(path.join(dst, 'user-data', 'Local State'), 'utf8')).toBe('ls')
     // the metadata entry must not be left behind as a stray file in the profile dir
     expect(fs.existsSync(path.join(dst, 'profile.json'))).toBe(false)
+  })
+
+  it('keeps the directory identity record a legacy import would overwrite', () => {
+    // The legacy export reused the identity record's filename, so importing on
+    // top of a resolved directory must not leave it record-less: the profile
+    // would resolve as a nameless legacy directory ever after.
+    const dst = tmp('legacy-keep-')
+    const record = JSON.stringify({ id: 'uuid-a', name: 'gmail', origin: 'server' })
+    fs.writeFileSync(path.join(dst, 'profile.json'), record, 'utf8')
+
+    const legacy = new AdmZip()
+    legacy.addFile('profile.json', Buffer.from(JSON.stringify({ name: 'Amazon US', kernelVersion: '149.0.7827.201' })))
+    legacy.addFile('persona.json', Buffer.from('{"ua":"UA"}'))
+    const got = importProfileArchive(legacy.toBuffer(), dst)
+
+    expect(got.name).toBe('Amazon US')
+    expect(fs.readFileSync(path.join(dst, 'profile.json'), 'utf8')).toBe(record)
+  })
+
+  it('never packs the identity record: it belongs to this machine only', () => {
+    const dir = tmp('pc-meta-')
+    fs.writeFileSync(path.join(dir, 'profile.json'), JSON.stringify({ id: 'uuid-a', name: 'gmail', origin: 'server' }), 'utf8')
+    const zip = packProfileCache(dir)
+    const names = new AdmZip(zip).getEntries().map((e) => e.entryName)
+    expect(names).not.toContain('profile.json')
+    const portable = exportProfileArchive(dir, { id: 'uuid-a', name: 'gmail', kernelVersion: '150.0.7871.182' })
+    expect(new AdmZip(portable).getEntries().map((e) => e.entryName)).not.toContain('profile.json')
   })
 })
 

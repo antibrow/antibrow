@@ -30,6 +30,10 @@ Ships as an **MCP server** — one line (`npx anti-detect-browser --mcp`) drops 
 
 Fingerprints are spoofed at the **kernel level** (a custom Chromium 149 runtime), not with fragile JavaScript patches that anti-bot systems flag on sight. Signals stay **coherent** across Canvas, WebGL, WebGPU, fonts, audio, `navigator`, screen and timezone — nothing contradicts, because it's a real device profile, not randomized noise. Timezone and geolocation **follow your proxy** automatically.
 
+### Authenticated proxies, with nothing loaded to make them work
+
+Pass `http://`, `https://` or **`socks5://user:pass@host:port`** and the credentials are answered **inside the engine** — HTTP/HTTPS `407` challenges in the network stack, SOCKS5 by RFC 1929 username/password negotiation. No helper extension is installed, so `chrome://extensions` stays empty; the proxy-auth extension most antidetect browsers still ship is enumerable from any page and is itself a tell. Credentials reach the network process only, never a renderer.
+
 ## Proof it works
 
 Real residential exit, `Proxy: No`, 90% disguise on whoer.net — and a clean run through CreepJS:
@@ -135,6 +139,7 @@ Add it to your MCP client config and your agent gets a stealth browser:
 | **Self-updating kernel** | Detect new browser-kernel builds and pull them on demand, or check-and-update before launch |
 | **Built-in MCP server** | Drive it from Claude or any MCP agent, no glue code |
 | **Managed residential proxies** | One `proxyId`; the exit IP, timezone and geo all line up |
+| **Authenticated HTTP/SOCKS5** | Credentials answered in the engine (`407` / RFC 1929) — no proxy-auth extension to enumerate |
 | **Live View** | Stream a running session to your dashboard in real time |
 | **Cloud profile sync** | Roam a profile (identity + state) across machines |
 | **Concurrency by plan** | Kernel-enforced simultaneous-browser cap |

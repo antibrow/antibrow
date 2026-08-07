@@ -44,6 +44,30 @@ def test_required_switches_are_always_present():
     assert "--no-default-browser-check" in args
 
 
+@pytest.mark.parametrize("platform", ["win32", "linux", "darwin"])
+def test_device_bound_sessions_stay_off(platform):
+    # A device-bound session's private key lives in the OS keystore and cannot
+    # be exported, so a profile carrying one is refused on the next machine:
+    # Gmail comes up signed out while GitHub, which does not use DBSC, does not.
+    assert "--disable-features=DeviceBoundSessions" in args_for(platform=platform)
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux", "darwin"])
+def test_previous_tabs_are_restored_by_default(platform):
+    # The default startup is the new tab page and only a crashed exit offers
+    # restore, so left alone whether the tabs return depends on how the previous
+    # session happened to die.
+    args = args_for(platform=platform)
+    assert "--restore-last-session" in args
+    assert "--hide-crash-restore-bubble" in args
+
+
+def test_restore_can_be_turned_off():
+    args = args_for(restore_tabs=False)
+    assert "--restore-last-session" not in args
+    assert "--hide-crash-restore-bubble" not in args
+
+
 def test_language_switch_follows_the_persona():
     assert switch(args_for(language="de-DE"), "lang") == "de-DE"
     assert switch(args_for(), "lang") == "en-US"
@@ -270,3 +294,47 @@ def test_capturing_passkeys_is_the_default_and_opt_out_asks_the_user_instead():
 def test_the_startup_window_is_never_suppressed():
     for platform in ("win32", "linux", "darwin"):
         assert "--no-startup-window" not in args_for(platform=platform), platform
+
+
+# -- feature-switch merging ------------------------------------------------
+#
+# Chromium keeps only the LAST occurrence of --enable-features /
+# --disable-features. A caller passing its own would silently drop ours, and
+# losing --disable-features=DeviceBoundSessions re-arms the cross-machine
+# sign-out this SDK exists to prevent - with no error anywhere.
+
+
+def test_caller_supplied_disable_features_does_not_drop_ours():
+    args = args_for(extra_args=["--disable-features=Translate"])
+    switches = [a for a in args if a.startswith("--disable-features=")]
+
+    assert len(switches) == 1
+    values = switches[0].split("=", 1)[1].split(",")
+    assert "DeviceBoundSessions" in values
+    assert "Translate" in values
+
+
+def test_enable_features_is_merged_the_same_way():
+    args = args_for(extra_args=["--enable-features=A", "--enable-features=B"])
+    switches = [a for a in args if a.startswith("--enable-features=")]
+
+    assert len(switches) == 1
+    assert switches[0].split("=", 1)[1].split(",") == ["A", "B"]
+
+
+def test_repeated_values_are_not_duplicated():
+    args = args_for(extra_args=["--disable-features=DeviceBoundSessions,Translate"])
+    values = [a for a in args if a.startswith("--disable-features=")][0].split("=", 1)[1].split(",")
+
+    assert values.count("DeviceBoundSessions") == 1
+
+
+def test_merging_leaves_every_other_switch_untouched():
+    extra = ["--mute-audio", "--disable-features=Translate", "--window-size=800,600"]
+    args = args_for(extra_args=extra)
+
+    assert "--mute-audio" in args
+    assert "--window-size=800,600" in args
+    # The merged switch keeps the position of the first occurrence, which is
+    # ours, so caller args stay in their original relative order.
+    assert args.index("--mute-audio") < args.index("--window-size=800,600")

@@ -12,6 +12,9 @@ export interface ProxyGeo {
   /** Exit city, e.g. "Los Angeles". Empty string when the geo API omits it. */
   city: string
   timezone: string
+  /** Round-trip of the probe request that produced this geo, in ms. Absent when
+   *  the caller built a ProxyGeo without probing. */
+  rttMs?: number
 }
 
 /** Probe outcome. `ok` means the request really came back through the proxy. */
@@ -203,7 +206,12 @@ export async function probeProxyExit(proxyUrl: string, timeoutMs = 10_000): Prom
 
   try {
     const geo = await lookup(parsed, timeoutMs)
-    return { ok: true, geo, latencyMs: Date.now() - start }
+    const latencyMs = Date.now() - start
+    // Includes DNS, connect and TLS, so it overestimates Chrome's http_rtt -
+    // deliberately not compensated: erring slow only ever yields a slower
+    // effectiveType, which is still a self-consistent trio.
+    if (geo) geo.rttMs = latencyMs
+    return { ok: true, geo, latencyMs }
   } catch (e) {
     return fail(e instanceof Error ? e.message : String(e))
   }

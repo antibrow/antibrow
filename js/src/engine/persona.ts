@@ -132,6 +132,47 @@ function webgpuIdentity(renderer: string): { vendor: string; architecture: strin
   return { vendor: '', architecture: '' }
 }
 
+/**
+ * Chromium's http-RTT cut-offs for navigator.connection.effectiveType. Copied
+ * from net/nqe/network_quality_estimator_params.h's
+ * kHttpRttEffectiveConnectionTypeThresholds (SLOW_2G 2010, 2G 1420, 3G 272 -
+ * enum order is UNKNOWN, OFFLINE, SLOW_2G, 2G, 3G, 4G) and treated as
+ * approximate: what matters is that the trio we report is internally
+ * consistent, not that it matches one specific Chrome build to the
+ * millisecond.
+ */
+export const ECT_RTT_THRESHOLDS = { fourG: 272, threeG: 1420, twoG: 2010 } as const
+
+/**
+ * Build a self-consistent navigator.connection. Chrome rounds rtt to 25ms and
+ * downlink to 25kbps (0.025Mbps) and derives effectiveType from rtt, so a
+ * mismatched trio ('4g' with rtt 800, '3g' with 10Mbps) is a contradiction
+ * rather than camouflage. rtt comes from the proxy probe when there is one: a
+ * site that measures latency itself then agrees with what we report.
+ */
+export function deriveConnection(
+  seed: string,
+  rttMs?: number,
+): { effectiveType: string; rtt: number; downlink: number } {
+  const seedSum = seed.split('').reduce((a, c) => a + c.charCodeAt(0), 0)
+  const measured = typeof rttMs === 'number' && Number.isFinite(rttMs) && rttMs > 0
+  // Unmeasured (no proxy, or the lookup failed): stay under the 4g threshold so
+  // the trio holds, but vary per persona - this used to be one global constant.
+  const raw = measured ? rttMs : 50 + (seedSum % 9) * 25
+  const rtt = Math.min(3000, Math.max(25, Math.round(raw / 25) * 25))
+  const effectiveType =
+    rtt < ECT_RTT_THRESHOLDS.fourG ? '4g'
+      : rtt < ECT_RTT_THRESHOLDS.threeG ? '3g'
+        : rtt < ECT_RTT_THRESHOLDS.twoG ? '2g'
+          : 'slow-2g'
+  // Bandwidth is too expensive to measure on the launch path, so it stays
+  // seed-derived - but capped by effectiveType so the pair agrees.
+  const [minDl, maxDl] = effectiveType === '4g' ? [1, 10] : [0.4, 1.5]
+  const steps = Math.round((maxDl - minDl) / 0.025)
+  const downlink = Math.round((minDl + (seedSum % (steps + 1)) * 0.025) * 1000) / 1000
+  return { effectiveType, rtt, downlink }
+}
+
 /** Per-profile kernel behaviour that is not part of the identity. */
 export interface FpConfigSettings {
   /**
@@ -143,6 +184,8 @@ export interface FpConfigSettings {
   apiLog?: ApiLogMode
   /** Where the kernel writes the API log; required unless the mode is 'off'. */
   apiLogPath?: string
+  /** Measured proxy round-trip; drives the whole connection trio. */
+  rttMs?: number
 }
 
 /** Serialize persona to the fp-config.json schema expected by the kernel. */
@@ -213,7 +256,7 @@ export function personaToFpConfig(
     audio: { seed: persona.audioSeed },
     domrect: { seed: persona.domrectSeed },
     webrtc,
-    connection: { effectiveType: '4g', rtt: 100, downlink: 10 },
+    connection: deriveConnection(persona.seed, opts.rttMs),
     prefersColorScheme: colorScheme,
     // `allow` is a whitelist over the kernel's probeable font set - left empty
     // it hides nothing, and every host font (macOS/Linux system fonts on a

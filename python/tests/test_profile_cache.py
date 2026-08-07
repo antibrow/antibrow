@@ -55,6 +55,8 @@ class _Handler(BaseHTTPRequestHandler):
             {"body": self.rfile.read(length), "content_type": self.headers.get("Content-Type")}
         )
         self.send_response(self.server.put_status)
+        if self.server.put_etag is not None:
+            self.send_header("ETag", self.server.put_etag)
         self.end_headers()
 
     def log_message(self, *args):
@@ -67,6 +69,7 @@ def server():
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     httpd.get_response = (200, b"")
     httpd.put_status = 200
+    httpd.put_etag = None
     httpd.puts = []
     httpd.url = "http://127.0.0.1:{0}/archive.zip".format(httpd.server_address[1])
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -120,6 +123,93 @@ def test_unpack_restores_the_packed_tree(tmp_path):
     assert (dest / "user-data" / "Default" / "Cookies").read_text() == "cookie-db"
 
 
+def test_unpack_replaces_user_data_instead_of_merging_into_it(tmp_path):
+    # The browser picks the session to restore by the timestamp in the file
+    # name, so a leftover Sessions/Session_<newer> from this machine silently
+    # outranks the restored one and the profile opens with the wrong tabs.
+    src = make_profile(tmp_path / "src")
+    sessions = src / "user-data" / "Default" / "Sessions"
+    sessions.mkdir(parents=True, exist_ok=True)
+    (sessions / "Session_100").write_text("from-cloud")
+    data = P.pack_profile_cache(src)
+
+    dest = tmp_path / "dest"
+    dest_default = dest / "user-data" / "Default"
+    (dest_default / "Sessions").mkdir(parents=True)
+    (dest_default / "Sessions" / "Session_999").write_text("stale-local")
+    (dest_default / "Cookies-wal").write_text("stale-wal")
+    (dest_default / "Cache").mkdir()
+    (dest_default / "Cache" / "data_0").write_text("keep-cache")
+
+    P.unpack_profile_cache(data, dest)
+
+    assert (dest_default / "Sessions" / "Session_100").read_text() == "from-cloud"
+    assert not (dest_default / "Sessions" / "Session_999").exists()
+    assert not (dest_default / "Cookies-wal").exists()
+    assert (dest_default / "Cache" / "data_0").read_text() == "keep-cache"
+
+
+def test_unpack_leaves_an_item_alone_when_the_archive_never_mentions_it(tmp_path):
+    # A live browser can hold Local State open past the shutdown grace period,
+    # so packing silently omits it and the archive still uploads fine. The old
+    # unconditional clear would then delete the local copy on the next restore
+    # and put nothing back - os_crypt.encrypted_key lives there, so every
+    # cookie/password becomes undecryptable with no error anywhere.
+    src = tmp_path / "src"
+    src_default = src / "user-data" / "Default"
+    src_default.mkdir(parents=True)
+    (src_default / "Cookies").write_text("cloud-cookies")
+    # Local State deliberately absent from the source.
+    data = P.pack_profile_cache(src)
+    assert "user-data/Local State" not in entries(data)
+
+    dest = tmp_path / "dest"
+    dest_default = dest / "user-data" / "Default"
+    dest_default.mkdir(parents=True)
+    (dest_default / "Cookies").write_text("stale-local-cookies")
+    (dest / "user-data" / "Local State").write_text("local-encrypted-key")
+
+    P.unpack_profile_cache(data, dest)
+
+    # Default was in the archive: replaced, not merged.
+    assert (dest_default / "Cookies").read_text() == "cloud-cookies"
+    # Local State was not in the archive at all: left exactly as it was.
+    assert (dest / "user-data" / "Local State").read_text() == "local-encrypted-key"
+
+
+def test_unpack_leaves_the_profile_intact_when_the_archive_is_unreadable(tmp_path):
+    dest = make_profile(tmp_path / "dest")
+
+    with pytest.raises(Exception):
+        P.unpack_profile_cache(b"not a zip at all", dest)
+
+    assert (dest / "user-data" / "Default" / "Cookies").read_text() == "cookie-db"
+
+
+def test_device_bound_sessions_are_never_carried_and_are_dropped_on_restore(tmp_path):
+    # The private keys live in the OS keystore and cannot be exported, so
+    # shipping the records only guarantees the next machine is refused.
+    src = make_profile(tmp_path / "src")
+    net = src / "user-data" / "Default" / "Network"
+    net.mkdir(parents=True, exist_ok=True)
+    (net / "Cookies").write_text("ck")
+    (net / "Device Bound Sessions").write_text("bound-to-machine-a")
+    data = P.pack_profile_cache(src)
+
+    names = entries(data)
+    assert "user-data/Default/Network/Cookies" in names
+    assert not any("Device Bound Sessions" in name for name in names)
+
+    dest = tmp_path / "dest"
+    dest_net = dest / "user-data" / "Default" / "Network"
+    dest_net.mkdir(parents=True)
+    (dest_net / "Device Bound Sessions").write_text("bound-to-machine-b")
+
+    P.unpack_profile_cache(data, dest)
+
+    assert not (dest_net / "Device Bound Sessions").exists()
+
+
 def test_unpack_ignores_entries_pointing_outside_the_profile(tmp_path):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
@@ -167,6 +257,18 @@ def test_upload_puts_a_zip_carrying_the_passkey_store(tmp_path, server):
     assert len(server.puts) == 1
     assert server.puts[0]["content_type"] == "application/zip"
     assert "passkeys.json" in entries(server.puts[0]["body"])
+
+
+def test_upload_returns_the_normalized_etag_as_the_new_generation(tmp_path, server):
+    server.put_etag = '"abc123"'
+
+    assert P.upload_profile_cache(make_profile(tmp_path), server.url) == "abc123"
+
+
+def test_upload_returns_none_when_the_response_names_no_etag(tmp_path, server):
+    server.put_etag = None
+
+    assert P.upload_profile_cache(make_profile(tmp_path), server.url) is None
 
 
 def test_upload_raises_with_the_status_when_the_presign_expired(tmp_path, server):

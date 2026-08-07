@@ -1,6 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+
+// `openProfile` is imported directly by name in some tests below and needs
+// to be the same identity as the spy (so `.mock`/`.mockClear` work on it),
+// which requires it to exist before the hoisted `vi.mock` factory runs.
+const openProfileSpy = vi.hoisted(() => vi.fn())
 
 const fakePage = { url: () => 'about:blank', goto: vi.fn(async () => undefined), evaluate: vi.fn(async () => undefined) }
+// Mirrors real Playwright: closing the underlying browser fires 'close' on
+// its context, which is how the SDK's per-session cleanup actually runs.
+let closeListeners: Array<() => void> = []
 const fakeSession = {
   context: {
     pages: () => [fakePage],
@@ -9,34 +20,54 @@ const fakeSession = {
     addInitScript: vi.fn(async () => undefined),
     storageState: vi.fn(async () => ({ cookies: [], origins: [] })),
     close: vi.fn(async () => undefined),
-    on: vi.fn(),
+    on: vi.fn((event: string, cb: () => void) => {
+      if (event === 'close') closeListeners.push(cb)
+    }),
   },
   wsEndpoint: 'ws://127.0.0.1/devtools/browser/abc',
   profileDir: 'D:/profiles/amazon-us',
   onExit: vi.fn(),
-  close: vi.fn(async () => undefined),
+  close: vi.fn(async () => {
+    closeListeners.forEach((cb) => cb())
+  }),
 }
-const openProfileSpy = vi.fn(async () => fakeSession)
+openProfileSpy.mockImplementation(async () => fakeSession)
 const licenseSpy = vi.fn(async () => ({ token: 'tok', exp: Math.floor(Date.now() / 1000) + 86400, mi: 10, sync: true }))
 const installedKernelUpdatesSpy = vi.fn((): Array<Record<string, unknown>> => [])
 const ensureKernelSpy = vi.fn(async () => 'C:/kernels/chrome.exe')
 const refreshKernelVersionsSpy = vi.fn(async () => undefined)
 
 vi.mock('../src/engine', () => ({
-  openProfile: (...args: unknown[]) => openProfileSpy(...args),
+  openProfile: openProfileSpy,
   getLicenseToken: (...args: unknown[]) => licenseSpy(...(args as [])),
   ensureKernel: (...args: unknown[]) => ensureKernelSpy(...(args as [])),
   findKernelVersion: (v: string) => ({ version: v, label: v, platforms: {} }),
   refreshKernelVersions: (...args: unknown[]) => refreshKernelVersionsSpy(...(args as [])),
   installedKernelUpdates: (...args: unknown[]) => installedKernelUpdatesSpy(...(args as [])),
+  // A minimal stand-in for the real profile-dir reader: reads profile.json out
+  // of the given directory, same shape, no dependency on the real module.
+  readProfileMeta: (dir: string) => {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(dir, 'profile.json'), 'utf8'))
+    } catch {
+      return undefined
+    }
+  },
 }))
 
+const getOrCreateProfileSpy = vi.fn(async () => ({ id: 'profile-1', name: 'amazon-us', config: null }))
+const getProfileArchiveUrlsSpy = vi.fn(async () => ({ downloadUrl: 'https://r2/get', uploadUrl: 'https://r2/put' }))
 vi.mock('../src/api', () => ({
-  getOrCreateProfile: vi.fn(async () => ({ id: 'profile-1', name: 'amazon-us', config: null })),
+  getOrCreateProfile: (...args: unknown[]) => getOrCreateProfileSpy(...(args as [])),
   activateProxy: vi.fn(async () => ({ proxy: { id: 'px1', protocol: 'http', host: 'proxy.local', port: 8080, username: 'u', password: 'p' } })),
-  managedProxyToRelayUrl: vi.fn(() => 'relay://k:px1@proxy.antibrow.com'),
+  managedProxyToRelayUrl: vi.fn((proxyId: string, secret: string) => `relay://${proxyId}:${secret}@proxy.antibrow.com`),
+  issueProxyTicket: vi.fn(async () => ({
+    ticketId: 't1', username: 'px1', password: 'sec', host: 'proxy.antibrow.com',
+    expiresAt: '2026-08-08T00:00:00.000Z',
+  })),
+  revokeProxyTicket: vi.fn(async () => undefined),
   DEFAULT_RELAY_HOST: 'proxy.antibrow.com',
-  getProfileArchiveUrls: vi.fn(async () => ({ downloadUrl: 'https://r2/get', uploadUrl: 'https://r2/put' })),
+  getProfileArchiveUrls: (...args: unknown[]) => getProfileArchiveUrlsSpy(...(args as [])),
 }))
 
 const versionCheckSpy = vi.fn(async () => ({ status: 'ok', current: '1.0.0' }))
@@ -48,6 +79,7 @@ vi.mock('../src/version', () => ({
 import { AntiDetectBrowser } from '../src/browser'
 
 beforeEach(() => {
+  closeListeners = []
   openProfileSpy.mockClear()
   licenseSpy.mockReset()
   licenseSpy.mockResolvedValue({ token: 'tok', exp: Math.floor(Date.now() / 1000) + 86400, mi: 10, sync: true })
@@ -56,6 +88,8 @@ beforeEach(() => {
   installedKernelUpdatesSpy.mockReset()
   installedKernelUpdatesSpy.mockReturnValue([])
   ensureKernelSpy.mockClear()
+  getOrCreateProfileSpy.mockClear()
+  getProfileArchiveUrlsSpy.mockClear()
 })
 
 /** Let the fire-and-forget kernel-update check settle. */
@@ -208,5 +242,112 @@ describe('AntiDetectBrowser.launch (engine)', () => {
     expect(params.licenseToken).toBe('tok')
     expect(params.archiveGetUrl).toBeUndefined()
     expect(params.archivePutUrl).toBeUndefined()
+  })
+
+  it("addresses the archive by userDataDir's own recorded name, not the passed profile name", async () => {
+    // Otherwise: launch({ profile: 'gmail', userDataDir: <a directory whose
+    // record says "work"> }) fetches gmail's archive and restores it into
+    // work's directory - a cross-profile data leak.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ab-userdata-'))
+    fs.writeFileSync(path.join(dir, 'profile.json'), JSON.stringify({ id: 'uuid-x', name: 'work', origin: 'local' }), 'utf8')
+
+    const ab = new AntiDetectBrowser({ key: 'k' })
+    await ab.launch({ profile: 'gmail', userDataDir: dir })
+
+    expect(getOrCreateProfileSpy).toHaveBeenCalledWith(expect.objectContaining({ name: 'work' }))
+    expect(getProfileArchiveUrlsSpy).toHaveBeenCalledWith(expect.objectContaining({ name: 'work' }))
+    const params = openProfileSpy.mock.calls[0][0] as Record<string, unknown>
+    expect(params.profileName).toBe('work')
+
+    // The deferred re-fetch inside getArchivePutUrl must resolve the same name.
+    getProfileArchiveUrlsSpy.mockClear()
+    await (params.getArchivePutUrl as () => Promise<string | undefined>)()
+    expect(getProfileArchiveUrlsSpy).toHaveBeenCalledWith(expect.objectContaining({ name: 'work' }))
+  })
+
+  it('falls back to the passed profile name when userDataDir carries no record', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ab-userdata-none-'))
+    const ab = new AntiDetectBrowser({ key: 'k' })
+    await ab.launch({ profile: 'gmail', userDataDir: dir })
+    expect(getOrCreateProfileSpy).toHaveBeenCalledWith(expect.objectContaining({ name: 'gmail' }))
+    const params = openProfileSpy.mock.calls[0][0] as Record<string, unknown>
+    expect(params.profileName).toBe('gmail')
+  })
+})
+
+describe('managed proxy ticket lifecycle', () => {
+  it('launches with the ticket, not the account key', async () => {
+    const { openProfile } = await import('../src/engine')
+    const b = new AntiDetectBrowser({ key: 'adb_secretkey' })
+    await b.launch({ profile: 'shop-01', proxyId: 'px1' })
+
+    const passed = (openProfile as any).mock.calls.at(-1)![0]
+    expect(passed.proxyUrl).toBe('relay://px1:sec@proxy.antibrow.com')
+    expect(passed.proxyUrl).not.toContain('adb_secretkey')
+  })
+
+  it('labels the ticket with the profile name', async () => {
+    const { issueProxyTicket } = await import('../src/api')
+    const b = new AntiDetectBrowser({ key: 'adb_secretkey' })
+    await b.launch({ profile: 'shop-01', proxyId: 'px1' })
+    expect(issueProxyTicket).toHaveBeenCalledWith(
+      expect.objectContaining({ proxyId: 'px1', label: 'shop-01' }),
+    )
+  })
+
+  it('revokes the ticket when the browser closes', async () => {
+    const { revokeProxyTicket } = await import('../src/api')
+    const b = new AntiDetectBrowser({ key: 'adb_secretkey' })
+    const r = await b.launch({ profile: 'shop-01', proxyId: 'px1' })
+    await r.browser.close()
+    expect(revokeProxyTicket).toHaveBeenCalledWith(
+      expect.objectContaining({ proxyId: 'px1', ticketId: 't1' }),
+    )
+  })
+
+  // Losing the network on the way out must not strand the caller in close().
+  it('still closes when revoking throws', async () => {
+    const { revokeProxyTicket } = await import('../src/api')
+    ;(revokeProxyTicket as any).mockRejectedValueOnce(new Error('offline'))
+    const b = new AntiDetectBrowser({ key: 'adb_secretkey' })
+    const r = await b.launch({ profile: 'shop-01', proxyId: 'px1' })
+    await expect(r.browser.close()).resolves.toBeUndefined()
+  })
+
+  // Falling back to the account key here would undo the whole change, so a
+  // failed issuance has to fail the launch.
+  it('fails the launch when the ticket cannot be issued', async () => {
+    const { issueProxyTicket } = await import('../src/api')
+    const { openProfile } = await import('../src/engine')
+    ;(issueProxyTicket as any).mockRejectedValueOnce(new Error('HTTP 503'))
+    ;(openProfile as any).mockClear()
+    const b = new AntiDetectBrowser({ key: 'adb_secretkey' })
+    await expect(b.launch({ profile: 'shop-03', proxyId: 'px1' })).rejects.toThrow(/503/)
+    expect(openProfile).not.toHaveBeenCalled()
+  })
+
+  // A launch that dies after issuance (kernel download, concurrency cap, an
+  // unresolvable proxy geo) has no close hook to revoke on, so clicking Open
+  // against a flaky proxy would otherwise mint a live credential per attempt.
+  it('revokes the ticket when the launch fails after issuance', async () => {
+    const { revokeProxyTicket } = await import('../src/api')
+    const { openProfile } = await import('../src/engine')
+    ;(revokeProxyTicket as any).mockClear()
+    ;(openProfile as any).mockRejectedValueOnce(new Error('kernel download failed'))
+
+    const b = new AntiDetectBrowser({ key: 'adb_secretkey' })
+    await expect(b.launch({ profile: 'shop-04', proxyId: 'px1' }))
+      .rejects.toThrow(/kernel download failed/)
+    expect(revokeProxyTicket).toHaveBeenCalledWith(
+      expect.objectContaining({ proxyId: 'px1', ticketId: 't1' }),
+    )
+  })
+
+  it('issues no ticket for a user-supplied proxy', async () => {
+    const { issueProxyTicket } = await import('../src/api')
+    ;(issueProxyTicket as any).mockClear()
+    const b = new AntiDetectBrowser({ key: 'adb_secretkey' })
+    await b.launch({ profile: 'shop-02', proxy: 'http://u:p@1.2.3.4:8080' })
+    expect(issueProxyTicket).not.toHaveBeenCalled()
   })
 })

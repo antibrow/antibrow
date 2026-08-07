@@ -19,6 +19,7 @@ import pytest
 from antibrow import browser as B
 from antibrow import kernel as K
 from antibrow import license as L
+from antibrow import profile_cache as P
 from antibrow.errors import ProfileCacheError
 from antibrow.profile_sync import ArchiveUrls
 
@@ -184,8 +185,27 @@ class _Stub:
         self._log.append("stopped")
 
 
+def _fake_shutdown(log):
+    """Stand in for the graceful shutdown: record that the kernel is gone.
+
+    Closing asks the browser to quit and waits for the process, so the upload
+    still has to come after - packing a profile the kernel is mid-write in is
+    how a synced profile loses cookies and tabs.
+    """
+
+    def shutdown(request_close, process, **_kwargs):
+        try:
+            request_close()
+        except Exception:
+            pass
+        log.append("kernel-gone")
+        return "graceful"
+
+    return shutdown
+
+
 def session_for(tmp_path, monkeypatch, plan, log):
-    monkeypatch.setattr(B, "kill_process_tree", lambda process: log.append("killed"))
+    monkeypatch.setattr(B, "shutdown_kernel", _fake_shutdown(log))
     stub = _Stub(log, "browser")
     return B.Antibrow(plan, stub, "ws://127.0.0.1:1/x", _Stub(log, "pw"), stub, stub)
 
@@ -199,7 +219,7 @@ def test_upload_runs_after_the_kernel_is_gone_with_a_freshly_signed_url(tmp_path
     def upload(profile_dir, url):
         log.append("uploaded")
         uploads.append(url)
-        return 1
+        return "etag-1"
 
     monkeypatch.setattr(B, "upload_profile_cache", upload)
     session = session_for(tmp_path, monkeypatch, plan, log)
@@ -207,7 +227,7 @@ def test_upload_runs_after_the_kernel_is_gone_with_a_freshly_signed_url(tmp_path
 
     session.close()
 
-    assert log.index("killed") < log.index("uploaded")
+    assert log.index("kernel-gone") < log.index("uploaded")
     assert uploads == ["https://r2/put"]
     # Signed again at exit rather than reusing the launch-time signature.
     assert len(server_stub["sign"]) == signed_at_launch + 1
@@ -223,7 +243,7 @@ def test_an_expired_presign_is_signed_again_once(tmp_path, fake_kernel, paid_lic
         attempts.append(url)
         if len(attempts) == 1:
             raise ProfileCacheError("Failed to upload profile cache: HTTP 403")
-        return 1
+        return "etag-2"
 
     monkeypatch.setattr(B, "upload_profile_cache", upload)
     session = session_for(tmp_path, monkeypatch, plan, [])
@@ -281,7 +301,7 @@ def test_the_async_session_uploads_on_close_too(tmp_path, fake_kernel, paid_lice
     plan = plan_for(tmp_path)
     log = []
     monkeypatch.setattr(B, "upload_profile_cache", lambda d, u: log.append("uploaded"))
-    monkeypatch.setattr(B, "kill_process_tree", lambda process: log.append("killed"))
+    monkeypatch.setattr(B, "shutdown_kernel", _fake_shutdown(log))
 
     class _AsyncStub(_Stub):
         async def close(self):
@@ -295,5 +315,187 @@ def test_the_async_session_uploads_on_close_too(tmp_path, fake_kernel, paid_lice
 
     asyncio.run(session.close())
 
-    assert log.index("killed") < log.index("uploaded")
+    assert log.index("kernel-gone") < log.index("uploaded")
     assert session.sync_error is None
+
+
+# -- archive generation gate ----------------------------------------------
+#
+# Equality only - an ETag has no ordering. The case that matters: the last
+# upload failed, so the cloud still holds the generation this machine
+# already has, and restoring it would erase newer local work that never
+# made it up.
+
+
+def _archive_urls(version=None):
+    return lambda *a, **k: ArchiveUrls(download_url="https://r2/get", upload_url="https://r2/put", version=version)
+
+
+def test_downloads_when_this_machine_has_no_marker_yet(tmp_path, fake_kernel, paid_license, monkeypatch):
+    downloaded = []
+    monkeypatch.setattr(B, "download_profile_cache", lambda url, profile_dir: downloaded.append(url) or True)
+    monkeypatch.setattr(B._sync, "ensure_server_profile", lambda *a, **k: True)
+    monkeypatch.setattr(B._sync, "get_profile_archive_urls", _archive_urls("etag-1"))
+
+    plan = plan_for(tmp_path)
+
+    assert downloaded == ["https://r2/get"]
+    assert P.read_archive_version(plan.profile_dir) == "etag-1"
+
+
+def test_skips_the_download_entirely_when_the_marker_already_matches(tmp_path, fake_kernel, paid_license, monkeypatch):
+    directory = B._config.profile_dir("p1", tmp_path)
+    directory.mkdir(parents=True, exist_ok=True)
+    P.write_archive_version(directory, "etag-1")
+    events = []
+    monkeypatch.setattr(B, "download_profile_cache", lambda *a, **k: pytest.fail("must not download"))
+    monkeypatch.setattr(B._sync, "ensure_server_profile", lambda *a, **k: True)
+    monkeypatch.setattr(B._sync, "get_profile_archive_urls", _archive_urls("etag-1"))
+
+    plan = plan_for(tmp_path, on_sync=events.append)
+
+    assert events == []  # no download-phase event fires when nothing is transferred
+    assert P.read_archive_version(plan.profile_dir) == "etag-1"
+
+
+def test_downloads_when_the_marker_names_a_different_generation(tmp_path, fake_kernel, paid_license, monkeypatch):
+    directory = B._config.profile_dir("p1", tmp_path)
+    directory.mkdir(parents=True, exist_ok=True)
+    P.write_archive_version(directory, "etag-old")
+    downloaded = []
+    monkeypatch.setattr(B, "download_profile_cache", lambda url, profile_dir: downloaded.append(url) or True)
+    monkeypatch.setattr(B._sync, "ensure_server_profile", lambda *a, **k: True)
+    monkeypatch.setattr(B._sync, "get_profile_archive_urls", _archive_urls("etag-new"))
+
+    plan = plan_for(tmp_path)
+
+    assert downloaded == ["https://r2/get"]
+    assert P.read_archive_version(plan.profile_dir) == "etag-new"
+
+
+def test_downloads_when_the_server_reported_no_version_at_all(tmp_path, fake_kernel, paid_license, monkeypatch):
+    # An older server predates archive generations; the client must keep
+    # restoring unconditionally rather than treating the missing field as an error.
+    directory = B._config.profile_dir("p1", tmp_path)
+    directory.mkdir(parents=True, exist_ok=True)
+    P.write_archive_version(directory, "etag-old")
+    downloaded = []
+    monkeypatch.setattr(B, "download_profile_cache", lambda url, profile_dir: downloaded.append(url) or True)
+    monkeypatch.setattr(B._sync, "ensure_server_profile", lambda *a, **k: True)
+    monkeypatch.setattr(B._sync, "get_profile_archive_urls", _archive_urls(None))
+
+    plan = plan_for(tmp_path)
+
+    assert downloaded == ["https://r2/get"]
+    # No reported version means nothing to record; the stale marker is left as-is.
+    assert P.read_archive_version(plan.profile_dir) == "etag-old"
+
+
+def test_a_failed_download_leaves_the_marker_untouched(tmp_path, fake_kernel, paid_license, monkeypatch):
+    directory = B._config.profile_dir("p1", tmp_path)
+    directory.mkdir(parents=True, exist_ok=True)
+    P.write_archive_version(directory, "etag-old")
+
+    def boom(url, profile_dir):
+        raise ProfileCacheError("Failed to download profile cache: HTTP 500")
+
+    monkeypatch.setattr(B, "download_profile_cache", boom)
+    monkeypatch.setattr(B._sync, "ensure_server_profile", lambda *a, **k: True)
+    monkeypatch.setattr(B._sync, "get_profile_archive_urls", _archive_urls("etag-new"))
+
+    plan = plan_for(tmp_path)
+
+    # A restore that never happened must not be recorded as having happened.
+    assert P.read_archive_version(plan.profile_dir) == "etag-old"
+
+
+def test_records_the_generation_it_just_uploaded(tmp_path, fake_kernel, paid_license, server_stub, monkeypatch):
+    monkeypatch.setattr(B, "download_profile_cache", lambda url, profile_dir: False)
+    monkeypatch.setattr(B, "upload_profile_cache", lambda d, u: "etag-9")
+    plan = plan_for(tmp_path)
+    session = session_for(tmp_path, monkeypatch, plan, [])
+
+    session.close()
+
+    assert P.read_archive_version(plan.profile_dir) == "etag-9"
+
+
+def test_drops_the_marker_when_the_upload_response_named_no_generation(tmp_path, fake_kernel, paid_license, server_stub, monkeypatch):
+    monkeypatch.setattr(B, "download_profile_cache", lambda url, profile_dir: False)
+    plan = plan_for(tmp_path)
+    P.write_archive_version(plan.profile_dir, "etag-old")
+    monkeypatch.setattr(B, "upload_profile_cache", lambda d, u: None)
+    session = session_for(tmp_path, monkeypatch, plan, [])
+
+    session.close()
+
+    assert P.read_archive_version(plan.profile_dir) is None
+
+
+# -- the close request has to reach the browser ---------------------------
+#
+# Playwright's sync API is greenlet-bound: touching it from a thread other than
+# the one that created it raises instead of doing anything. A close that hands
+# the CDP call to a worker thread therefore never asks the browser to quit - it
+# waits out the whole grace period and SIGKILLs instead, and a SIGKILLed browser
+# flushes nothing, which is exactly what the upload then packs up.
+
+
+class _ThreadBoundBrowser:
+    """A browser that only answers on the thread that created it."""
+
+    def __init__(self, process):
+        self._owner = __import__("threading").current_thread()
+        self._process = process
+        self.close_requested = False
+        self.wrong_thread = False
+
+    def _check(self):
+        if __import__("threading").current_thread() is not self._owner:
+            self.wrong_thread = True
+            raise RuntimeError("cannot switch to a different thread")
+
+    def new_browser_cdp_session(self):
+        self._check()
+        return self
+
+    def send(self, method):
+        self._check()
+        if method == "Browser.close":
+            self.close_requested = True
+            self._process.exit()   # a real browser exits when asked
+
+    def close(self):
+        pass
+
+
+class _ExitingProcess:
+    def __init__(self):
+        self._exited = False
+        self.pid = 4242
+
+    def poll(self):
+        return 0 if self._exited else None
+
+    def exit(self):
+        self._exited = True
+
+
+def test_close_asks_the_browser_to_quit_from_the_calling_thread(tmp_path, fake_kernel, paid_license, server_stub, monkeypatch):
+    monkeypatch.setattr(B, "download_profile_cache", lambda url, profile_dir: False)
+    monkeypatch.setattr(B, "upload_profile_cache", lambda profile_dir, url: None)
+    killed = []
+    from antibrow import launcher as _L
+    monkeypatch.setattr(_L, "kill_process_tree", lambda process: killed.append(process))
+
+    plan = plan_for(tmp_path)
+    proc = _ExitingProcess()
+    browser = _ThreadBoundBrowser(proc)
+    context = _Stub([], "ctx")
+    session = B.Antibrow(plan, proc, "ws://127.0.0.1:1/x", _Stub([], "pw"), browser, context)
+
+    session.close()
+
+    assert browser.close_requested, "Browser.close never reached the browser"
+    assert not browser.wrong_thread, "the CDP call was made from the wrong thread"
+    assert killed == [], "the browser was killed instead of being asked to quit"

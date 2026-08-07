@@ -13,6 +13,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -56,6 +57,7 @@ def build_launch_args(
     proxy_auth: str = "native",
     profile_dir: Optional[Path | str] = None,
     webauthn_capture: Optional[bool] = None,
+    restore_tabs: bool = True,
     extra_args: Optional[Sequence[str]] = None,
 ) -> List[str]:
     """Assemble the kernel command line (without the executable itself).
@@ -77,7 +79,20 @@ def build_launch_args(
         "--no-first-run",
         "--no-default-browser-check",
         "--lang={0}".format(language),
+        # Device-bound session credentials sign a site's short-lived auth
+        # cookies with a key the OS keeps unexportable (Secure Enclave / TPM).
+        # A profile carrying a bound session is refused the moment it opens
+        # elsewhere - Gmail comes up signed out while GitHub, which does not use
+        # DBSC, stays signed in. Off, the site issues ordinary cookies and those
+        # travel with the profile.
+        "--disable-features=DeviceBoundSessions",
     ]
+
+    if restore_tabs:
+        # Chromium's default startup is the new tab page and only a crashed exit
+        # offers restore, so left alone whether a profile reopens its tabs
+        # depends on how the previous session happened to die.
+        args += ["--restore-last-session", "--hide-crash-restore-bubble"]
 
     if is_linux:
         # Linux/Docker only: the GPU strings come from fp-config, so software
@@ -131,7 +146,44 @@ def build_launch_args(
 
     if extra_args:
         args += list(extra_args)
-    return args
+
+    # Last, so a caller's own --disable-features cannot shadow ours.
+    return merge_feature_switches(args)
+
+
+#: Switches Chromium collapses to their LAST occurrence rather than merging.
+_FEATURE_SWITCHES = ("--enable-features=", "--disable-features=")
+
+
+def merge_feature_switches(args: Sequence[str]) -> List[str]:
+    """Collapse repeated ``--enable-features`` / ``--disable-features`` into one each.
+
+    Chromium keeps only the last occurrence of these two, so a caller passing its
+    own would silently drop ours. Losing ``--disable-features=DeviceBoundSessions``
+    that way re-arms the cross-machine sign-out this SDK exists to prevent, and
+    nothing anywhere reports it. The merged switch keeps the position of the first
+    occurrence so the rest of the command line stays in order.
+    """
+    merged: List[str] = []
+    values: dict[str, List[str]] = {prefix: [] for prefix in _FEATURE_SWITCHES}
+    slots: dict[str, int] = {}
+
+    for arg in args:
+        prefix = next((p for p in _FEATURE_SWITCHES if arg.startswith(p)), None)
+        if prefix is None:
+            merged.append(arg)
+            continue
+        if prefix not in slots:
+            slots[prefix] = len(merged)
+            merged.append(prefix)  # placeholder, filled in below
+        for value in arg[len(prefix):].split(","):
+            value = value.strip()
+            if value and value not in values[prefix]:
+                values[prefix].append(value)
+
+    for prefix, index in slots.items():
+        merged[index] = prefix + ",".join(values[prefix])
+    return merged
 
 
 def is_stray_locale_tab_url(url: str, language: str) -> bool:
@@ -169,7 +221,6 @@ def _drain_output(process: subprocess.Popen, sink: List[str]) -> None:
     Worth the thread: the kernel explains *why* it refused to start (bad
     license, concurrency cap) on stderr and nowhere else.
     """
-    import threading
 
     def pump() -> None:
         stream = process.stdout
@@ -275,6 +326,44 @@ def wait_for_cdp(
             timeout, port, "\nKernel output:\n{0}".format(diagnostics[-2000:]) if diagnostics else ""
         )
     )
+
+
+def shutdown_kernel(
+    request_close: Callable[[], None],
+    process: Optional[subprocess.Popen],
+    grace: float = 15.0,
+    poll: float = 0.1,
+) -> str:
+    """Ask the browser to shut itself down, and kill it only if it will not.
+
+    A SIGKILL'd browser flushes nothing: cookies written late are lost, the
+    session files stay half-written and ``exit_type`` is left at "Crashed" - and
+    for a synced profile that torn directory is exactly what gets uploaded next.
+
+    Returns ``"graceful"`` or ``"killed"``.
+    """
+
+    def _call_request_close() -> None:
+        try:
+            request_close()
+        except Exception:
+            pass  # Browser.close routinely fails: the connection drops with the browser.
+
+    # request_close is synchronous and can hang (a browser wedged mid-shutdown
+    # can leave its CDP socket open with no ack ever coming). Run it on a
+    # daemon thread rather than call it inline, so a hang there cannot itself
+    # delay the deadline below - the poll loop is what actually bounds this.
+    threading.Thread(target=_call_request_close, daemon=True).start()
+
+    if process is None:
+        return "graceful"
+    deadline = time.time() + grace
+    while process.poll() is None and time.time() < deadline:
+        time.sleep(poll)
+    if process.poll() is not None:
+        return "graceful"
+    kill_process_tree(process)
+    return "killed"
 
 
 def kill_process_tree(process: Optional[subprocess.Popen]) -> None:

@@ -28,7 +28,7 @@ from .persona import (
     load_or_generate_persona,
     write_persona,
 )
-from .profile_cache import PASSKEYS_ENTRY, SKIP_DIRS, SKIP_FILES
+from .profile_cache import PASSKEYS_ENTRY, SKIP_DIRS, SKIP_FILES, clear_archive_version
 
 #: Recommended file extension for a portable profile archive.
 PROFILE_ARCHIVE_EXT = "fpprofile"
@@ -240,6 +240,10 @@ def _import_manifest_archive(
 
     kernel_version = _resolve_kernel_version(entry.get("kernel_version") or _default_version())
     write_persona(root, _manifest_to_persona(entry.get("persona") or {}, kernel_version))
+    # The generation this machine held belonged to whatever profile used to live
+    # here; an imported archive's generation is unknowable, so the next launch
+    # must restore rather than trust a stale marker.
+    clear_archive_version(root)
 
     proxy = entry.get("proxy") or {}
     raw = proxy.get("raw") if isinstance(proxy, dict) else None
@@ -274,6 +278,7 @@ def _import_legacy_archive(zf: zipfile.ZipFile, root: Path) -> ImportedProfileMe
             continue
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(zf.read(info))
+    clear_archive_version(root)
 
     rest = {key: value for key, value in legacy.items() if key not in ("name", "kernelVersion")}
     version = legacy.get("kernelVersion")

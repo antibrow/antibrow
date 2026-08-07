@@ -8,7 +8,8 @@ import path from 'node:path'
 // A presign lives 15 minutes server-side, so one captured at launch is dead by
 // the time a real session ends.
 
-const uploadSpy = vi.fn(async (_dir: string, _url: string) => undefined)
+const uploadSpy = vi.fn(async (_dir: string, _url: string) => undefined as string | undefined)
+const downloadSpy = vi.fn(async (_url: string, _dir: string) => true)
 
 vi.mock('../../src/engine/downloader', () => ({
   DEFAULT_KERNEL_VERSION: { version: '150.0.7871.182', label: 'Chrome 150', platforms: {} },
@@ -23,15 +24,16 @@ vi.mock('../../src/engine/persona', () => ({
   loadOrGeneratePersona: () => ({ kernelVersion: '150.0.7871.182', chromeMajor: 150, timezone: 'UTC', languages: ['en-US'] }),
 }))
 
-vi.mock('../../src/engine/profile-cache', () => ({
-  downloadProfileCache: async () => undefined,
-  uploadProfileCache: (...a: [string, string]) => uploadSpy(...a),
-  packProfileCache: () => Buffer.alloc(0),
-  unpackProfileCache: () => {},
-  exportProfileArchive: () => Buffer.alloc(0),
-  importProfileArchive: () => ({}),
-  PROFILE_ARCHIVE_EXT: 'fpprofile',
-}))
+// Only the network-shaped functions are stubbed; readArchiveVersion / writeArchiveVersion /
+// clearArchiveVersion come from the real module so the marker tests exercise real disk state.
+vi.mock('../../src/engine/profile-cache', async () => {
+  const actual = await vi.importActual<typeof import('../../src/engine/profile-cache')>('../../src/engine/profile-cache')
+  return {
+    ...actual,
+    downloadProfileCache: (...a: [string, string]) => downloadSpy(...a),
+    uploadProfileCache: (...a: [string, string]) => uploadSpy(...a),
+  }
+})
 
 /** Kernel session stand-in that lets the test fire the browser-exit event. */
 const exits: Array<() => void> = []
@@ -45,6 +47,7 @@ vi.mock('../../src/engine/launcher', () => ({
 }))
 
 import { openProfile } from '../../src/engine/index'
+import { readArchiveVersion, writeArchiveVersion } from '../../src/engine/profile-cache'
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'opa-'))
 const base = () => ({ cacheDir: tmp(), profileName: 'p', licenseToken: 'tok' })
@@ -57,6 +60,8 @@ const exit = async () => {
 beforeEach(() => {
   uploadSpy.mockClear()
   uploadSpy.mockResolvedValue(undefined)
+  downloadSpy.mockClear()
+  downloadSpy.mockResolvedValue(true)
   exits.length = 0
 })
 
@@ -121,5 +126,83 @@ describe('openProfile archive upload', () => {
 
     expect(session.archiveUpload).toBeUndefined()
     expect(uploadSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('openProfile archive generation gate', () => {
+  it('downloads when this machine has no marker yet', async () => {
+    const profileDir = tmp()
+
+    await openProfile({ ...base(), profileDir, archiveGetUrl: 'https://r2/get.zip', archiveVersion: 'etag-1' })
+
+    expect(downloadSpy).toHaveBeenCalledTimes(1)
+    expect(readArchiveVersion(profileDir)).toBe('etag-1')
+  })
+
+  it('skips the download entirely when the marker already matches the cloud version', async () => {
+    // The scenario that matters: the last upload failed, so the cloud still holds
+    // the generation this machine already has. Downloading it would erase newer
+    // local work that never made it up.
+    const profileDir = tmp()
+    writeArchiveVersion(profileDir, 'etag-1')
+    const events: string[] = []
+
+    await openProfile({
+      ...base(),
+      profileDir,
+      archiveGetUrl: 'https://r2/get.zip',
+      archiveVersion: 'etag-1',
+      onArchiveSync: (e) => events.push(`${e.phase}:${e.state}`),
+    })
+
+    expect(downloadSpy).not.toHaveBeenCalled()
+    expect(events).toEqual([])
+    expect(readArchiveVersion(profileDir)).toBe('etag-1')
+  })
+
+  it('downloads when the marker names a different generation', async () => {
+    const profileDir = tmp()
+    writeArchiveVersion(profileDir, 'etag-old')
+
+    await openProfile({ ...base(), profileDir, archiveGetUrl: 'https://r2/get.zip', archiveVersion: 'etag-new' })
+
+    expect(downloadSpy).toHaveBeenCalledTimes(1)
+    expect(readArchiveVersion(profileDir)).toBe('etag-new')
+  })
+
+  it('downloads when the server reported no version at all', async () => {
+    // An older server predates archive generations; the client must keep
+    // restoring unconditionally rather than treating the missing field as an error.
+    const profileDir = tmp()
+    writeArchiveVersion(profileDir, 'etag-old')
+
+    await openProfile({ ...base(), profileDir, archiveGetUrl: 'https://r2/get.zip' })
+
+    expect(downloadSpy).toHaveBeenCalledTimes(1)
+    // No reported version means nothing to record; the stale marker is left as-is.
+    expect(readArchiveVersion(profileDir)).toBe('etag-old')
+  })
+
+  it('records the generation it just uploaded', async () => {
+    const profileDir = tmp()
+    uploadSpy.mockResolvedValueOnce('etag-9')
+
+    const session = await openProfile({ ...base(), profileDir, getArchivePutUrl: async () => 'https://r2/put.zip' })
+    await exit()
+    await session.archiveUpload
+
+    expect(readArchiveVersion(profileDir)).toBe('etag-9')
+  })
+
+  it('drops the marker when the upload response named no generation', async () => {
+    const profileDir = tmp()
+    writeArchiveVersion(profileDir, 'etag-old')
+    uploadSpy.mockResolvedValueOnce(undefined)
+
+    const session = await openProfile({ ...base(), profileDir, getArchivePutUrl: async () => 'https://r2/put.zip' })
+    await exit()
+    await session.archiveUpload
+
+    expect(readArchiveVersion(profileDir)).toBeUndefined()
   })
 })

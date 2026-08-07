@@ -75,6 +75,28 @@ def test_archive_urls_come_from_the_get_and_post_pair(api):
     assert {r["auth"] for r in api.requests} == {"Bearer adb_key"}
 
 
+def test_archive_urls_carry_the_generation_the_server_reports(api):
+    api.routes = {
+        ("GET", "/api/v1/profiles/p1/archive"): (200, {"downloadUrl": "https://r2/get", "version": "abc123"}),
+        ("POST", "/api/v1/profiles/p1/archive"): (200, {"uploadUrl": "https://r2/put"}),
+    }
+
+    urls = S.get_profile_archive_urls("adb_key", api.base, name="p1")
+
+    assert urls.version == "abc123"
+
+
+def test_archive_urls_version_is_none_on_a_server_that_predates_it(api):
+    api.routes = {
+        ("GET", "/api/v1/profiles/p1/archive"): (200, {"downloadUrl": "https://r2/get"}),
+        ("POST", "/api/v1/profiles/p1/archive"): (200, {"uploadUrl": "https://r2/put"}),
+    }
+
+    urls = S.get_profile_archive_urls("adb_key", api.base, name="p1")
+
+    assert urls.version is None
+
+
 def test_a_plan_without_sync_gets_no_urls_and_no_exception(api):
     api.routes = {
         ("GET", "/api/v1/profiles/p1/archive"): (403, {"error": "Profile sync requires a paid plan."}),
@@ -88,10 +110,16 @@ def test_a_plan_without_sync_gets_no_urls_and_no_exception(api):
     assert bool(urls) is False
 
 
-def test_the_profile_name_is_percent_encoded_in_the_path(api):
+def test_the_profile_name_is_encoded_for_a_path_segment(api):
+    # `@` is legal raw in a path segment and stays raw on purpose: escaping it
+    # alongside a space produces a segment the server reads as double-encoded
+    # and refuses outright. See antibrow.config.encode_path_segment.
     S.get_profile_archive_urls("adb_key", api.base, name="a@b.com")
+    assert {r["path"] for r in api.requests} == {"/api/v1/profiles/a@b.com/archive"}
 
-    assert {r["path"] for r in api.requests} == {"/api/v1/profiles/a%40b.com/archive"}
+    api.requests.clear()
+    S.get_profile_archive_urls("adb_key", api.base, name="work mail@b.com")
+    assert {r["path"] for r in api.requests} == {"/api/v1/profiles/work%20mail@b.com/archive"}
 
 
 # -- making sure the server knows the profile ---------------------------

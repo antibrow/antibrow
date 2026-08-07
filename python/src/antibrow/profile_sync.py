@@ -22,7 +22,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Sequence, Tuple
 
-from .config import USER_AGENT, default_server
+from .config import USER_AGENT, default_server, encode_path_segment
 
 ARCHIVE_PATH = "/api/v1/profiles/{0}/archive"
 PROFILES_PATH = "/api/v1/profiles"
@@ -36,6 +36,9 @@ class ArchiveUrls:
 
     download_url: Optional[str] = None
     upload_url: Optional[str] = None
+    #: The cloud object's generation (its ETag), when the server reports one.
+    #: Absent on an older server, which must fall back to an unconditional restore.
+    version: Optional[str] = None
 
     def __bool__(self) -> bool:
         return bool(self.download_url or self.upload_url)
@@ -79,7 +82,7 @@ def _archive_url(server: Optional[str], name: str) -> str:
     base = (server or default_server()).rstrip("/")
     # The route matches on the encoded segment, so a name with @ or a space has
     # to be quoted here or the server looks up a profile that does not exist.
-    return base + ARCHIVE_PATH.format(urllib.parse.quote(name, safe=""))
+    return base + ARCHIVE_PATH.format(encode_path_segment(name))
 
 
 def get_profile_archive_urls(
@@ -93,6 +96,8 @@ def get_profile_archive_urls(
     if status == 200:
         download = body.get("downloadUrl")
         urls.download_url = download if isinstance(download, str) else None
+        version = body.get("version")
+        urls.version = version if isinstance(version, str) else None
 
     status, body = _request("POST", url, api_key)
     if status == 200:
@@ -115,7 +120,7 @@ def ensure_server_profile(
     the profile local instead of failing the launch.
     """
     base = (server or default_server()).rstrip("/")
-    quoted = urllib.parse.quote(name, safe="")
+    quoted = encode_path_segment(name)
 
     status, _ = _request("GET", "{0}{1}/{2}".format(base, PROFILES_PATH, quoted), api_key)
     if status == 200:

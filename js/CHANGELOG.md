@@ -4,6 +4,56 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.4.0] - 2026-08-07
+
+Managed proxies stop putting the account key on the command line, profiles get a
+stable identity of their own, and a profile opened on a second machine now
+arrives intact.
+
+### Security
+
+- A managed proxy launch (`launch({ proxyId })`) no longer passes the account API
+  key to the browser. The SDK trades the key for a short-lived ticket first, so
+  the kernel command line - readable by anything that can list local processes -
+  carries only `relay://<proxyId>:<ticket>@…`. The ticket is scoped to that one
+  proxy, expires on its own, and is revoked when the session closes.
+
+### Added
+
+- Profiles keep an identity record (`profile.json`) inside their own directory,
+  and the directory is named after that id rather than the profile name. A
+  profile can therefore be renamed without losing its persona, and the SDK, the
+  Python SDK and the desktop app all resolve the same name to the same
+  directory. Directories from older versions are adopted on first launch,
+  personas included. Two profiles racing for one name no longer merge: the
+  newcomer keeps its data under `<name> (local)`.
+- `navigator.connection` is derived from the proxy's measured round-trip time
+  instead of one constant shared by every user. `effectiveType`, `rtt` and
+  `downlink` are produced by a single conversion, so they stay consistent with
+  each other the way a real connection's are.
+
+### Fixed
+
+- A profile opened on a second machine could come up with the first machine's
+  tabs missing and some sites signed out. Four causes, all addressed: restoring
+  a cloud archive now replaces the profile's state instead of merging into
+  whatever the machine had left over; device-bound sessions are disabled, since
+  their keys cannot leave the machine that created them and their presence
+  forces a re-login; the exit hook fires even when the browser is already gone,
+  so the closing upload actually happens; and the browser is asked to close
+  before it is killed, so cookies and session files are flushed first.
+- An upload that failed at the end of a session is no longer overwritten by the
+  older cloud copy on the next launch. Each archive carries a generation marker,
+  and a launch only downloads when the cloud copy is a different generation than
+  the one this machine already has.
+- Cloud sync worked for a profile named `mail@example.com` and for one named
+  `work mail`, but not for one named `work mail@example.com`. A name holding
+  both a space and a character like `@`, `+` or `:` was escaped into a form the
+  server reads as double encoding and refuses before any route matches, so every
+  request for that profile failed and its sync silently never ran. Those
+  characters are legal in a URL path and are now left as they are. A name
+  holding a `#`, or a `%` followed by two hex digits, is still affected.
+
 ## [2.2.1] - 2026-08-04
 
 ### Fixed

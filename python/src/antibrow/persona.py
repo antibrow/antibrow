@@ -14,6 +14,7 @@ written by either SDK - or by the desktop app - is readable by the others.
 from __future__ import annotations
 
 import json
+import math
 import random
 import secrets
 from dataclasses import dataclass, field
@@ -246,12 +247,62 @@ def webgpu_identity(renderer: str) -> Tuple[str, str]:
     return ("", "")
 
 
+#: Chromium's http-RTT cut-offs for navigator.connection.effectiveType, copied
+#: from net/nqe/network_quality_estimator_params.h's
+#: kHttpRttEffectiveConnectionTypeThresholds (SLOW_2G 2010, 2G 1420, 3G 272 -
+#: enum order is UNKNOWN, OFFLINE, SLOW_2G, 2G, 3G, 4G) and treated as
+#: approximate: what matters is that the trio is internally consistent.
+ECT_RTT_THRESHOLDS: Dict[str, int] = {"four_g": 272, "three_g": 1420, "two_g": 2010}
+
+
+def derive_connection(seed: str, rtt_ms: Optional[float] = None) -> Dict[str, Any]:
+    """Build a self-consistent navigator.connection.
+
+    Chrome rounds rtt to 25ms and downlink to 25kbps (0.025Mbps) and derives
+    effectiveType from rtt, so a mismatched trio ('4g' with rtt 800, '3g' with 10Mbps) is a
+    contradiction rather than camouflage. rtt comes from the proxy probe when
+    there is one, so a site measuring latency itself agrees with what we report.
+
+    The formula is identical to the JS SDK's deriveConnection on purpose: the two
+    must produce byte-identical fp-config for one persona. Python's round() is
+    banker's rounding (round(0.5) == 0) while JS Math.round() rounds half up, so
+    the grid-snaps below use floor(x + 0.5) instead of round() to match exactly.
+    """
+    seed_sum = sum(ord(c) for c in seed)
+    # math.isfinite matters here: an unguarded +inf reaches math.floor(inf) below
+    # and raises OverflowError, where JS's Number.isFinite degrades it to the
+    # seed-derived fallback like any other non-measurement.
+    measured = rtt_ms is not None and math.isfinite(rtt_ms) and rtt_ms > 0
+    # Unmeasured: stay under the 4g threshold so the trio holds, but vary per
+    # persona - this used to be one global constant.
+    raw = float(rtt_ms) if measured else 50 + (seed_sum % 9) * 25
+    rtt = min(3000, max(25, int(math.floor(raw / 25 + 0.5)) * 25))
+    if rtt < ECT_RTT_THRESHOLDS["four_g"]:
+        effective_type = "4g"
+    elif rtt < ECT_RTT_THRESHOLDS["three_g"]:
+        effective_type = "3g"
+    elif rtt < ECT_RTT_THRESHOLDS["two_g"]:
+        effective_type = "2g"
+    else:
+        effective_type = "slow-2g"
+    min_dl, max_dl = (1.0, 10.0) if effective_type == "4g" else (0.4, 1.5)
+    steps = int(math.floor((max_dl - min_dl) / 0.025 + 0.5))
+    downlink = math.floor((min_dl + (seed_sum % (steps + 1)) * 0.025) * 1000 + 0.5) / 1000
+    # Python's `/ 100` always yields a float, so a whole value like 6.0 would
+    # serialize as "6.0" where JS's untyped Number serializes the same value as
+    # "6" - fp-config must be byte-identical, so collapse it back to int here.
+    if downlink == int(downlink):
+        downlink = int(downlink)
+    return {"effectiveType": effective_type, "rtt": rtt, "downlink": downlink}
+
+
 def persona_to_fp_config(
     persona: Persona,
     *,
     label: str,
     timezone: str,
     public_ip: Optional[str] = None,
+    rtt_ms: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Serialize a persona into the kernel's ``fp-config.json`` schema (version 1).
 
@@ -324,7 +375,7 @@ def persona_to_fp_config(
         "audio": {"seed": persona.audio_seed},
         "domrect": {"seed": persona.domrect_seed},
         "webrtc": webrtc,
-        "connection": {"effectiveType": "4g", "rtt": 100, "downlink": 10},
+        "connection": derive_connection(persona.seed, rtt_ms),
         "prefersColorScheme": color_scheme,
         # ``allow`` whitelists the probeable font set: left empty, every host font
         # stays enumerable. ``generic`` pins the CSS generic families to Windows
@@ -438,12 +489,13 @@ def write_fp_config(
     label: str,
     timezone: str,
     public_ip: Optional[str] = None,
+    rtt_ms: Optional[float] = None,
 ) -> Path:
     """Write ``<profile>/fp-config.json`` and return its path."""
     directory = Path(profile_dir)
     directory.mkdir(parents=True, exist_ok=True)
     config = persona_to_fp_config(
-        persona, label=label, timezone=timezone, public_ip=public_ip
+        persona, label=label, timezone=timezone, public_ip=public_ip, rtt_ms=rtt_ms
     )
     path = directory / FP_CONFIG_FILE
     path.write_text(json.dumps(config, indent=2), encoding="utf-8")

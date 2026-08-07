@@ -7,6 +7,7 @@ import { chromium, type BrowserContext, type Page } from 'playwright-core'
 import { SocksClient } from 'socks'
 import { personaToFpConfig, API_LOG_FILE, type FpConfigSettings, type Persona } from './persona'
 import { writeWindowIcon } from './icon'
+import { readProfileMeta } from './profile-dir'
 
 /** Portable passkey store, kept at the profile root so exports carry it. */
 export const PASSKEYS_FILE = 'passkeys.json'
@@ -29,7 +30,66 @@ export interface KernelLaunchOptions extends Omit<FpConfigSettings, 'apiLogPath'
    * through, so those credentials stay outside the profile.
    */
   webauthnCapture?: boolean
+  /** Reopen the previous session's tabs. Default true. */
+  restoreTabs?: boolean
   onProgress?: (message: string) => void
+}
+
+export interface ExitLatch {
+  hasExited(): boolean
+  onExit(cb: () => void): void
+}
+
+/**
+ * `child.once('exit')` registered after the process already died never fires,
+ * and everything hanging off it stalls: the desktop keeps the profile marked as
+ * running and the archive upload that exit was supposed to trigger never runs,
+ * so the next machine restores a stale copy. Latch the exit at spawn time and
+ * replay it to whoever subscribes later.
+ */
+export function exitLatch(child: { once(event: 'exit', cb: () => void): unknown }): ExitLatch {
+  let exited = false
+  const waiting: Array<() => void> = []
+  child.once('exit', () => {
+    exited = true
+    for (const cb of waiting.splice(0)) cb()
+  })
+  return {
+    hasExited: () => exited,
+    onExit(cb) {
+      if (exited) queueMicrotask(cb)
+      else waiting.push(cb)
+    },
+  }
+}
+
+/**
+ * Ask the browser to shut itself down, and only kill it if it will not. A
+ * SIGKILL'd Chromium flushes nothing: cookies written late are lost, the session
+ * files stay half-written and `exit_type` is left at "Crashed" -- and for a
+ * synced profile that torn directory is exactly what gets uploaded next.
+ */
+export async function shutdownKernel(opts: {
+  requestClose: () => Promise<void>
+  hasExited: () => boolean
+  kill: () => void | Promise<void>
+  graceMs?: number
+  pollMs?: number
+}): Promise<'graceful' | 'killed'> {
+  const graceMs = opts.graceMs ?? 15_000
+  const pollMs = opts.pollMs ?? 100
+  const deadline = Date.now() + graceMs
+  // requestClose (Browser.close over CDP) can hang forever if the browser wedges
+  // mid-shutdown while its websocket stays open. Fire and forget rather than
+  // await: the poll loop below is what actually bounds this call, not the
+  // request itself.
+  void Promise.resolve().then(() => opts.requestClose()).catch(() => {})
+  while (!opts.hasExited() && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, pollMs))
+  }
+  if (opts.hasExited()) return 'graceful'
+  await opts.kill()
+  return 'killed'
 }
 
 export interface KernelSession {
@@ -269,6 +329,8 @@ export interface BuildLaunchArgsOptions {
   headless?: boolean
   profileDir: string
   webauthnCapture?: boolean
+  /** Reopen the tabs of the previous session. Default true. */
+  restoreTabs?: boolean
   /**
    * Explicit rather than read from `process.platform` so the linux/windows
    * branches stay testable from either OS.
@@ -295,6 +357,17 @@ export function buildLaunchArgs(opts: BuildLaunchArgsOptions): string[] {
     '--no-first-run',
     '--no-default-browser-check',
     `--lang=${opts.language}`,
+    // Device-bound session credentials sign a site's short-lived auth cookies
+    // with a key the OS keeps unexportable (Secure Enclave / TPM). A profile
+    // that carries a bound session is refused the moment it opens elsewhere,
+    // which is why Gmail came up signed out on a second machine while GitHub,
+    // which does not use DBSC, stayed signed in. Off, Google issues ordinary
+    // cookies and those travel with the profile.
+    '--disable-features=DeviceBoundSessions',
+    // Bring the previous tabs back. Chromium's default startup is the new tab
+    // page and only a crashed exit offers restore, so without this whether the
+    // tabs return depends on how the last session happened to die.
+    ...(opts.restoreTabs === false ? [] : ['--restore-last-session', '--hide-crash-restore-bubble']),
     // Linux/Docker: no user namespace, /dev/shm capped at 64 MB, no real GPU.
     // --no-zygote avoids a startup abort in the Linux builds. macOS needs none
     // of this and would only lose its sandbox.
@@ -408,6 +481,16 @@ async function closeStrayLocaleTab(context: BrowserContext, language: string, ti
   }
 }
 
+/**
+ * Address-bar label for a profile directory. The basename used to BE the
+ * profile name; it is an opaque id now, so it is the last resort. `label` is
+ * checked truthily on purpose: an empty string is not a usable label, and
+ * openProfile's `??` passes one straight through.
+ */
+export function resolveDisplayLabel(profileDir: string, label?: string): string {
+  return label || readProfileMeta(profileDir)?.name || path.basename(profileDir)
+}
+
 /** Launch the kernel with the given persona and connect Playwright over CDP. */
 export async function launchKernel(opts: KernelLaunchOptions): Promise<KernelSession> {
   const { exePath, profileDir, persona, timezone, publicIp, proxyUrl, licenseToken, onProgress } = opts
@@ -415,7 +498,7 @@ export async function launchKernel(opts: KernelLaunchOptions): Promise<KernelSes
   const userDataDir = path.join(profileDir, 'user-data')
   fs.mkdirSync(userDataDir, { recursive: true })
 
-  const displayLabel = opts.label || path.basename(profileDir)
+  const displayLabel = resolveDisplayLabel(profileDir, opts.label)
 
   const fpConfig = personaToFpConfig(persona, {
     label: displayLabel,
@@ -424,6 +507,7 @@ export async function launchKernel(opts: KernelLaunchOptions): Promise<KernelSes
     canvasNoise: opts.canvasNoise,
     apiLog: opts.apiLog,
     apiLogPath: path.join(profileDir, API_LOG_FILE),
+    rttMs: opts.rttMs,
   })
   const fpConfigPath = path.join(profileDir, 'fp-config.json')
   fs.writeFileSync(fpConfigPath, JSON.stringify(fpConfig, null, 2))
@@ -442,6 +526,7 @@ export async function launchKernel(opts: KernelLaunchOptions): Promise<KernelSes
     headless: opts.headless,
     profileDir,
     webauthnCapture: opts.webauthnCapture,
+    restoreTabs: opts.restoreTabs,
     platform: process.platform,
   })
 
@@ -497,6 +582,9 @@ export async function launchKernel(opts: KernelLaunchOptions): Promise<KernelSes
     detached: !isWin,
     stdio: ['ignore', 'pipe', 'pipe'],
   }) as unknown as ChildProcessWithoutNullStreams
+  // Latched here, before anything can await: a kernel that dies during startup
+  // must still report its exit to callers that subscribe afterwards.
+  const exit = exitLatch(child)
   // Keep the last few KB of kernel output so a failed start can explain itself.
   let kernelOut = ''
   const appendOut = (chunk: Buffer) => { kernelOut = (kernelOut + chunk.toString()).slice(-4000) }
@@ -535,12 +623,23 @@ export async function launchKernel(opts: KernelLaunchOptions): Promise<KernelSes
     wsEndpoint,
     profileDir,
     onExit(cb) {
-      child.once('exit', cb)
+      exit.onExit(cb)
     },
     async close() {
+      // Browser.close first, over the live CDP connection -- pw.close() only
+      // drops the connection for a browser we attached to, so disconnecting
+      // before asking would leave nothing to ask with.
+      const outcome = await shutdownKernel({
+        requestClose: async () => {
+          const cdp = await pw.newBrowserCDPSession()
+          await cdp.send('Browser.close')
+        },
+        hasExited: () => exit.hasExited(),
+        kill: () => killProcessTree(child.pid),
+      })
       await pw.close().catch(() => {})
       localProxyClose?.()
-      killProcessTree(child.pid)
+      if (outcome === 'killed') opts.onProgress?.('Browser did not exit in time; killed')
       await killByUserDataDir(userDataDir)
     },
   }

@@ -8,6 +8,8 @@ import {
   getOrCreateProfile,
   activateProxy,
   managedProxyToRelayUrl,
+  issueProxyTicket,
+  revokeProxyTicket,
   DEFAULT_RELAY_HOST,
   getProfileArchiveUrls,
 } from './api'
@@ -19,6 +21,7 @@ import {
   findKernelVersion,
   refreshKernelVersions,
   installedKernelUpdates,
+  readProfileMeta,
   type EngineSession,
   type KernelUpdateStatus,
 } from './engine'
@@ -38,6 +41,7 @@ export class AntiDetectBrowser {
     profileName: string
     liveView?: LiveViewStream
     heartbeatInterval?: ReturnType<typeof setInterval>
+    ticket?: { proxyId: string; ticketId: string }
   }> = new Map()
   private versionCheckPromise?: Promise<VersionCheckResult>
   private versionWarned = false
@@ -84,58 +88,83 @@ export class AntiDetectBrowser {
     const license = await getLicenseToken({ key: this.key, server: this.server })
 
     let proxyUrl: string | undefined = options.proxy
+    let ticket: { proxyId: string; ticketId: string } | undefined
     if (options.proxyId) {
-      // Activate first (metering + ownership check), then address it by id.
+      // Activate first (metering + ownership check), then take a short-lived
+      // credential: the account key must never reach the command line.
       const activation = await activateProxy({
         key: this.key, server: this.server, proxyId: options.proxyId,
       })
       if (!activation.proxy) {
         throw new Error('Proxy activation did not return proxy credentials.')
       }
-      proxyUrl = managedProxyToRelayUrl(this.key, activation.proxy.id, this.proxyHost)
+      const issued = await issueProxyTicket({
+        key: this.key, server: this.server, proxyId: activation.proxy.id, label: options.profile,
+      })
+      ticket = { proxyId: activation.proxy.id, ticketId: issued.ticketId }
+      proxyUrl = managedProxyToRelayUrl(issued.username, issued.password, this.proxyHost)
     }
+
+    // An explicit directory carries its own identity, and the archive is addressed
+    // by name - resolve it the same way openProfile does, or the restore lands in a
+    // directory that belongs to a different profile.
+    const profileName = options.userDataDir
+      ? readProfileMeta(options.userDataDir)?.name ?? options.profile
+      : options.profile
 
     // Only sync-capable plans touch the server; otherwise everything runs from
     // the local profile directory.
-    let archive: { downloadUrl?: string; uploadUrl?: string } = {}
-    if (license.sync) {
-      if (!this.ensuredProfiles.has(options.profile)) {
-        const ensured = await getOrCreateProfile({
+    let archive: { downloadUrl?: string; uploadUrl?: string; version?: string } = {}
+    let session: EngineSession
+    try {
+      if (license.sync) {
+        if (!this.ensuredProfiles.has(profileName)) {
+          const ensured = await getOrCreateProfile({
+            key: this.key,
+            server: this.server,
+            name: profileName,
+            tags: options.tags,
+          })
+            .then(() => true)
+            .catch(() => false)
+          if (ensured) this.ensuredProfiles.add(profileName)
+        }
+        archive = await getProfileArchiveUrls({
           key: this.key,
           server: this.server,
-          name: options.profile,
-          tags: options.tags,
-        })
-          .then(() => true)
-          .catch(() => false)
-        if (ensured) this.ensuredProfiles.add(options.profile)
+          name: profileName,
+        }).catch(() => ({}))
       }
-      archive = await getProfileArchiveUrls({
+
+      session = await openProfile({
         key: this.key,
         server: this.server,
-        name: options.profile,
-      }).catch(() => ({}))
+        profileName,
+        licenseToken: license.token,
+        proxyUrl,
+        archiveGetUrl: archive.downloadUrl,
+        archiveVersion: archive.version,
+        // Presence decides whether an upload happens; the URL itself is signed
+        // again after exit, since a session usually outlives this one.
+        archivePutUrl: archive.uploadUrl,
+        getArchivePutUrl: archive.uploadUrl
+          ? () => getProfileArchiveUrls({ key: this.key, server: this.server, name: profileName })
+              .then((a) => a.uploadUrl)
+          : undefined,
+        cacheDir: options.userDataDir ? undefined : this.cacheDir,
+        profileDir: options.userDataDir,
+        headless: options.headless,
+        updateKernelBeforeLaunch: options.updateKernelBeforeLaunch,
+      })
+    } catch (error) {
+      // A launch that never opened a browser has no close hook to revoke on, so
+      // the ticket would stay live for its full lifetime. Retrying against a
+      // flaky proxy would mint one live credential per attempt.
+      if (ticket) {
+        revokeProxyTicket({ key: this.key, server: this.server, ...ticket }).catch(() => {})
+      }
+      throw error
     }
-
-    const session = await openProfile({
-      key: this.key,
-      server: this.server,
-      profileName: options.profile,
-      licenseToken: license.token,
-      proxyUrl,
-      archiveGetUrl: archive.downloadUrl,
-      // Presence decides whether an upload happens; the URL itself is signed
-      // again after exit, since a session usually outlives this one.
-      archivePutUrl: archive.uploadUrl,
-      getArchivePutUrl: archive.uploadUrl
-        ? () => getProfileArchiveUrls({ key: this.key, server: this.server, name: options.profile })
-            .then((a) => a.uploadUrl)
-        : undefined,
-      cacheDir: options.userDataDir ? undefined : this.cacheDir,
-      profileDir: options.userDataDir,
-      headless: options.headless,
-      updateKernelBeforeLaunch: options.updateKernelBeforeLaunch,
-    })
     const { context } = session
     const page = context.pages()[0] ?? await context.newPage()
 
@@ -148,7 +177,7 @@ export class AntiDetectBrowser {
     }
 
     const sessionId = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`
-    this.activeSessions.set(sessionId, { session, profileName: options.profile })
+    this.activeSessions.set(sessionId, { session, profileName: options.profile, ticket })
 
     let liveViewInfo: { sessionKey: string; viewUrl: string } | undefined
     if (options.liveView) {
@@ -182,6 +211,11 @@ export class AntiDetectBrowser {
         unregisterLiveSession({ key: this.key, server: this.server, sessionKey: sessionId }).catch(() => {})
       }
       if (stored?.heartbeatInterval) clearInterval(stored.heartbeatInterval)
+      if (stored?.ticket) {
+        revokeProxyTicket({
+          key: this.key, server: this.server, ...stored.ticket,
+        }).catch(() => {})
+      }
       this.activeSessions.delete(sessionId)
     })
 

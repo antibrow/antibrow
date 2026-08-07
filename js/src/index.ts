@@ -1,5 +1,5 @@
 export { AntiDetectBrowser } from './browser'
-export { listProfiles, profileExists, getProfileDir } from './profile'
+export { listProfiles, profileExists, getProfileDir, listProfileEntries } from './profile'
 export { installLabel, labelOptions, type LabelOptions } from './label'
 export {
   createProfile,
@@ -18,6 +18,8 @@ export {
   activateProxy,
   managedProxyToRelayUrl,
   DEFAULT_RELAY_HOST,
+  issueProxyTicket,
+  revokeProxyTicket,
   getAccount,
   createUserProxy,
   updateUserProxy,
@@ -26,6 +28,7 @@ export {
   proxyConfigToUrl,
   type ManagedProxy,
   type ProxyQuota,
+  type ProxyTicket,
   type AccountInfo,
   type UpdateProfileOptions,
   type LaunchProfile,
@@ -71,6 +74,19 @@ export {
   exportProfileArchive,
   importProfileArchive,
   PROFILE_ARCHIVE_EXT,
+  downloadProfileCache,
+  uploadProfileCache,
+  ARCHIVE_VERSION_FILE,
+  readArchiveVersion,
+  writeArchiveVersion,
+  clearArchiveVersion,
+  normalizeArchiveVersion,
+  readProfileMeta,
+  writeProfileMeta,
+  resolveProfileDir,
+  resolveProfileDirSync,
+  type ProfileMeta,
+  type ProfileEntry,
   type EngineSession,
   type OpenedProfile,
   type ArchiveSyncEvent,

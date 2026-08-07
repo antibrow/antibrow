@@ -6,6 +6,7 @@ process, so this is the closest we get to an integration test without a binary.
 
 from __future__ import annotations
 
+import importlib
 import json
 
 import pytest
@@ -15,6 +16,7 @@ from antibrow import config as C
 from antibrow import kernel as K
 from antibrow import license as L
 from antibrow.geoip import ProxyGeo
+from antibrow.profile_dir import read_profile_meta
 
 
 @pytest.fixture
@@ -69,7 +71,12 @@ def plan_for(tmp_path, **kwargs):
 def test_plan_creates_the_profile_tree_and_wires_every_switch(tmp_path, fake_kernel, fake_license):
     plan = plan_for(tmp_path, profile="shopper-01")
 
-    assert plan.profile_dir == tmp_path / "profiles" / "shopper-01"
+    # The directory is named after the profile's id (a fresh uuid here), not
+    # its human-readable name - that name lives in profile.json instead, so
+    # the SDK and the desktop app land on the same directory for a given id.
+    assert plan.profile_dir.parent == tmp_path / "profiles"
+    assert plan.profile_dir.name != "shopper-01"
+    assert read_profile_meta(plan.profile_dir).name == "shopper-01"
     assert (plan.profile_dir / "persona.json").exists()
     assert (plan.profile_dir / "fp-config.json").exists()
     assert plan.user_data_dir.is_dir()
@@ -111,10 +118,50 @@ def test_profile_names_are_sanitised_into_directory_names(tmp_path, fake_kernel,
 
 
 def test_explicit_profile_dir_wins_over_cache_dir(tmp_path, fake_kernel, fake_license):
+    # An explicit `profile_dir` always wins over `cache_dir`/`profile` for where
+    # the browser reads and writes - but `profile` is still consulted as the
+    # name fallback for a directory carrying no record (see the case below).
     target = tmp_path / "somewhere" / "else"
-    plan = plan_for(tmp_path, profile="ignored", profile_dir=target)
+    plan = plan_for(tmp_path, profile="fallback-name", profile_dir=target)
     assert plan.profile_dir == target
-    assert plan.label == target.name
+    assert plan.label == "fallback-name"
+
+
+def test_explicit_profile_dir_with_a_record_uses_the_recorded_name(tmp_path, fake_kernel, fake_license):
+    # A directory that already carries a profile.json record (e.g. one the
+    # desktop app or the other SDK resolved) keeps its recorded name even when
+    # `profile` names something else - the record wins, `profile` is only the
+    # fallback for a record-less directory.
+    from antibrow.profile_dir import ProfileMeta, write_profile_meta
+
+    target = tmp_path / "somewhere" / "recorded"
+    write_profile_meta(target, ProfileMeta(id="uuid-recorded", name="work", origin="local"))
+    plan = plan_for(tmp_path, profile="gmail", profile_dir=target)
+    assert plan.profile_dir == target
+    assert plan.label == "work"
+
+
+def test_the_server_lookup_runs_on_an_env_only_key(tmp_path, fake_kernel, fake_license, monkeypatch):
+    # A key from the environment (or the key file) and the default server are
+    # the documented setup. Forwarding the raw arguments would skip the lookup
+    # and strand this profile on a local id the other SDK never resolves to.
+    # `antibrow.profile_dir` the package attribute is a function; reach the
+    # submodule itself.
+    pd = importlib.import_module("antibrow.profile_dir")
+    seen = []
+
+    def lookup(name, key, server):
+        seen.append((name, key, server))
+        return ("server-uuid", True)
+
+    monkeypatch.setattr(pd, "_lookup_server_id", lookup)
+    monkeypatch.setenv(C.ENV_API_KEY, "adb_env")
+    monkeypatch.delenv(C.ENV_SERVER, raising=False)
+    monkeypatch.delenv(C.ENV_SERVER_LEGACY, raising=False)
+    plan = plan_for(tmp_path, profile="gmail")
+    assert seen == [("gmail", "adb_env", C.DEFAULT_SERVER)]
+    assert plan.profile_dir.name == "server-uuid"
+    assert read_profile_meta(plan.profile_dir).origin == "server"
 
 
 def test_kernel_version_pins_new_profiles_only(tmp_path, fake_kernel, fake_license, monkeypatch):

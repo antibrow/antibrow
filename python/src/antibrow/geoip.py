@@ -18,6 +18,7 @@ import json
 import socket
 import ssl
 import struct
+import time
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -36,6 +37,7 @@ class ProxyGeo:
     country: str
     timezone: str
     country_code: str = ""
+    rtt_ms: Optional[float] = None
 
 
 def parse_geo_response(body: str) -> Optional[ProxyGeo]:
@@ -243,11 +245,19 @@ def lookup_proxy_geo(proxy: ProxyLike, timeout: float = DEFAULT_TIMEOUT) -> Opti
         return None
     if spec is None:
         return None
+    start = time.monotonic()
     try:
         if spec.is_relay:
-            return _lookup_via_relay(spec, timeout)
-        if spec.is_socks:
-            return _lookup_via_socks5(spec, timeout)
-        return _lookup_via_http_proxy(spec, timeout)
+            geo = _lookup_via_relay(spec, timeout)
+        elif spec.is_socks:
+            geo = _lookup_via_socks5(spec, timeout)
+        else:
+            geo = _lookup_via_http_proxy(spec, timeout)
     except Exception:
         return None
+    if geo is not None:
+        # Includes DNS, connect and TLS, so it overestimates Chrome's http_rtt -
+        # deliberately not compensated: erring slow only yields a slower
+        # effectiveType, which is still a self-consistent trio.
+        geo.rtt_ms = (time.monotonic() - start) * 1000
+    return geo

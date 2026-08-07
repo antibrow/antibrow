@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import re
+import urllib.parse
 from pathlib import Path
 
 #: Cache root shared with the Node SDK (`anti-detect-browser`) and the desktop app.
@@ -87,6 +88,24 @@ def sanitize_profile_name(name: str) -> str:
     return sanitized
 
 
+# RFC 3986 pchar: a path segment may carry sub-delims, ":" and "@" raw.
+_PATH_SEGMENT_SAFE = "!$&'()*+,;=:@"
+
+
+def encode_path_segment(value: str) -> str:
+    """Percent-encode a value for use as one path segment.
+
+    Not ``quote(value, safe="")``: that also escapes characters a segment may
+    carry raw, and the result trips the server's double-encoding guard, which
+    refuses any segment that partially decodes and still holds a ``%xx``. The
+    server's ``decodeURI`` turns ``%20`` back into a space but leaves ``%40``, so
+    a profile named ``work mail@example.com`` is rejected before any route
+    matches - cloud sync for it quietly never works. Kept identical in the Node
+    SDK, which addresses the same profiles on the same server.
+    """
+    return urllib.parse.quote(value, safe=_PATH_SEGMENT_SAFE)
+
+
 def profiles_dir(cache_dir: Path | str | None = None) -> Path:
     base = Path(cache_dir).expanduser() if cache_dir else default_cache_dir()
     return base / "profiles"
@@ -94,12 +113,13 @@ def profiles_dir(cache_dir: Path | str | None = None) -> Path:
 
 def profile_dir(name: str, cache_dir: Path | str | None = None) -> Path:
     """Absolute directory for a named profile (not created here)."""
-    return profiles_dir(cache_dir) / sanitize_profile_name(name)
+    from .profile_dir import resolve_profile_dir
+
+    return resolve_profile_dir(name, cache_dir).dir
 
 
 def list_profiles(cache_dir: Path | str | None = None) -> list[str]:
-    """Names of every profile directory in the cache (sorted)."""
-    root = profiles_dir(cache_dir)
-    if not root.is_dir():
-        return []
-    return sorted(entry.name for entry in root.iterdir() if entry.is_dir())
+    """Names of every profile in the cache (sorted)."""
+    from .profile_dir import list_profile_entries
+
+    return sorted(entry.name for entry in list_profile_entries(cache_dir))

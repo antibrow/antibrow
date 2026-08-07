@@ -1,4 +1,5 @@
 import type { ProfileConfig, SyncedProfile, ProfileSyncPage, ProxyConfig, SyncedProxy, ProxySyncPage } from './types'
+import { encodePathSegment } from './url-path'
 
 const DEFAULT_SERVER = 'https://antibrow.com'
 
@@ -51,7 +52,7 @@ export interface UpdateProfileOptions {
 export async function updateProfile(options: UpdateProfileOptions): Promise<SyncedProfile> {
   const { key, id, name, tags, config } = options
   const server = options.server || DEFAULT_SERVER
-  const url = new URL(`/api/v1/profiles/${encodeURIComponent(id)}`, server)
+  const url = new URL(`/api/v1/profiles/${encodePathSegment(id)}`, server)
 
   const response = await fetch(url.toString(), {
     method: 'PUT',
@@ -70,7 +71,7 @@ export async function updateProfile(options: UpdateProfileOptions): Promise<Sync
 export async function getProfile(options: Omit<ProfileOptions, 'tags'>): Promise<SyncedProfile> {
   const { key, name } = options
   const server = options.server || DEFAULT_SERVER
-  const url = new URL(`/api/v1/profiles/${encodeURIComponent(name)}`, server)
+  const url = new URL(`/api/v1/profiles/${encodePathSegment(name)}`, server)
 
   const response = await fetch(url.toString(), { method: 'GET', headers: authHeaders(key) })
   if (!response.ok) {
@@ -126,7 +127,7 @@ export async function deleteProfile(options: { key: string; server?: string; id?
   const ident = id ?? name
   if (!ident) throw new Error('deleteProfile requires an id or name')
   const server = options.server || DEFAULT_SERVER
-  const url = new URL(`/api/v1/profiles/${encodeURIComponent(ident)}`, server)
+  const url = new URL(`/api/v1/profiles/${encodePathSegment(ident)}`, server)
 
   const response = await fetch(url.toString(), { method: 'DELETE', headers: authHeaders(key) })
   if (!response.ok) {
@@ -149,7 +150,7 @@ export async function getProfileForLaunch(options: { key: string; server?: strin
   const ident = id ?? name
   if (!ident) throw new Error('getProfileForLaunch requires an id or name')
   const server = options.server || DEFAULT_SERVER
-  const url = new URL(`/api/v1/profiles/${encodeURIComponent(ident)}`, server)
+  const url = new URL(`/api/v1/profiles/${encodePathSegment(ident)}`, server)
 
   const response = await fetch(url.toString(), { method: 'GET', headers: authHeaders(key) })
   if (!response.ok) {
@@ -176,17 +177,23 @@ export async function getProfileArchiveUrls(options: {
   key: string
   server?: string
   name: string
-}): Promise<{ downloadUrl?: string; uploadUrl?: string }> {
+}): Promise<{ downloadUrl?: string; uploadUrl?: string; version?: string }> {
   const server = options.server || DEFAULT_SERVER
-  const url = new URL(`/api/v1/profiles/${encodeURIComponent(options.name)}/archive`, server)
+  const url = new URL(`/api/v1/profiles/${encodePathSegment(options.name)}/archive`, server)
   const headers = authHeaders(options.key)
   const [getRes, postRes] = await Promise.all([
     fetch(url.toString(), { method: 'GET', headers }),
     fetch(url.toString(), { method: 'POST', headers }),
   ])
 
-  const out: { downloadUrl?: string; uploadUrl?: string } = {}
-  if (getRes.ok) out.downloadUrl = ((await getRes.json()) as { downloadUrl?: string }).downloadUrl
+  const out: { downloadUrl?: string; uploadUrl?: string; version?: string } = {}
+  if (getRes.ok) {
+    // `version` is absent on servers predating archive generations; the caller
+    // then just restores unconditionally, as it always did.
+    const body = (await getRes.json()) as { downloadUrl?: string; version?: string }
+    out.downloadUrl = body.downloadUrl
+    out.version = body.version
+  }
   if (postRes.ok) out.uploadUrl = ((await postRes.json()) as { uploadUrl?: string }).uploadUrl
   return out
 }
@@ -227,7 +234,7 @@ export async function uploadProfileState(options: {
 }): Promise<void> {
   const { key, name, cookies } = options
   const server = options.server || DEFAULT_SERVER
-  const apiUrl = new URL(`/api/v1/profiles/${encodeURIComponent(name)}/state`, server)
+  const apiUrl = new URL(`/api/v1/profiles/${encodePathSegment(name)}/state`, server)
   const apiResponse = await fetch(apiUrl.toString(), { method: 'POST', headers: authHeaders(key) })
 
   if (!apiResponse.ok) {
@@ -260,7 +267,7 @@ export async function downloadProfileState(options: {
 }): Promise<ProfileState | null> {
   const { key, name } = options
   const server = options.server || DEFAULT_SERVER
-  const apiUrl = new URL(`/api/v1/profiles/${encodeURIComponent(name)}/state`, server)
+  const apiUrl = new URL(`/api/v1/profiles/${encodePathSegment(name)}/state`, server)
   const apiResponse = await fetch(apiUrl.toString(), { method: 'GET', headers: authHeaders(key) })
 
   if (!apiResponse.ok) {
@@ -297,15 +304,16 @@ export interface ProxyQuota {
 export const DEFAULT_RELAY_HOST = 'proxy.antibrow.com'
 
 /**
- * `relay://<apiKey>:<proxyId>@<host>` for `--proxy-server`: the exit endpoint is
- * resolved server-side, so no upstream credentials reach the browser.
+ * `relay://<proxyId>:<ticket>@<host>` for `--proxy-server`. The exit endpoint is
+ * resolved server-side, and the credential is a short-lived ticket rather than
+ * the account key, which would otherwise sit in the process command line.
  */
 export function managedProxyToRelayUrl(
-  apiKey: string,
   proxyId: string,
+  ticketSecret: string,
   host: string = DEFAULT_RELAY_HOST,
 ): string {
-  return `relay://${encodeURIComponent(apiKey)}:${encodeURIComponent(proxyId)}@${host}`
+  return `relay://${encodeURIComponent(proxyId)}:${encodeURIComponent(ticketSecret)}@${host}`
 }
 
 interface ProxyApiOptions {
@@ -358,23 +366,76 @@ export async function swapManagedProxy(options: ProxyApiOptions & { proxyId: str
   return r.proxy as ManagedProxy
 }
 
-export async function activateProxy(
-  options: ProxyApiOptions & { proxyId: string },
-): Promise<{ allowed: boolean; proxy?: ManagedProxy; quota?: ProxyQuota }> {
-  const server = options.server || DEFAULT_SERVER
-  const url = new URL(`/api/v1/proxies/${encodeURIComponent(options.proxyId)}/activate`, server)
-  const response = await fetch(url.toString(), { method: 'POST', headers: authHeaders(options.key) })
-  const data = await response.json().catch(() => ({})) as {
-    allowed?: boolean; reason?: string; proxy?: ManagedProxy; quota?: ProxyQuota
-  }
+/** Shared by proxy endpoints gated on plan quota (403) and ownership (404). */
+function throwIfProxyAccessDenied(response: Response): void {
   if (response.status === 403) {
     throw new Error('Proxy monthly quota exceeded for your plan. Upgrade or stop using another proxy this month.')
   }
   if (response.status === 404) {
     throw new Error('Proxy not found or does not belong to you (not_your_proxy).')
   }
+}
+
+export async function activateProxy(
+  options: ProxyApiOptions & { proxyId: string },
+): Promise<{ allowed: boolean; proxy?: ManagedProxy; quota?: ProxyQuota }> {
+  const server = options.server || DEFAULT_SERVER
+  const url = new URL(`/api/v1/proxies/${encodeURIComponent(options.proxyId)}/activate`, server)
+  const response = await fetch(url.toString(), { method: 'POST', headers: authHeaders(options.key) })
+  throwIfProxyAccessDenied(response)
+  const data = await response.json().catch(() => ({})) as {
+    allowed?: boolean; reason?: string; proxy?: ManagedProxy; quota?: ProxyQuota
+  }
   if (!response.ok) throw new Error(`Failed to activate proxy: HTTP ${response.status}`)
   return { allowed: data.allowed ?? true, proxy: data.proxy, quota: data.quota }
+}
+
+export interface ProxyTicket {
+  ticketId: string
+  username: string
+  password: string
+  host: string
+  expiresAt: string
+}
+
+export async function issueProxyTicket(
+  options: ProxyApiOptions & { proxyId: string; label?: string; ttlMinutes?: number },
+): Promise<ProxyTicket> {
+  const server = options.server || DEFAULT_SERVER
+  const url = new URL(`/api/v1/proxies/${encodeURIComponent(options.proxyId)}/ticket`, server)
+  const body: Record<string, unknown> = {}
+  if (options.label !== undefined) body.label = options.label
+  if (options.ttlMinutes !== undefined) body.ttlMinutes = options.ttlMinutes
+  const response = await fetch(url.toString(), {
+    method: 'POST',
+    headers: jsonHeaders(options.key),
+    body: JSON.stringify(body),
+  })
+  // A deployed route answers 404 only with `not_your_proxy`. A bare 404 means
+  // the endpoint isn't there at all (server not yet updated, or rolled back), and
+  // saying "proxy not found" for that sends whoever debugs it down the wrong path.
+  if (response.status === 404) {
+    const body = await response.text().catch(() => '')
+    if (!body.includes('not_your_proxy')) {
+      throw new Error(
+        'Proxy ticket endpoint not found (HTTP 404). This server does not support managed proxy tickets - upgrade the server, or pin an older SDK.',
+      )
+    }
+  }
+  throwIfProxyAccessDenied(response)
+  if (!response.ok) throw new Error(`Failed to issue proxy ticket: HTTP ${response.status}`)
+  return await response.json() as ProxyTicket
+}
+
+/** Best-effort: a ticket expires on its own, so a failed revoke is never fatal. */
+export async function revokeProxyTicket(
+  options: ProxyApiOptions & { proxyId: string; ticketId: string },
+): Promise<void> {
+  const server = options.server || DEFAULT_SERVER
+  const url = new URL(`/api/v1/proxies/${encodeURIComponent(options.proxyId)}/ticket`, server)
+  url.searchParams.set('ticketId', options.ticketId)
+  await fetch(url.toString(), { method: 'DELETE', headers: authHeaders(options.key) })
+    .catch(() => undefined)
 }
 
 export interface AccountInfo {

@@ -8,7 +8,7 @@ for WebRTC - into the fingerprint.
     ANTIBROW_PROXY="http://user:pass@gate.example.com:8080" python examples/03_proxy_geoip.py
 
 Supported: http://, https://, socks5:// (credentials are answered inside the
-kernel, no extension), and AntiBrow's managed relay:// proxies.
+kernel, no extension).
 """
 
 import os

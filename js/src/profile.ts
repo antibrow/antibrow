@@ -1,6 +1,7 @@
-import { mkdirSync, existsSync, readdirSync, statSync } from 'node:fs'
+import { mkdirSync, existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { homedir } from 'node:os'
+import { resolveProfileDirSync, listProfileEntries } from './engine/profile-dir'
 
 const DEFAULT_CACHE_DIR = join(homedir(), '.anti-detect-browser')
 const PROFILES_DIR = 'profiles'
@@ -13,27 +14,9 @@ export function getProfilesDir(cacheDir?: string): string {
 
 /** Get or create a profile's user data directory. */
 export function getProfileDir(profileName: string, cacheDir?: string): string {
-  if (!profileName) {
-    throw new Error('Profile name is required')
-  }
-
-  // Sanitize the name to prevent path traversal.
-  const sanitized = profileName
-    .replace(/[<>:"/\\|?*]/g, '_')
-    .replace(/\.\./g, '_')
-    .trim()
-
-  if (!sanitized) {
-    throw new Error('Invalid profile name after sanitization')
-  }
-
-  const profileDir = join(getProfilesDir(cacheDir), sanitized)
-
-  if (!existsSync(profileDir)) {
-    mkdirSync(profileDir, { recursive: true })
-  }
-
-  return profileDir
+  const dir = resolveProfileDirSync(cacheDir || DEFAULT_CACHE_DIR, profileName).dir
+  mkdirSync(dir, { recursive: true })
+  return dir
 }
 
 /** A temporary user data directory for non-persistent sessions. */
@@ -47,31 +30,12 @@ export function createTempProfileDir(cacheDir?: string): string {
 
 /** All existing profile names. */
 export function listProfiles(cacheDir?: string): string[] {
-  const profilesDir = getProfilesDir(cacheDir)
-
-  if (!existsSync(profilesDir)) {
-    return []
-  }
-
-  return readdirSync(profilesDir).filter(name => {
-    const fullPath = join(profilesDir, name)
-    try {
-      return statSync(fullPath).isDirectory()
-    } catch {
-      return false
-    }
-  })
+  return listProfileEntries(cacheDir || DEFAULT_CACHE_DIR).map((e) => e.name)
 }
 
-/** Whether a profile directory exists. */
+/** Whether a profile with this name exists. */
 export function profileExists(profileName: string, cacheDir?: string): boolean {
-  const sanitized = profileName
-    .replace(/[<>:"/\\|?*]/g, '_')
-    .replace(/\.\./g, '_')
-    .trim()
-
-  const profileDir = join(getProfilesDir(cacheDir), sanitized)
-  return existsSync(profileDir)
+  return listProfileEntries(cacheDir || DEFAULT_CACHE_DIR).some((e) => e.name === profileName)
 }
 
 /** The cache directory, created if needed. */
@@ -82,3 +46,5 @@ export function ensureCacheDir(cacheDir?: string): string {
   }
   return dir
 }
+
+export { listProfileEntries } from './engine/profile-dir'

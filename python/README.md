@@ -54,6 +54,8 @@ That is a real Chromium — with a real device's fingerprint, its own persistent
 
 **Timezone follows the proxy.** Pass a proxy and the exit IP is resolved through that same proxy; the browser's timezone and WebRTC identity are set from it before the first byte of the first page.
 
+**Authenticated proxies, with nothing loaded to make them work.** `socks5://user:pass@host:port` works as-is: HTTP/HTTPS `407` challenges are answered in the network stack, SOCKS5 by RFC 1929 username/password negotiation, all inside the engine. `chrome://extensions` stays empty — the proxy-auth helper extension most antidetect browsers still ship is enumerable from any page, and is itself a tell.
+
 **Unlimited local profiles, free.** A profile is a directory. Name one and it exists. There is no per-profile fee and nothing to provision. Your plan sets how many browsers run *at the same time*, not how many identities you may own.
 
 **Built for agents.** `launch()` hands back a live CDP endpoint plus a Playwright handle, so browser-use, crawl4ai, Scrapling, your own MCP server, or plain Playwright all attach without glue code.
@@ -136,7 +138,7 @@ Starts the kernel and returns a handle that is ready to drive. Blocking (sync) A
 |---|---|---|---|
 | `profile` | `str` | `"default"` | Profile name. Same name → same identity, cookies, storage. Unlimited, free, local. |
 | `headless` | `bool` | `False` | Hide the window. On Windows the window is moved off-screen instead of `--headless=new`, because headless Chromium has its own detectable fingerprint. On Linux use Xvfb (see [Docker](#docker)); on macOS it has no effect yet. |
-| `proxy` | `str \| dict` | `None` | `"http://user:pass@host:port"`, `"socks5://…"`, `"https://…"`, `"relay://…"`, or Playwright's `{"server": …, "username": …, "password": …}`. |
+| `proxy` | `str \| dict` | `None` | `"http://user:pass@host:port"`, `"socks5://…"`, `"https://…"`, or Playwright's `{"server": …, "username": …, "password": …}`. |
 | `geoip` | `bool` | `True` | Resolve the proxy's exit IP through the proxy and make timezone + WebRTC match it. No-op without a proxy. |
 | `timezone` | `str` | `None` | Force an IANA timezone (`"Europe/Berlin"`), overriding the geo lookup. |
 | `api_key` | `str` | env / key file | AntiBrow API key. |
@@ -273,12 +275,6 @@ With `geoip=True` (the default), the exit IP is looked up *through* the proxy be
 ```python
 browser = launch(profile="p1", proxy="socks5://user:pass@127.0.0.1:1080")
 print(browser.public_ip, browser.timezone)   # 203.0.113.7 America/Los_Angeles
-```
-
-AntiBrow's own managed residential proxies use the `relay://` scheme, which the kernel speaks natively:
-
-```python
-launch(proxy="relay://<api-key>:<proxy-id>@proxy.antibrow.com")
 ```
 
 ## Framework integrations

@@ -8,7 +8,7 @@ import { AntiDetectBrowser } from './browser'
 import { listProxies, claimManagedProxy } from './api'
 import { LiveViewStream, registerLiveSession, unregisterLiveSession } from './liveview'
 import { ensureCacheDir, listProfiles, getProfileDir } from './profile'
-import { loadOrGeneratePersona, DEFAULT_KERNEL_VERSION } from './engine'
+import { loadOrGeneratePersona, DEFAULT_KERNEL_VERSION, readProfileMeta } from './engine'
 import { rmSync } from 'node:fs'
 import type { McpSession } from './types'
 
@@ -435,7 +435,7 @@ export async function startMcpServer(): Promise<void> {
             key: apiKey,
             server,
             sessionKey: session.id,
-            profileName: session.profileDir.split(/[/\\]/).pop(),
+            profileName: readProfileMeta(session.profileDir)?.name ?? session.profileDir.split(/[/\\]/).pop(),
             ua: '',
           })
           const stream = new LiveViewStream(

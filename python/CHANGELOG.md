@@ -4,6 +4,51 @@ All notable changes to the `antibrow` Python SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-08-07
+
+Profiles get a stable identity of their own, and a profile opened on a second
+machine now arrives intact.
+
+### Added
+
+- Profiles keep an identity record (`profile.json`) inside their own directory,
+  and the directory is named after that id rather than the profile name. A
+  profile can therefore be renamed without losing its persona, and this SDK, the
+  Node SDK and the desktop app all resolve the same name to the same directory.
+  Directories from older versions are adopted on first launch, personas
+  included.
+- `navigator.connection` is derived from the proxy's measured round-trip time
+  instead of one constant shared by every user. `effective_type`, `rtt` and
+  `downlink` are produced by a single conversion, so they stay consistent with
+  each other the way a real connection's are.
+
+### Fixed
+
+- A profile opened on a second machine could come up with the first machine's
+  tabs missing and some sites signed out. Restoring a cloud archive now replaces
+  the profile's state instead of merging into whatever the machine had left
+  over, device-bound sessions are disabled (their keys cannot leave the machine
+  that created them), and the browser is asked to close before it is killed so
+  cookies and session files are flushed first.
+- An upload that failed at the end of a session is no longer overwritten by the
+  older cloud copy on the next launch. Each archive carries a generation marker,
+  and a launch only downloads when the cloud copy is a different generation than
+  the one this machine already has.
+- `close()` never actually asked the browser to quit. The request was dispatched
+  to a worker thread, which Playwright's synchronous API refuses to serve, so
+  every close waited out the full 15 second grace period and then killed the
+  browser. A killed browser flushes nothing, so cookies written late were lost
+  and a synced profile uploaded a half-written directory. Closing is now
+  immediate (measured: 15.1s and killed, to 0.1s and clean) and leaves the
+  profile in a normal exit state. The asynchronous API was never affected.
+- Cloud sync worked for a profile named `mail@example.com` and for one named
+  `work mail`, but not for one named `work mail@example.com`. A name holding
+  both a space and a character like `@`, `+` or `:` was escaped into a form the
+  server reads as double encoding and refuses before any route matches, so every
+  request for that profile failed and its sync silently never ran. Those
+  characters are legal in a URL path and are now left as they are. A name
+  holding a `#`, or a `%` followed by two hex digits, is still affected.
+
 ## [0.4.0] - 2026-08-04
 
 Cloud profile sync, portable `.fpprofile` archives, and a portable passkey store -

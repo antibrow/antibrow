@@ -125,6 +125,14 @@ describe('probeProxyExit: HTTP proxy', () => {
     expect(r.ok).toBe(false)
     expect(r.error).toMatch(/reserved range/)
   })
+
+  it('reports the probe round-trip on the geo it returns', async () => {
+    const port = await startHttpProxy(() => ({ status: 200, body: GEO_BODY }))
+    const r = await probeProxyExit(`http://127.0.0.1:${port}`, 4000)
+    expect(r.ok).toBe(true)
+    expect(r.geo?.rttMs).toBeGreaterThanOrEqual(0)
+    expect(r.geo?.rttMs).toBe(r.latencyMs)
+  })
 })
 
 describe('probeProxyExit: SOCKS5', () => {

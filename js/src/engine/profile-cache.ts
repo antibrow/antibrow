@@ -15,8 +15,45 @@ const PASSKEYS_ENTRY = 'passkeys.json'
 // passkey registered on one machine never reaches the next one.
 const ROOT_ITEMS = ['persona.json', PASSKEYS_ENTRY] as const
 
+/**
+ * Which generation of the cloud archive this machine holds. Machine-local: it is
+ * not in ROOT_ITEMS, so it never gets packed, and an import clears it because
+ * the generation of imported state is unknowable.
+ */
+export const ARCHIVE_VERSION_FILE = '.archive-version'
+
+export function readArchiveVersion(profileDir: string): string | undefined {
+  try {
+    return fs.readFileSync(path.join(profileDir, ARCHIVE_VERSION_FILE), 'utf8').trim() || undefined
+  } catch {
+    return undefined
+  }
+}
+
+export function writeArchiveVersion(profileDir: string, version: string): void {
+  try {
+    fs.mkdirSync(profileDir, { recursive: true })
+    fs.writeFileSync(path.join(profileDir, ARCHIVE_VERSION_FILE), version)
+  } catch { /* a lost marker only costs one redundant download */ }
+}
+
+export function clearArchiveVersion(profileDir: string): void {
+  fs.rmSync(path.join(profileDir, ARCHIVE_VERSION_FILE), { force: true })
+}
+
+/** R2 hands back the ETag quoted; the marker stores it bare. */
+export function normalizeArchiveVersion(etag: string | null | undefined): string | undefined {
+  const v = (etag ?? '').trim().replace(/^"|"$/g, '')
+  return v || undefined
+}
+
 // Lock files that are always in use while Chrome runs.
 const SKIP_FILES = new Set(['LOCK', 'lock', '.lock', 'SingletonLock', 'SingletonCookie', 'SingletonSocket'])
+
+// Device-bound session records. Their private keys live in the OS keystore
+// (Secure Enclave / TPM) and cannot be exported, so carrying the records to
+// another machine only makes Google refuse the session outright.
+const DBSC_FILES = new Set(['Device Bound Sessions', 'Device Bound Sessions-journal'])
 
 // Disposable cache dirs: big, often locked, and rebuilt by Chrome anyway.
 const SKIP_DIRS = new Set([
@@ -35,7 +72,7 @@ function addDirSafe(zip: AdmZip, absDir: string, zipBase: string): void {
     return
   }
   for (const e of entries) {
-    if (SKIP_FILES.has(e.name)) continue
+    if (SKIP_FILES.has(e.name) || DBSC_FILES.has(e.name)) continue
     const abs = path.join(absDir, e.name)
     const zipPath = zipBase ? `${zipBase}/${e.name}` : e.name
     if (e.isDirectory()) {
@@ -46,6 +83,85 @@ function addDirSafe(zip: AdmZip, absDir: string, zipBase: string): void {
         zip.addFile(zipPath, fs.readFileSync(abs))
       } catch { /* locked or unreadable: skip */ }
     }
+  }
+}
+
+/**
+ * Delete a directory's packable contents, keeping only what a pack skips.
+ * Returns true when nothing was kept, so the caller can drop the directory too.
+ */
+function clearDirSafe(absDir: string): boolean {
+  let entries: fs.Dirent[]
+  try {
+    entries = fs.readdirSync(absDir, { withFileTypes: true })
+  } catch {
+    return false
+  }
+  let kept = 0
+  for (const e of entries) {
+    const abs = path.join(absDir, e.name)
+    if (SKIP_FILES.has(e.name)) { kept++; continue }
+    if (e.isDirectory() && !SKIP_DIRS.has(e.name)) {
+      if (clearDirSafe(abs)) {
+        try { fs.rmdirSync(abs) } catch { kept++ }
+      } else {
+        kept++
+      }
+      continue
+    }
+    if (e.isDirectory()) { kept++; continue }
+    try { fs.rmSync(abs, { force: true }) } catch { kept++ }
+  }
+  return kept === 0
+}
+
+/**
+ * Which top-level USER_DATA_ITEMS a zip's entries actually carry. An item the
+ * archive is silent about was never packed in the first place - a live
+ * Chromium can hold `Local State` open, `addDirSafe`/`zip.addFile` swallow the
+ * read error, and the resulting archive uploads fine with that item simply
+ * missing. Clearing it anyway would delete the local copy and put nothing
+ * back: for `Local State` that is `os_crypt.encrypted_key`, so every cookie
+ * and saved password in the profile becomes undecryptable.
+ */
+function packedItems(entries: readonly { entryName: string }[]): Set<string> {
+  const present = new Set<string>()
+  for (const e of entries) {
+    const name = e.entryName.replace(/\\/g, '/')
+    if (!name.startsWith('user-data/')) continue
+    const item = name.slice('user-data/'.length).split('/')[0]
+    if (item) present.add(item)
+  }
+  return present
+}
+
+/**
+ * Wipe everything a pack would have carried, so restoring replaces the profile's
+ * state instead of merging into it. Leftovers are not inert: Chromium picks the
+ * session to restore by the timestamp in the file name, so a local
+ * `Sessions/Session_<newer>` silently outranks the restored one and the profile
+ * opens with the wrong machine's tabs. Same story for leveldb and the SQLite
+ * -wal/-journal siblings of a database the archive replaced.
+ *
+ * Skipped cache dirs stay: they are disposable and re-downloading them buys
+ * nothing. Files the pack refuses (device-bound sessions) are removed here,
+ * which is the point -- nothing puts them back.
+ *
+ * ROOT_ITEMS are deliberately left alone. They are standalone JSON with no
+ * cross-file state to tear, and an archive written before they were synced must
+ * not delete them: persona.json IS the profile's identity, and losing it means
+ * regenerating a different fingerprint.
+ */
+function clearPackedState(profileDir: string, entries: readonly { entryName: string }[]): void {
+  const present = packedItems(entries)
+  const udDir = path.join(profileDir, 'user-data')
+  for (const item of USER_DATA_ITEMS) {
+    if (!present.has(item)) continue
+    const p = path.join(udDir, item)
+    let stat: fs.Stats
+    try { stat = fs.statSync(p) } catch { continue }
+    if (stat.isDirectory()) clearDirSafe(p)
+    else fs.rmSync(p, { force: true })
   }
 }
 
@@ -72,10 +188,15 @@ export function packProfileCache(profileDir: string): Buffer {
   return zip.toBuffer()
 }
 
-/** Extract a cache zip into the profile directory. */
+/** Replace the profile's synced state with the archive's. */
 export function unpackProfileCache(buf: Buffer, profileDir: string): void {
+  // Parse before deleting anything: a truncated download must leave the profile
+  // as it was, not half-erased.
+  const zip = new AdmZip(buf)
+  const entries = zip.getEntries()
   fs.mkdirSync(profileDir, { recursive: true })
-  new AdmZip(buf).extractAllTo(profileDir, /* overwrite */ true)
+  clearPackedState(profileDir, entries)
+  zip.extractAllTo(profileDir, /* overwrite */ true)
 }
 
 // Portable archive (.fpprofile): manifest.json + passkeys + whitelisted browser
@@ -229,8 +350,16 @@ export function importProfileArchive(buf: Buffer, profileDir: string): ImportedP
   const entry = zip.getEntry(LEGACY_META_ENTRY)
   const legacy = entry ? (JSON.parse(entry.getData().toString('utf8')) as Record<string, unknown>) : {}
   fs.mkdirSync(profileDir, { recursive: true })
+  // The legacy export reused the filename the directory's identity record uses,
+  // so extracting would overwrite it and the cleanup below would then delete it,
+  // leaving a directory that no name resolves to.
+  const metaPath = path.join(profileDir, LEGACY_META_ENTRY)
+  let identity: Buffer | undefined
+  try { identity = fs.readFileSync(metaPath) } catch { /* no record yet */ }
   zip.extractAllTo(profileDir, /* overwrite */ true)
-  fs.rmSync(path.join(profileDir, LEGACY_META_ENTRY), { force: true })
+  if (identity) fs.writeFileSync(metaPath, identity)
+  else fs.rmSync(metaPath, { force: true })
+  clearArchiveVersion(profileDir)
   const { name, kernelVersion, ...rest } = legacy as { name?: string; kernelVersion?: string }
   return {
     source: 'legacy',
@@ -369,6 +498,7 @@ function importLauncherArchive(zip: AdmZip, manifest: LauncherManifest, profileD
   const kernelVersion = resolveImportedKernelVersion(lp.kernel_version || DEFAULT_KERNEL_VERSION.version)
   const persona = launcherPersonaToPersona(lp.persona ?? {}, kernelVersion)
   fs.writeFileSync(path.join(profileDir, 'persona.json'), JSON.stringify(persona, null, 2))
+  clearArchiveVersion(profileDir)
 
   return {
     source: 'launcher',
@@ -383,17 +513,19 @@ function importLauncherArchive(zip: AdmZip, manifest: LauncherManifest, profileD
   }
 }
 
-/** Download the profile cache from a presigned GET URL and unpack it. No-op if absent. */
-export async function downloadProfileCache(getUrl: string, profileDir: string): Promise<void> {
+/** Download from a presigned GET URL and unpack. False when there was nothing
+ *  to restore, so the caller knows not to record a generation. */
+export async function downloadProfileCache(getUrl: string, profileDir: string): Promise<boolean> {
   const res = await fetch(getUrl)
-  if (res.status === 404 || res.status === 403) return
+  if (res.status === 404 || res.status === 403) return false
   if (!res.ok) throw new Error(`Failed to download profile cache: HTTP ${res.status}`)
-  const buf = Buffer.from(await res.arrayBuffer())
-  unpackProfileCache(buf, profileDir)
+  unpackProfileCache(Buffer.from(await res.arrayBuffer()), profileDir)
+  return true
 }
 
-/** Pack the profile cache and upload it to a presigned PUT URL. */
-export async function uploadProfileCache(profileDir: string, putUrl: string): Promise<void> {
+/** Pack and upload to a presigned PUT URL. Returns the new generation (the
+ *  object's ETag), or undefined when R2 did not name one. */
+export async function uploadProfileCache(profileDir: string, putUrl: string): Promise<string | undefined> {
   const buf = packProfileCache(profileDir)
   const res = await fetch(putUrl, {
     method: 'PUT',
@@ -401,4 +533,5 @@ export async function uploadProfileCache(profileDir: string, putUrl: string): Pr
     headers: { 'Content-Type': 'application/zip' },
   })
   if (!res.ok) throw new Error(`Failed to upload profile cache: HTTP ${res.status}`)
+  return normalizeArchiveVersion(res.headers.get('etag'))
 }

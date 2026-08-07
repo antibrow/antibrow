@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { buildLaunchArgs, isStrayLocaleTabUrl, type BuildLaunchArgsOptions } from '../../src/engine/launcher'
+import { buildLaunchArgs, isStrayLocaleTabUrl, resolveDisplayLabel, type BuildLaunchArgsOptions } from '../../src/engine/launcher'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 
 // The container-only switches must be gated on linux, never on "not windows" -
 // a prior version of this test asserted that by grepping the source text for
@@ -160,6 +163,35 @@ describe('buildLaunchArgs', () => {
       expect(buildLaunchArgs(baseOptions(platform))).not.toContain('--no-startup-window')
     }
   })
+
+  // A device-bound session's private key lives in the OS keystore and cannot be
+  // exported, so a profile that registers one is refused on the next machine -
+  // observed as Gmail signed out while GitHub, which does not use DBSC, stayed
+  // signed in.
+  it.each<NodeJS.Platform>(['win32', 'linux', 'darwin'])(
+    'keeps device-bound sessions off on %s',
+    (platform) => {
+      expect(buildLaunchArgs(baseOptions(platform))).toContain('--disable-features=DeviceBoundSessions')
+    },
+  )
+
+  // Chromium's default startup is the new tab page; only a crashed exit offers
+  // restore. Left to the default, whether a profile reopens its tabs depends on
+  // how the previous session died.
+  it.each<NodeJS.Platform>(['win32', 'linux', 'darwin'])(
+    'restores the previous tabs by default on %s',
+    (platform) => {
+      const args = buildLaunchArgs(baseOptions(platform))
+      expect(args).toContain('--restore-last-session')
+      expect(args).toContain('--hide-crash-restore-bubble')
+    },
+  )
+
+  it('drops the restore switches when restoreTabs is false', () => {
+    const args = buildLaunchArgs({ ...baseOptions('darwin'), restoreTabs: false })
+    expect(args).not.toContain('--restore-last-session')
+    expect(args).not.toContain('--hide-crash-restore-bubble')
+  })
 })
 
 // The `(en-US)` half of the pair has no leading dash, so Chromium's own parser
@@ -183,5 +215,29 @@ describe('isStrayLocaleTabUrl', () => {
     ]) {
       expect(isStrayLocaleTabUrl(url, 'en-US')).toBe(false)
     }
+  })
+})
+
+describe('resolveDisplayLabel', () => {
+  const withMeta = (name: string): string => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dl-'))
+    fs.writeFileSync(path.join(dir, 'profile.json'), JSON.stringify({ id: 'uuid-a', name, origin: 'local' }), 'utf8')
+    return dir
+  }
+
+  it('prefers an explicit label', () => {
+    expect(resolveDisplayLabel(withMeta('gmail'), 'Work')).toBe('Work')
+  })
+
+  it('falls back to the recorded profile name, never the id-shaped directory name', () => {
+    const dir = withMeta('gmail')
+    expect(resolveDisplayLabel(dir)).toBe('gmail')
+    // An empty label is not a usable label, and openProfile's `??` lets one through.
+    expect(resolveDisplayLabel(dir, '')).toBe('gmail')
+  })
+
+  it('falls back to the directory name only when there is no record', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dl-none-'))
+    expect(resolveDisplayLabel(dir)).toBe(path.basename(dir))
   })
 })
