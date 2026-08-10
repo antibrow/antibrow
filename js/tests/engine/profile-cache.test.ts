@@ -300,6 +300,8 @@ describe('profile-cache', () => {
   it('never packs the identity record: it belongs to this machine only', () => {
     const dir = tmp('pc-meta-')
     fs.writeFileSync(path.join(dir, 'profile.json'), JSON.stringify({ id: 'uuid-a', name: 'gmail', origin: 'server' }), 'utf8')
+    // Export no longer creates an identity, so this profile has to have one.
+    fs.writeFileSync(path.join(dir, 'persona.json'), JSON.stringify(generatePersona(150, '150.0.7871.182')), 'utf8')
     const zip = packProfileCache(dir)
     const names = new AdmZip(zip).getEntries().map((e) => e.entryName)
     expect(names).not.toContain('profile.json')

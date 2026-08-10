@@ -24,10 +24,53 @@ import {
   readProfileMeta,
   type EngineSession,
   type KernelUpdateStatus,
+  type OpenProfileOptions,
 } from './engine'
 import { LiveViewStream, registerLiveSession, unregisterLiveSession, heartbeatLiveSession } from './liveview'
 import { checkClientVersion, SDK_VERSION, type VersionCheckResult } from './version'
 import { installLabel, labelOptions } from './label'
+
+export interface BuildOpenProfileOptionsInput {
+  key?: string
+  server?: string
+  profileName: string
+  licenseToken: string
+  proxyUrl?: string
+  archive: { downloadUrl?: string; uploadUrl?: string; version?: string }
+  getArchivePutUrl?: () => Promise<string | undefined>
+  cacheDir?: string
+  profileDir?: string
+  options: LaunchOptions
+}
+
+/**
+ * Assembles the engine's `openProfile()` call from a `launch()` invocation.
+ * Pulled out as a pure function so the device-option plumbing (deviceType,
+ * realFingerprint) is testable without starting a browser: feed it
+ * deterministic inputs and assert on the object it returns.
+ */
+export function buildOpenProfileOptions(input: BuildOpenProfileOptionsInput): OpenProfileOptions {
+  const { key, server, profileName, licenseToken, proxyUrl, archive, getArchivePutUrl, cacheDir, profileDir, options } = input
+  return {
+    key,
+    server,
+    profileName,
+    licenseToken,
+    proxyUrl,
+    archiveGetUrl: archive.downloadUrl,
+    archiveVersion: archive.version,
+    // Presence decides whether an upload happens; the URL itself is signed
+    // again after exit, since a session usually outlives this one.
+    archivePutUrl: archive.uploadUrl,
+    getArchivePutUrl,
+    cacheDir: profileDir ? undefined : cacheDir,
+    profileDir,
+    headless: options.headless,
+    updateKernelBeforeLaunch: options.updateKernelBeforeLaunch,
+    deviceType: options.deviceType,
+    realFingerprint: options.realFingerprint,
+  }
+}
 
 export class AntiDetectBrowser {
   private readonly key: string
@@ -136,26 +179,21 @@ export class AntiDetectBrowser {
         }).catch(() => ({}))
       }
 
-      session = await openProfile({
+      session = await openProfile(buildOpenProfileOptions({
         key: this.key,
         server: this.server,
         profileName,
         licenseToken: license.token,
         proxyUrl,
-        archiveGetUrl: archive.downloadUrl,
-        archiveVersion: archive.version,
-        // Presence decides whether an upload happens; the URL itself is signed
-        // again after exit, since a session usually outlives this one.
-        archivePutUrl: archive.uploadUrl,
+        archive,
         getArchivePutUrl: archive.uploadUrl
           ? () => getProfileArchiveUrls({ key: this.key, server: this.server, name: profileName })
               .then((a) => a.uploadUrl)
           : undefined,
-        cacheDir: options.userDataDir ? undefined : this.cacheDir,
+        cacheDir: this.cacheDir,
         profileDir: options.userDataDir,
-        headless: options.headless,
-        updateKernelBeforeLaunch: options.updateKernelBeforeLaunch,
-      })
+        options,
+      }))
     } catch (error) {
       // A launch that never opened a browser has no close hook to revoke on, so
       // the ticket would stay live for its full lifetime. Retrying against a

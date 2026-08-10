@@ -39,6 +39,18 @@ export interface LaunchOptions {
   liveView?: boolean | LiveViewStreamOptions
   /** Update this profile's kernel before launching, if a newer build exists. */
   updateKernelBeforeLaunch?: boolean
+  /**
+   * Simulate an Android phone running on this desktop/server, instead of a
+   * desktop browser. Applies only when the profile is first created; an
+   * existing profile keeps the device type frozen in its own persona.
+   */
+  deviceType?: 'desktop' | 'android'
+  /**
+   * Draw this profile's identity from the Captured-machine fingerprint library
+   * instead of generating one (paid plans; the server rejects free-plan
+   * requests). Applies only when the profile is first created.
+   */
+  realFingerprint?: boolean
 }
 
 export interface LiveViewStreamOptions {
@@ -82,6 +94,10 @@ export interface ProfileConfig {
   canvasNoise?: boolean
   apiLog?: import('./engine/persona').ApiLogMode
   webauthnCapture?: boolean
+  /** Fixed when the profile was created; travels so every machine shows the
+   *  same identity before the profile is ever launched there. */
+  deviceType?: import('./engine/persona').DeviceType
+  realFingerprint?: boolean
 }
 
 /** Wire shape returned by the profile sync endpoints. */

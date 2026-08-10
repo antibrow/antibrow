@@ -22,9 +22,10 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, List, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import config as _config
+from . import devices as _devices
 from . import kernel as _kernel
 from . import profile_sync as _sync
 from .errors import ProfileCacheError
@@ -41,7 +42,7 @@ from .launcher import (
     wait_for_cdp,
 )
 from .license import LicenseInfo, LicenseProvider, get_license_token, resolve_api_key
-from .persona import Persona, load_or_generate_persona, write_fp_config
+from .persona import PERSONA_FILE, DeviceType, Persona, load_or_generate_persona, write_fp_config
 from .profile_cache import (
     clear_archive_version,
     download_profile_cache,
@@ -155,6 +156,8 @@ def prepare_launch(
     update_kernel: bool = False,
     webauthn_capture: Optional[bool] = None,
     restore_tabs: bool = True,
+    device_type: Optional[DeviceType] = None,
+    real_fingerprint: bool = False,
     sync: Optional[bool] = None,
     on_sync: Optional[SyncCallback] = None,
     on_progress: Optional[ProgressCallback] = None,
@@ -205,28 +208,44 @@ def prepare_launch(
     )
 
     # Kernels published after this SDK was built are only known from the manifest,
-    # so resolve the catalogue before mapping a version string onto an asset. The
-    # result is cached for KERNEL_MANIFEST_TTL_SECONDS and offline is a no-op.
-    if not update_kernel:
-        _kernel.refresh_kernel_versions(root)
+    # so resolve the catalogue before mapping a version string onto an asset. This
+    # has to happen before the version below is resolved even when update_kernel is
+    # set, or the Android pin resolves against an empty catalogue. `update_kernel`
+    # acts on the published build, so it cannot read a cached manifest.
+    _kernel.refresh_kernel_versions(root, force=update_kernel)
+
+    init_device_type, init_device = _resolve_persona_init(
+        directory,
+        device_type=device_type,
+        real_fingerprint=real_fingerprint,
+        api_key=api_key,
+        server=server,
+    )
 
     # A profile that already exists keeps the kernel version frozen into its
-    # persona; `kernel_version` only decides what a brand-new profile gets.
-    default_kv = (
-        _kernel.find_kernel_version(kernel_version)
-        if kernel_version
-        else _kernel.default_kernel_version()
-    )
+    # persona; `kernel_version` only decides what a brand-new profile gets. An
+    # Android profile is pinned to the kernel that carries the mobile patches,
+    # and that pin must never resolve to something else: the Android version
+    # lives only in the manifest, so a plain lookup would hand back the
+    # compiled-in default and freeze a desktop kernel into a phone profile.
+    if init_device_type == "android":
+        default_kv = _kernel.find_kernel_version_strict(_kernel.ANDROID_MIN_KERNEL_VERSION)
+    elif kernel_version:
+        default_kv = _kernel.find_kernel_version(kernel_version)
+    else:
+        default_kv = _kernel.default_kernel_version()
     notify("Loading persona")
-    persona = load_or_generate_persona(directory, default_kv.version)
-    kv = _kernel.find_kernel_version(persona.kernel_version)
+    persona = load_or_generate_persona(
+        directory, default_kv.version, device_type=init_device_type, device=init_device
+    )
+    if persona.device_type == "android":
+        kv = _kernel.find_kernel_version_strict(persona.kernel_version)
+    else:
+        kv = _kernel.find_kernel_version(persona.kernel_version)
 
     if update_kernel:
-        # Opt-in: pull a rebuilt same-version kernel before launching. Acting on
-        # the published build must not read a stale cached manifest, hence force.
-        # Offline is fine - we just keep whatever is installed.
-        if _kernel.refresh_kernel_versions(root, force=True):
-            kv = _kernel.find_kernel_version(persona.kernel_version)
+        # Opt-in: pull a rebuilt same-version kernel before launching. The forced
+        # manifest refresh already happened above, before the version was resolved.
         status = _kernel.kernel_update_status(root, kv.version)
         if status is not None and status.update_available:
             notify("Updating kernel {0} to the latest build".format(kv.label))
@@ -234,6 +253,16 @@ def prepare_launch(
 
     notify("Ensuring kernel {0}".format(kv.label))
     exe_path = _kernel.ensure_kernel(root, kv, on_progress)
+
+    if persona.device_type == "android":
+        build = _kernel.installed_kernel_build(root, kv.version)
+        if not _kernel.kernel_supports_android(kv.version, build):
+            # The marker can lag a rebuild of the same version, so force one
+            # refetch before giving up.
+            notify("Updating kernel for Android device support")
+            _kernel.ensure_kernel(root, kv, on_progress, force=True)
+            build = _kernel.installed_kernel_build(root, kv.version)
+        _assert_android_kernel(kv.version, build)
 
     proxy_spec = parse_proxy(proxy)
     resolved_timezone = timezone or persona.timezone
@@ -276,6 +305,7 @@ def prepare_launch(
         profile_dir=directory,
         webauthn_capture=webauthn_capture,
         restore_tabs=restore_tabs,
+        android_screen=(persona.screen_w, persona.screen_h) if persona.device_type == "android" else None,
         extra_args=args,
     )
 
@@ -293,6 +323,49 @@ def prepare_launch(
         public_ip=public_ip,
         proxy=proxy_spec,
         archive=archive,
+    )
+
+
+def _resolve_persona_init(
+    directory: Path,
+    *,
+    device_type: Optional[DeviceType],
+    real_fingerprint: bool,
+    api_key: Optional[str],
+    server: Optional[str],
+) -> Tuple[Optional[DeviceType], Optional[Dict[str, Any]]]:
+    """Decide what identity a brand-new profile gets.
+
+    Runs after the archive is restored, because persona.json travels inside
+    the archive - checking earlier would mint a fresh identity for a profile
+    that already has one on another machine.
+    """
+    if (directory / PERSONA_FILE).exists():
+        return None, None
+    if not device_type and not real_fingerprint:
+        return None, None
+    device = None
+    if real_fingerprint:
+        device = _devices.fetch_real_device(
+            "android" if device_type == "android" else "windows",
+            key=resolve_api_key(api_key),
+            server=server,
+        )
+    return device_type, device
+
+
+def _assert_android_kernel(version: Optional[str], build: Optional[str]) -> None:
+    """An Android config on a pre-mobile kernel is worse than no Android at all."""
+    if _kernel.kernel_supports_android(version, build):
+        return
+    raise RuntimeError(
+        "Android profiles need kernel {0} built on or after {1}; this install reports "
+        "version {2!r} build {3!r}. Update the kernel and retry.".format(
+            _kernel.ANDROID_MIN_KERNEL_VERSION,
+            _kernel.ANDROID_MIN_KERNEL_BUILD[:10],
+            version or "unknown",
+            build or "unknown",
+        )
     )
 
 
@@ -809,6 +882,8 @@ def launch(
     update_kernel: bool = False,
     webauthn_capture: Optional[bool] = None,
     restore_tabs: bool = True,
+    device_type: Optional[DeviceType] = None,
+    real_fingerprint: bool = False,
     sync: Optional[bool] = None,
     on_sync: Optional[SyncCallback] = None,
     reuse_initial_page: bool = True,
@@ -858,6 +933,13 @@ def launch(
             portable store (the default), so they travel with an export or a
             cloud sync. ``False`` lets the browser ask where to save instead
             (phone / security key) and those stay on this device.
+        device_type: Simulate an Android phone instead of a desktop browser.
+            Applies only when the profile is first created; an existing
+            profile keeps the device type frozen in its own persona.
+        real_fingerprint: Draw this profile's identity from the real-device
+            fingerprint library instead of generating one (paid plans; the
+            server rejects free-plan requests). Applies only when the profile
+            is first created.
         sync: Cloud profile sync - restore the profile before launching and save
             it after closing, so another machine opens the same cookies, storage
             and passkeys. Default (``None``) follows the plan the API key is on;
@@ -894,6 +976,8 @@ def launch(
         update_kernel=update_kernel,
         webauthn_capture=webauthn_capture,
         restore_tabs=restore_tabs,
+        device_type=device_type,
+        real_fingerprint=real_fingerprint,
         sync=sync,
         on_sync=on_sync,
         on_progress=on_progress,
@@ -939,6 +1023,8 @@ async def launch_async(
     update_kernel: bool = False,
     webauthn_capture: Optional[bool] = None,
     restore_tabs: bool = True,
+    device_type: Optional[DeviceType] = None,
+    real_fingerprint: bool = False,
     sync: Optional[bool] = None,
     on_sync: Optional[SyncCallback] = None,
     reuse_initial_page: bool = True,
@@ -979,6 +1065,8 @@ async def launch_async(
             update_kernel=update_kernel,
             webauthn_capture=webauthn_capture,
             restore_tabs=restore_tabs,
+            device_type=device_type,
+            real_fingerprint=real_fingerprint,
             sync=sync,
             on_sync=on_sync,
             on_progress=on_progress,

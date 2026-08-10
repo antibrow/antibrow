@@ -1,6 +1,8 @@
 import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { ANDROID_FALLBACK_DEVICES } from './android-devices'
+import type { RealDevice } from './devices'
 
 const GPUS = [
   ['Google Inc. (Intel)', 'ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11-27.20.100.9316)'],
@@ -30,6 +32,43 @@ function pick<T>(items: readonly T[]): T {
   return items[Math.floor(Math.random() * items.length)]
 }
 
+export type DeviceType = 'desktop' | 'android'
+
+/**
+ * Facts lifted verbatim from one real device. Every entry maps to an existing
+ * kernel config channel, so this block swaps invented values for that machine's
+ * real ones without needing kernel changes. An absent entry falls back to the
+ * generated value, which is why every field is optional - and why the three
+ * UA-CH strings (`uaArchitecture`, `uaBitness`, `uaModel`) and the `uaMobile`
+ * boolean are optional rather than defaulted: `""` and `false` are real values
+ * on mobile, distinct from "not captured".
+ */
+export interface CapturedFacts {
+  platform?: string
+  vendor?: string
+  maxTouchPoints?: number
+  colorDepth?: number
+  availW?: number
+  availH?: number
+  prefersColorScheme?: string
+  connectionEffectiveType?: string
+  connectionRtt?: number
+  connectionDownlink?: number
+  connectionType?: string
+  /** `<= 0` is the wire encoding for Infinity, which JSON cannot express. */
+  connectionDownlinkMax?: number
+  uaPlatform?: string
+  uaPlatformVersion?: string
+  uaArchitecture?: string
+  uaBitness?: string
+  uaModel?: string
+  uaMobile?: boolean
+  audioSampleRate?: number
+  audioMaxChannelCount?: number
+  fonts?: string[]
+  webglExtensions?: string[]
+}
+
 export interface Persona {
   seed: string
   canvasSeed: string
@@ -55,6 +94,11 @@ export interface Persona {
    * from the GPU strings alone.
    */
   capturedWebgl?: Record<string, unknown>
+  /** Absent means desktop, so existing profiles keep their current behaviour. */
+  deviceType?: DeviceType
+  androidModel?: string
+  androidOsMajor?: number
+  captured?: CapturedFacts
 }
 
 /**
@@ -65,7 +109,105 @@ export type ApiLogMode = 'off' | 'curated' | 'all'
 
 export const API_LOG_FILE = 'fp-api-log.jsonl'
 
-export function generatePersona(chromeMajor = 149, kernelVersion = '149.0.7827.201'): Persona {
+/** Android majors we vary the bundled devices across; the corpus rows sit at 15-16. */
+const ANDROID_OS_MAJORS = [13, 14, 15, 16] as const
+
+/**
+ * Flatten one device row into the persona fields that replay it. The corpus
+ * spells its WebGL keys in camelCase while the replay channel expects the
+ * capture tool's uppercase names, so this is also where that translation lives.
+ */
+export function deviceToPersonaParts(
+  device: RealDevice,
+  chromeMajor: number,
+  /**
+   * Override the Android major. Used only for the bundled rows, to keep every
+   * free-tier profile from reporting one system version. A library row keeps
+   * its own - `device.osMajor` is the UA string's frozen 10 and would clobber
+   * the real version that lives in uaData.platformVersion.
+   */
+  osMajorOverride?: number,
+): Partial<Persona> {
+  const webgl: Record<string, unknown> = {}
+  if (device.webgl.version) webgl.VERSION = device.webgl.version
+  if (device.webgl.shadingLanguageVersion) webgl.SHADING_LANGUAGE_VERSION = device.webgl.shadingLanguageVersion
+  if (device.webgl.version2) webgl.VERSION2 = device.webgl.version2
+  if (device.webgl.shadingLanguageVersion2) webgl.SHADING_LANGUAGE_VERSION2 = device.webgl.shadingLanguageVersion2
+  if (device.webgl.params) webgl.params = device.webgl.params
+  if (device.webgl.shaderPrecision) webgl.shaderPrecision = device.webgl.shaderPrecision
+
+  const android = device.os === 'android'
+  const ua = device.navigator.uaData ?? {}
+  const platformVersion = osMajorOverride != null ? `${osMajorOverride}.0.0` : ua.platformVersion
+  const major = osMajorOverride ?? (parseInt(platformVersion ?? '', 10) || undefined)
+  const captured: CapturedFacts = {
+    platform: device.navigator.platform,
+    vendor: device.navigator.vendor,
+    maxTouchPoints: device.navigator.maxTouchPoints,
+    colorDepth: device.screen.colorDepth,
+    availW: device.screen.availWidth,
+    availH: device.screen.availHeight,
+    connectionEffectiveType: device.connection?.effectiveType,
+    connectionType: device.connection?.type,
+    // `RealDevice` carries `null` for "no cap reported"; `CapturedFacts` only
+    // knows "not captured" (undefined), so null collapses into that.
+    connectionDownlinkMax: device.connection?.downlinkMax ?? undefined,
+    uaPlatform: ua.platform,
+    uaPlatformVersion: platformVersion,
+    uaArchitecture: ua.architecture,
+    uaBitness: ua.bitness,
+    uaModel: ua.model,
+    uaMobile: ua.mobile,
+    audioSampleRate: device.audio?.sampleRate,
+    audioMaxChannelCount: device.audio?.maxChannelCount,
+    fonts: device.fonts,
+    webglExtensions: device.webgl.extensions,
+  }
+  // rtt and downlink stay generated: they follow the proxy we measure at launch,
+  // not the machine the corpus came off.
+
+  return {
+    deviceType: android ? 'android' : 'desktop',
+    androidModel: android ? device.model : undefined,
+    androidOsMajor: android ? major : undefined,
+    ua: device.ua.replace('{major}', String(chromeMajor)),
+    hardwareConcurrency: device.navigator.hardwareConcurrency,
+    deviceMemory: device.navigator.deviceMemory,
+    screenW: device.screen.width,
+    screenH: device.screen.height,
+    devicePixelRatio: device.screen.devicePixelRatio,
+    gpuVendor: device.webgl.unmaskedVendor,
+    gpuRenderer: device.webgl.unmaskedRenderer,
+    captured,
+    capturedWebgl: Object.keys(webgl).length > 0 ? webgl : undefined,
+  } as Partial<Persona>
+}
+
+export interface PersonaInit {
+  deviceType?: DeviceType
+  /** A device row from the library; absent means use the bundled table. */
+  device?: RealDevice
+}
+
+export function generatePersona(chromeMajor = 149, kernelVersion = '149.0.7827.201', init?: PersonaInit): Persona {
+  const wantsAndroid = init?.deviceType === 'android' || init?.device?.os === 'android'
+  const device = init?.device ?? (wantsAndroid ? pick(ANDROID_FALLBACK_DEVICES) : undefined)
+  if (device) {
+    const base = generateDesktopPersona(chromeMajor, kernelVersion)
+    // The bundled rows are fixed, so vary the Android major to keep free-tier
+    // profiles from all reporting one system version. A library row keeps its
+    // own captured version.
+    const osMajorOverride = init?.device ? undefined : pick(ANDROID_OS_MAJORS)
+    const parts = deviceToPersonaParts(device, chromeMajor, osMajorOverride)
+    for (const [key, value] of Object.entries(parts)) {
+      if (value !== undefined) (base as unknown as Record<string, unknown>)[key] = value
+    }
+    return base
+  }
+  return generateDesktopPersona(chromeMajor, kernelVersion)
+}
+
+function generateDesktopPersona(chromeMajor: number, kernelVersion: string): Persona {
   const [screenW, screenH, devicePixelRatio] = pick(SCREENS)
   const [gpuVendor, gpuRenderer] = pick(GPUS)
   const ua = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeMajor}.0.0.0 Safari/537.36`
@@ -99,6 +241,10 @@ function capturedWebglConfig(captured: Record<string, unknown> | undefined): Rec
   const out: Record<string, unknown> = {}
   if (typeof captured.VERSION === 'string') out.version = captured.VERSION
   if (typeof captured.SHADING_LANGUAGE_VERSION === 'string') out.shadingLanguageVersion = captured.SHADING_LANGUAGE_VERSION
+  // The webgl2 context reports its own version pair. Replaying only the webgl1
+  // half leaves GL1 telling the truth while GL2 keeps the synthesized strings.
+  if (typeof captured.VERSION2 === 'string') out.version2 = captured.VERSION2
+  if (typeof captured.SHADING_LANGUAGE_VERSION2 === 'string') out.shadingLanguageVersion2 = captured.SHADING_LANGUAGE_VERSION2
   if (captured.params && typeof captured.params === 'object') out.params = captured.params
   if (captured.shaderPrecision && typeof captured.shaderPrecision === 'object') {
     const precision: Record<string, string> = {}
@@ -173,6 +319,64 @@ export function deriveConnection(
   return { effectiveType, rtt, downlink }
 }
 
+// `allow` is a whitelist over the kernel's probeable font set - left empty it
+// hides nothing, and every host font (macOS/Linux system fonts on a
+// non-Windows host, or the AOSP set on Android) stays enumerable.
+const WINDOWS_ALLOW_FONTS = [
+  'Arial',
+  'Arial Black',
+  'Bahnschrift',
+  'Calibri',
+  'Cambria',
+  'Cambria Math',
+  'Candara',
+  'Comic Sans MS',
+  'Consolas',
+  'Constantia',
+  'Corbel',
+  'Courier New',
+  'Ebrima',
+  'Franklin Gothic Medium',
+  'Gabriola',
+  'Gadugi',
+  'Georgia',
+  'Impact',
+  'Ink Free',
+  'Javanese Text',
+  'Leelawadee UI',
+  'Lucida Console',
+  'Lucida Sans Unicode',
+  'MV Boli',
+  'Marlett',
+  'Microsoft Sans Serif',
+  'Palatino Linotype',
+  'Segoe Print',
+  'Segoe Script',
+  'Segoe UI',
+  'Segoe UI Emoji',
+  'Segoe UI Symbol',
+  'Sitka',
+  'Sylfaen',
+  'Symbol',
+  'Tahoma',
+  'Times New Roman',
+  'Trebuchet MS',
+  'Verdana',
+  'Webdings',
+  'Wingdings',
+]
+
+// The stock AOSP family names. Known gap: no desktop host ships Roboto or Noto,
+// and an allow-list only subtracts - it cannot conjure a font. What it does buy
+// is keeping host-only families (Segoe UI, Helvetica Neue, Menlo) out of the
+// enumerable set. A replayed device overrides this with what that phone really
+// resolved, which on Android is the alias set (Arial, Helvetica, ...).
+const ANDROID_ALLOW_FONTS = [
+  'Roboto', 'Roboto Condensed', 'Roboto Mono', 'Noto Sans', 'Noto Serif',
+  'Noto Sans Mono', 'Noto Color Emoji', 'Droid Sans Mono',
+  'Carrois Gothic SC', 'Coming Soon', 'Cutive Mono', 'Dancing Script',
+]
+
 /** Per-profile kernel behaviour that is not part of the identity. */
 export interface FpConfigSettings {
   /**
@@ -193,7 +397,9 @@ export function personaToFpConfig(
   persona: Persona,
   opts: { label: string; timezone: string; publicIp?: string } & FpConfigSettings,
 ): Record<string, unknown> {
-  const availH = persona.screenH - 48
+  const android = persona.deviceType === 'android'
+  // Android has no taskbar; the real avail size arrives via `captured` anyway.
+  const availH = android ? persona.screenH : persona.screenH - 48
   const webrtc = opts.publicIp
     ? { mode: 'passthrough', publicIp: opts.publicIp }
     : { mode: 'disable' }
@@ -214,32 +420,72 @@ export function personaToFpConfig(
   const gpu = webgpuIdentity(persona.gpuRenderer)
   const webgpu = gpu.vendor ? { vendor: gpu.vendor, architecture: gpu.architecture } : {}
   const apiLog = opts.apiLog ?? 'off'
-  return {
-    version: 1,
-    seed: persona.seed,
-    label: opts.label,
-    timezone: opts.timezone,
-    navigator: {
-      userAgent: persona.ua,
-      platform: 'Win32',
-      vendor: 'Google Inc.',
-      language: persona.languages[0] ?? 'en-US',
-      languages: persona.languages,
-      hardwareConcurrency: persona.hardwareConcurrency,
-      deviceMemory: persona.deviceMemory,
-      maxTouchPoints: 0,
-      // Every UA-CH key must be listed: an omitted one falls back to the real
-      // host, which is how a Windows persona used to leak the host OS. Two
-      // naming traps: `platform` is "Windows" (not navigator.platform's "Win32")
-      // and `architecture` is "x86" even on x64 - `bitness` carries the 64.
-      uaData: {
+  const navPlatform = android ? 'Linux armv81' : 'Win32'
+  const maxTouchPoints = android ? 5 : 0
+  const uaData: Record<string, unknown> = android
+    ? {
+        platform: 'Android',
+        platformVersion: `${persona.androidOsMajor ?? 15}.0.0`,
+        // Empty is the real value here, not "unconfigured": mobile Chrome sends
+        // empty Arch and Bitness hints. Kernels that treat empty as unset fall
+        // back to the host and leak x86/64, which is why an Android profile
+        // pins a kernel build.
+        architecture: '',
+        bitness: '',
+        wow64: false,
+        model: persona.androidModel ?? '',
+        // Low entropy, sent on every navigation. A UA string that says Android
+        // beside a false mobile bit is a one-line contradiction.
+        mobile: true,
+      }
+    : {
         platform: 'Windows',
         platformVersion: '15.0.0',
         architecture: 'x86',
         bitness: '64',
         wow64: false,
         model: '',
-      },
+      }
+  const uiFont = android ? 'Roboto' : 'Segoe UI'
+  const genericFonts = android
+    ? {
+        standard: 'Roboto',
+        serif: 'Noto Serif',
+        sansSerif: 'Roboto',
+        cursive: 'Dancing Script',
+        fantasy: 'Roboto',
+        monospace: 'Droid Sans Mono,Noto Sans Mono',
+        math: 'Noto Serif',
+      }
+    : {
+        standard: 'Times New Roman',
+        serif: 'Times New Roman',
+        sansSerif: 'Arial',
+        cursive: 'Comic Sans MS',
+        fantasy: 'Impact',
+        monospace: 'Consolas,Courier New',
+        math: 'Cambria Math,Times New Roman',
+      }
+  const allowFonts = android ? ANDROID_ALLOW_FONTS : WINDOWS_ALLOW_FONTS
+  const config: Record<string, unknown> = {
+    version: 1,
+    seed: persona.seed,
+    label: opts.label,
+    timezone: opts.timezone,
+    navigator: {
+      userAgent: persona.ua,
+      platform: navPlatform,
+      vendor: 'Google Inc.',
+      language: persona.languages[0] ?? 'en-US',
+      languages: persona.languages,
+      hardwareConcurrency: persona.hardwareConcurrency,
+      deviceMemory: persona.deviceMemory,
+      maxTouchPoints,
+      // Every UA-CH key must be listed: an omitted one falls back to the real
+      // host, which is how a Windows persona used to leak the host OS. Two
+      // naming traps: `platform` is "Windows" (not navigator.platform's "Win32")
+      // and `architecture` is "x86" even on x64 - `bitness` carries the 64.
+      uaData,
     },
     screen: {
       width: persona.screenW,
@@ -258,78 +504,85 @@ export function personaToFpConfig(
     webrtc,
     connection: deriveConnection(persona.seed, opts.rttMs),
     prefersColorScheme: colorScheme,
-    // `allow` is a whitelist over the kernel's probeable font set - left empty
-    // it hides nothing, and every host font (macOS/Linux system fonts on a
-    // non-Windows host) stays enumerable. `generic` maps the five CSS generic
-    // families plus 'standard' so they resolve to a Windows font instead of
-    // falling through to the host's own generic-family settings. monospace and
-    // math list comma-separated fallbacks so a host missing the first still
-    // resolves to a distinct, non-host font rather than its own default.
+    // `generic` maps the five CSS generic families plus 'standard' so they
+    // resolve to a platform font instead of falling through to the host's own
+    // generic-family settings. monospace and math list comma-separated
+    // fallbacks so a host missing the first still resolves to a distinct,
+    // non-host font rather than its own default.
     fonts: {
-      uiFont: 'Segoe UI',
+      uiFont,
       keepCjk: 0,
       block: [],
-      allow: [
-        'Arial',
-        'Arial Black',
-        'Bahnschrift',
-        'Calibri',
-        'Cambria',
-        'Cambria Math',
-        'Candara',
-        'Comic Sans MS',
-        'Consolas',
-        'Constantia',
-        'Corbel',
-        'Courier New',
-        'Ebrima',
-        'Franklin Gothic Medium',
-        'Gabriola',
-        'Gadugi',
-        'Georgia',
-        'Impact',
-        'Ink Free',
-        'Javanese Text',
-        'Leelawadee UI',
-        'Lucida Console',
-        'Lucida Sans Unicode',
-        'MV Boli',
-        'Marlett',
-        'Microsoft Sans Serif',
-        'Palatino Linotype',
-        'Segoe Print',
-        'Segoe Script',
-        'Segoe UI',
-        'Segoe UI Emoji',
-        'Segoe UI Symbol',
-        'Sitka',
-        'Sylfaen',
-        'Symbol',
-        'Tahoma',
-        'Times New Roman',
-        'Trebuchet MS',
-        'Verdana',
-        'Webdings',
-        'Wingdings',
-      ],
-      generic: {
-        standard: 'Times New Roman',
-        serif: 'Times New Roman',
-        sansSerif: 'Arial',
-        cursive: 'Comic Sans MS',
-        fantasy: 'Impact',
-        monospace: 'Consolas,Courier New',
-        math: 'Cambria Math,Times New Roman',
-      },
+      allow: allowFonts,
+      generic: genericFonts,
     },
     apilog: { enabled: apiLog !== 'off', mode: apiLog, path: opts.apiLogPath ?? '' },
   }
+  if (android) {
+    // Only Android writes this key. A desktop profile that suddenly grows one
+    // would read as changed to the full-sync diff.
+    config.device = {
+      type: 'android',
+      pointer: 'coarse',
+      hover: 'none',
+      viewport: 'mobile',
+      orientation: 'portrait-primary',
+      outerWidth: persona.screenW,
+      outerHeight: persona.screenH,
+    }
+  }
+  const cap = persona.captured
+  if (cap) {
+    const nav = config.navigator as Record<string, unknown>
+    const uaData = nav.uaData as Record<string, unknown>
+    const screen = config.screen as Record<string, unknown>
+    if (cap.platform) nav.platform = cap.platform
+    if (cap.vendor) nav.vendor = cap.vendor
+    if (cap.maxTouchPoints != null) nav.maxTouchPoints = cap.maxTouchPoints
+    if (cap.uaPlatform) uaData.platform = cap.uaPlatform
+    if (cap.uaPlatformVersion) uaData.platformVersion = cap.uaPlatformVersion
+    // Presence, not truthiness: "" is what mobile Chrome actually sends.
+    if (cap.uaArchitecture !== undefined) uaData.architecture = cap.uaArchitecture
+    if (cap.uaBitness !== undefined) uaData.bitness = cap.uaBitness
+    if (cap.uaModel !== undefined) uaData.model = cap.uaModel
+    if (cap.uaMobile !== undefined) uaData.mobile = cap.uaMobile
+    if (cap.availW) screen.availWidth = cap.availW
+    if (cap.availH) screen.availHeight = cap.availH
+    if (cap.colorDepth) {
+      screen.colorDepth = cap.colorDepth
+      screen.pixelDepth = cap.colorDepth
+    }
+    if (cap.prefersColorScheme) config.prefersColorScheme = cap.prefersColorScheme
+    const connection = config.connection as Record<string, unknown>
+    if (cap.connectionEffectiveType) connection.effectiveType = cap.connectionEffectiveType
+    if (cap.connectionRtt != null) connection.rtt = cap.connectionRtt
+    if (cap.connectionDownlink != null) connection.downlink = cap.connectionDownlink
+    if (cap.connectionType) connection.type = cap.connectionType
+    if (cap.connectionDownlinkMax != null) connection.downlinkMax = cap.connectionDownlinkMax
+    const audio = config.audio as Record<string, unknown>
+    if (cap.audioSampleRate) audio.sampleRate = cap.audioSampleRate
+    if (cap.audioMaxChannelCount) audio.maxChannelCount = cap.audioMaxChannelCount
+    if (cap.fonts?.length) (config.fonts as Record<string, unknown>).allow = cap.fonts
+    if (cap.webglExtensions?.length) webgl.extensions = { allow: cap.webglExtensions }
+  }
+  return config
 }
 
 const PERSONA_FILE = 'persona.json'
 
+/** The persisted persona, or undefined when this profile has no identity yet.
+ *  Never writes: callers that must not decide the identity use this. */
+export function readPersona(profileDir: string): Persona | undefined {
+  try {
+    const p = JSON.parse(fs.readFileSync(path.join(profileDir, PERSONA_FILE), 'utf8')) as Persona
+    return p && typeof p === 'object' ? p : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** Load the persisted persona, or generate and persist a new one. */
-export function loadOrGeneratePersona(profileDir: string, defaultKernelVersion?: string): Persona {
+export function loadOrGeneratePersona(profileDir: string, defaultKernelVersion?: string, init?: PersonaInit): Persona {
   const file = path.join(profileDir, PERSONA_FILE)
   if (fs.existsSync(file)) {
     try {
@@ -343,7 +596,7 @@ export function loadOrGeneratePersona(profileDir: string, defaultKernelVersion?:
   }
   const kv = defaultKernelVersion ?? '149.0.7827.201'
   const chromeMajor = parseInt(kv.split('.')[0] ?? '149', 10)
-  const persona = generatePersona(chromeMajor, kv)
+  const persona = generatePersona(chromeMajor, kv, init)
   fs.mkdirSync(profileDir, { recursive: true })
   fs.writeFileSync(file, JSON.stringify(persona, null, 2))
   return persona

@@ -2,7 +2,7 @@ import AdmZip from 'adm-zip'
 import fs from 'node:fs'
 import path from 'node:path'
 import { DEFAULT_KERNEL_VERSION, kernelsForPlatform } from './downloader'
-import { generatePersona, loadOrGeneratePersona, type ApiLogMode, type Persona } from './persona'
+import { generatePersona, readPersona, type ApiLogMode, type CapturedFacts, type DeviceType, type Persona } from './persona'
 
 // Browser state items stored under <profileDir>/user-data/
 const USER_DATA_ITEMS = ['Default', 'GrShaderCache', 'Local State', 'Variations'] as const
@@ -208,7 +208,12 @@ export const PROFILE_ARCHIVE_EXT = 'fpprofile'
 
 const LAUNCHER_MANIFEST_ENTRY = 'manifest.json'
 const LAUNCHER_FORMAT_ID = 'fp-launcher-profile'
-const LAUNCHER_FORMAT_VERSION = 1
+// Desktop profiles stay at 1 so older readers keep importing them. An Android
+// profile bumps to 2 because those readers would silently drop its device type
+// and launch it as a desktop identity - a loud "upgrade your app" beats one
+// profile quietly meaning two different things in two places.
+const LAUNCHER_FORMAT_VERSION = 2
+const LAUNCHER_FORMAT_VERSION_DESKTOP = 1
 /** Metadata entry of the legacy `.zip` export, still importable. */
 const LEGACY_META_ENTRY = 'profile.json'
 
@@ -255,12 +260,63 @@ export interface PortableProfileMeta {
   apiLog?: ApiLogMode
   canvasNoise?: boolean
   webauthnCapture?: boolean
+  /**
+   * Device profile. On export it is the caller's own record of what this profile
+   * is, used to catch a row that disagrees with the persona on disk; the archive
+   * itself takes the value from the persona. On import it is what the persona
+   * says, so the caller's row can be built to match.
+   */
+  deviceType?: DeviceType
+  /** Whether the identity came from the captured-machine library. */
+  realFingerprint?: boolean
   /** App-specific extras. Other readers ignore them. */
   extra?: Record<string, unknown>
 }
 
 export interface ImportedProfileMeta extends PortableProfileMeta {
   source: 'launcher' | 'legacy'
+}
+
+const CAPTURED_KEYS: ReadonlyArray<[keyof CapturedFacts, string]> = [
+  ['platform', 'platform'],
+  ['vendor', 'vendor'],
+  ['maxTouchPoints', 'max_touch_points'],
+  ['colorDepth', 'color_depth'],
+  ['availW', 'avail_w'],
+  ['availH', 'avail_h'],
+  ['prefersColorScheme', 'prefers_color_scheme'],
+  ['connectionEffectiveType', 'connection_effective_type'],
+  ['connectionRtt', 'connection_rtt'],
+  ['connectionDownlink', 'connection_downlink'],
+  ['connectionType', 'connection_type'],
+  ['connectionDownlinkMax', 'connection_downlink_max'],
+  ['uaPlatform', 'ua_platform'],
+  ['uaPlatformVersion', 'ua_platform_version'],
+  ['uaArchitecture', 'ua_architecture'],
+  ['uaBitness', 'ua_bitness'],
+  ['uaModel', 'ua_model'],
+  ['uaMobile', 'ua_mobile'],
+  ['audioSampleRate', 'audio_sample_rate'],
+  ['audioMaxChannelCount', 'audio_max_channel_count'],
+  ['fonts', 'fonts'],
+  ['webglExtensions', 'webgl_extensions'],
+]
+
+function capturedToLauncher(cap: CapturedFacts): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [ours, theirs] of CAPTURED_KEYS) {
+    const value = cap[ours]
+    if (value !== undefined) out[theirs] = value
+  }
+  return out
+}
+
+function launcherToCaptured(raw: Record<string, unknown>): CapturedFacts {
+  const out: Record<string, unknown> = {}
+  for (const [ours, theirs] of CAPTURED_KEYS) {
+    if (raw[theirs] !== undefined) out[ours] = raw[theirs]
+  }
+  return out as CapturedFacts
 }
 
 function personaToLauncher(p: Persona): Record<string, unknown> {
@@ -282,6 +338,10 @@ function personaToLauncher(p: Persona): Record<string, unknown> {
     timezone: p.timezone,
   }
   if (p.capturedWebgl) out.captured_webgl = p.capturedWebgl
+  if (p.deviceType) out.device_type = p.deviceType
+  if (p.androidModel) out.android_model = p.androidModel
+  if (p.androidOsMajor != null) out.android_os_major = p.androidOsMajor
+  if (p.captured) out.captured = capturedToLauncher(p.captured)
   return out
 }
 
@@ -291,10 +351,35 @@ function personaToLauncher(p: Persona): Record<string, unknown> {
  */
 export function exportProfileArchive(profileDir: string, meta: PortableProfileMeta): Buffer {
   const zip = new AdmZip()
-  const persona = loadOrGeneratePersona(profileDir, meta.kernelVersion)
+  // Export must not create the identity it exports. An Android or captured-machine
+  // profile deliberately has no persona until its first launch, and generating one
+  // here would both freeze a plain desktop identity onto it forever and stamp the
+  // archive as a desktop profile.
+  const persona = readPersona(profileDir)
+  if (!persona) {
+    throw new Error(
+      'This profile has no identity yet - open it once, then export. Its fingerprint is ' +
+        'resolved at first launch, and exporting now would create a different one.',
+    )
+  }
+  // A caller that tracks the device type separately must agree with the persona:
+  // whichever of the two is wrong, the export would carry the disagreement to
+  // another machine and one kernel edit there destroys the identity.
+  if (meta.deviceType && meta.deviceType !== (persona.deviceType ?? 'desktop')) {
+    throw new Error(
+      `This profile is recorded as "${meta.deviceType}" but its identity is ` +
+        `"${persona.deviceType ?? 'desktop'}". Exporting would carry the mismatch forward.`,
+    )
+  }
+  // `realFingerprint` has no home in the interchange schema (the identity itself
+  // travels as the persona's captured facts), so it rides in our own extras block.
+  const extra = {
+    ...(meta.extra ?? {}),
+    ...(meta.realFingerprint ? { realFingerprint: true } : {}),
+  }
   const manifest = {
     format: LAUNCHER_FORMAT_ID,
-    version: LAUNCHER_FORMAT_VERSION,
+    version: persona.deviceType === 'android' ? LAUNCHER_FORMAT_VERSION : LAUNCHER_FORMAT_VERSION_DESKTOP,
     profile: {
       id: meta.id ?? path.basename(profileDir),
       name: meta.name,
@@ -305,7 +390,7 @@ export function exportProfileArchive(profileDir: string, meta: PortableProfileMe
       canvas_noise: meta.canvasNoise ?? true,
       webauthn_capture: meta.webauthnCapture ?? true,
     },
-    ...(meta.extra && Object.keys(meta.extra).length > 0 ? { antibrow: meta.extra } : {}),
+    ...(Object.keys(extra).length > 0 ? { antibrow: extra } : {}),
   }
   zip.addFile(LAUNCHER_MANIFEST_ENTRY, Buffer.from(JSON.stringify(manifest, null, 2)))
 
@@ -387,6 +472,10 @@ interface LauncherPersona {
   languages?: string[]
   timezone?: string
   captured_webgl?: Record<string, unknown>
+  device_type?: string
+  android_model?: string
+  android_os_major?: number
+  captured?: unknown
 }
 
 interface LauncherManifest {
@@ -428,8 +517,12 @@ function parseLauncherManifest(raw: Buffer): LauncherManifest {
 /**
  * The kernel an imported profile can actually launch here: the exact version,
  * else the newest known build of the same Chrome major, else the default.
+ *
+ * An Android profile gets none of that latitude. Its version is a pin, not a
+ * preference, and rewriting it to a kernel without the mobile patches would turn
+ * the import into a profile that claims to be a phone and cannot behave like one.
  */
-function resolveImportedKernelVersion(wanted: string): string {
+function resolveImportedKernelVersion(wanted: string, android = false): string {
   let known: string[]
   try {
     known = kernelsForPlatform().map((kv) => kv.version)
@@ -437,6 +530,12 @@ function resolveImportedKernelVersion(wanted: string): string {
     known = []
   }
   if (known.includes(wanted)) return wanted
+  if (android) {
+    throw new Error(
+      `This Android profile needs kernel ${wanted}, which is not in the catalogue here. ` +
+        'Refresh the kernel list with an internet connection and import again.',
+    )
+  }
   const major = wanted.split('.')[0]
   return known.find((v) => v.split('.')[0] === major) ?? DEFAULT_KERNEL_VERSION.version
 }
@@ -467,6 +566,12 @@ function launcherPersonaToPersona(lp: LauncherPersona, kernelVersion: string): P
     timezone: lp.timezone || base.timezone,
   }
   if (lp.captured_webgl) persona.capturedWebgl = lp.captured_webgl
+  if (lp.device_type === 'android' || lp.device_type === 'desktop') persona.deviceType = lp.device_type
+  if (typeof lp.android_model === 'string') persona.androidModel = lp.android_model
+  if (typeof lp.android_os_major === 'number') persona.androidOsMajor = lp.android_os_major
+  if (lp.captured && typeof lp.captured === 'object') {
+    persona.captured = launcherToCaptured(lp.captured as Record<string, unknown>)
+  }
   return persona
 }
 
@@ -483,6 +588,10 @@ function safeJoin(root: string, entryName: string): string | null {
  */
 function importLauncherArchive(zip: AdmZip, manifest: LauncherManifest, profileDir: string): ImportedProfileMeta {
   const lp = manifest.profile ?? {}
+  // Resolved before anything is written: an Android pin that cannot be honoured
+  // here must fail with the target directory still untouched.
+  const android = lp.persona?.device_type === 'android'
+  const kernelVersion = resolveImportedKernelVersion(lp.kernel_version || DEFAULT_KERNEL_VERSION.version, android)
   fs.mkdirSync(profileDir, { recursive: true })
 
   for (const entry of zip.getEntries()) {
@@ -495,7 +604,6 @@ function importLauncherArchive(zip: AdmZip, manifest: LauncherManifest, profileD
     fs.writeFileSync(dest, entry.getData())
   }
 
-  const kernelVersion = resolveImportedKernelVersion(lp.kernel_version || DEFAULT_KERNEL_VERSION.version)
   const persona = launcherPersonaToPersona(lp.persona ?? {}, kernelVersion)
   fs.writeFileSync(path.join(profileDir, 'persona.json'), JSON.stringify(persona, null, 2))
   clearArchiveVersion(profileDir)
@@ -509,6 +617,11 @@ function importLauncherArchive(zip: AdmZip, manifest: LauncherManifest, profileD
     apiLog: asApiLogMode(lp.api_log),
     canvasNoise: lp.canvas_noise !== false,
     webauthnCapture: lp.webauthn_capture !== false,
+    // The persona is authoritative for both: an importer that drops them ends up
+    // with a row saying "desktop" on top of an Android identity, and the kernel
+    // selector it then offers rewrites that identity away.
+    deviceType: persona.deviceType,
+    realFingerprint: manifest.antibrow?.realFingerprint === true ? true : undefined,
     extra: manifest.antibrow,
   }
 }

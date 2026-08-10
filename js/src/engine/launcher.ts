@@ -336,6 +336,9 @@ export interface BuildLaunchArgsOptions {
    * branches stay testable from either OS.
    */
   platform: NodeJS.Platform
+  /** Android profiles only: match the window to the persona's screen so
+   *  innerWidth never exceeds the screen.width we report. */
+  androidScreen?: { width: number; height: number }
 }
 
 /**
@@ -378,6 +381,9 @@ export function buildLaunchArgs(opts: BuildLaunchArgsOptions): string[] {
     // Windows headless: move the window off-screen rather than --headless=new,
     // which is detectable.
     ...(isWin && opts.headless ? ['--window-position=-10000,-10000', '--window-size=1,1'] : []),
+    ...(opts.androidScreen && !opts.headless
+      ? [`--window-size=${opts.androidScreen.width},${opts.androidScreen.height}`]
+      : []),
     // macOS ICU resolves Intl.* from CFLocale/AppleLanguages and silently
     // ignores --lang and LANG/LC_ALL, so this NSUserDefaults pair is the only
     // way to steer it. Meaningless on Windows/Linux.
@@ -528,6 +534,8 @@ export async function launchKernel(opts: KernelLaunchOptions): Promise<KernelSes
     webauthnCapture: opts.webauthnCapture,
     restoreTabs: opts.restoreTabs,
     platform: process.platform,
+    androidScreen:
+      persona.deviceType === 'android' ? { width: persona.screenW, height: persona.screenH } : undefined,
   })
 
   // Per-profile window icon (Windows only), seeded from the label so the window

@@ -1,6 +1,6 @@
 {
   "name": "anti-detect-browser",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "description": "Anti-detect browser client SDK powered by the Engine runtime and Playwright CDP (Windows, macOS + Linux)",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -23,8 +23,8 @@
     "prepublishOnly": "tsup"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
-    "adm-zip": "^0.5.17",
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "adm-zip": "^0.6.0",
     "socks": "^2.8.9",
     "ws": "^8.0.0",
     "yauzl": "^3.4.0"

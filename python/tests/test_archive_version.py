@@ -6,6 +6,7 @@ portable import.
 """
 
 from antibrow import profile_cache as P
+from antibrow.persona import generate_persona, write_persona
 from antibrow.portable import PortableProfileMeta, export_profile_archive, import_profile_archive
 
 from test_profile_cache import entries, make_profile
@@ -55,6 +56,8 @@ def test_marker_is_never_packed_into_a_cloud_archive(tmp_path):
 
 def test_marker_is_dropped_when_a_portable_archive_is_imported(tmp_path):
     src = make_profile(tmp_path / "src")
+    # Export no longer creates an identity, so this profile has to have one.
+    write_persona(src, generate_persona(150, "150.0.7871.182"))
     data = export_profile_archive(src, PortableProfileMeta(name="Exported"))
     dest = tmp_path / "dest"
     P.write_archive_version(dest, "stale")

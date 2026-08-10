@@ -4,6 +4,26 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.5.0] - 2026-08-10
+
+### Added
+
+- Android profiles: `launch({ deviceType: 'android' })` gives a profile a real
+  phone's identity (mobile client hints, touch, portrait screen, mobile GPU) on a
+  desktop host. Three real devices ship in the package, the device type is frozen
+  when the profile is created, and the kernel that supports it is pinned
+  automatically. See [Android profiles](README.md#android-profiles).
+- `realFingerprint: true` draws a new profile's identity from the device library
+  instead of generating one (paid plans).
+- The MCP tools `launch_browser` and `create_profile` accept both options.
+
+### Security
+
+- `adm-zip` moved to `^0.6.0` (GHSA-xcpc-8h2w-3j85: a crafted zip could force a
+  4GB allocation while unpacking a profile archive).
+- `@modelcontextprotocol/sdk` moved to `^1.26.0`. The previous `^1.0.0` range
+  allowed versions carrying three high-severity advisories.
+
 ## [2.4.0] - 2026-08-07
 
 Managed proxies stop putting the account key on the command line, profiles get a

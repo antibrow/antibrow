@@ -4,6 +4,28 @@ All notable changes to the `antibrow` Python SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-08-10
+
+0.5.0 was tagged but never reached PyPI, so this release carries its changes too.
+
+### Added
+
+- Android profiles: `launch(device_type="android")` gives a profile a real
+  phone's identity (mobile client hints, touch, portrait screen, mobile GPU) on a
+  desktop host. Three real devices ship in the package, the device type is frozen
+  when the profile is created, and the kernel that supports it is pinned
+  automatically. See [Android profiles](README.md#android-profiles).
+- `real_fingerprint=True` draws a new profile's identity from the device library
+  instead of generating one (paid plans).
+- `DeviceType`, `fetch_real_device`, `kernel_supports_android`,
+  `kernel_version_at_least` and `ANDROID_MIN_KERNEL_VERSION` / `_BUILD` are
+  exported from the package root, matching the Node SDK.
+
+### Security
+
+- The `mcp` extra now requires `mcp>=1.28.1`; earlier versions carry six
+  high-severity advisories.
+
 ## [0.5.0] - 2026-08-07
 
 Profiles get a stable identity of their own, and a profile opened on a second

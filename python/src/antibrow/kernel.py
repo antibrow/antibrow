@@ -394,6 +394,23 @@ def find_kernel_version(version: Optional[str]) -> KernelVersion:
     return default_kernel_version()
 
 
+def find_kernel_version_strict(version: str) -> KernelVersion:
+    """Look up a version the caller cannot substitute.
+
+    Versions published after this release exist only in the manifest, so an
+    offline or stale catalogue would otherwise hand back the compiled-in
+    default - a silent downgrade for anything pinned to a specific kernel.
+    """
+    for kv in all_kernel_versions():
+        if kv.version == version:
+            return kv
+    raise KernelDownloadError(
+        "Kernel {0} is not in the catalogue. Refresh the kernel list with an internet "
+        "connection and retry; falling back to another version would change this "
+        "profile's identity.".format(version)
+    )
+
+
 def kernels_for_platform(platform: Optional[str] = None) -> List[KernelVersion]:
     plat = platform or current_platform()
     return [kv for kv in all_kernel_versions() if plat in kv.platforms]
@@ -460,6 +477,57 @@ def write_installed_kernel_build(cache_dir: Path | str, version: str, build: str
         (directory / BUILD_MARKER).write_text(build, encoding="utf-8")
     except OSError:
         pass
+
+
+#: First kernel version built with the mobile device patches.
+ANDROID_MIN_KERNEL_VERSION = "151.0.7922.72"
+#: Build stamp of the first kernel carrying the mobile device patches.
+ANDROID_MIN_KERNEL_BUILD = "2026-08-07 05:17"
+
+
+def _version_tuple(version: str) -> tuple:
+    parts = []
+    for piece in version.split("."):
+        try:
+            parts.append(int(piece))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts)
+
+
+def kernel_version_at_least(version: Optional[str], minimum: str) -> bool:
+    """True when ``version`` is at or above ``minimum``, segment by segment."""
+    if not version:
+        return False
+    a = _version_tuple(version)
+    b = _version_tuple(minimum)
+    length = max(len(a), len(b))
+    a = a + (0,) * (length - len(a))
+    b = b + (0,) * (length - len(b))
+    return a >= b
+
+
+def kernel_supports_android(version: Optional[str], build: Optional[str]) -> bool:
+    """Both halves are load-bearing.
+
+    The version alone cannot answer it: the same version shipped twice, once
+    before the mobile patches and once after. The build date alone cannot
+    either: every kernel version gets rebuilt on the same day when the whole
+    set is republished, so a date-only rule lets a kernel with none of the
+    mobile patches through. An older binary handed an Android config produces a
+    profile whose UA says Android while its client hints say desktop - worse
+    than no Android at all.
+    """
+    if not kernel_version_at_least(version, ANDROID_MIN_KERNEL_VERSION):
+        return False
+    if not build or len(build) < 10:
+        return False
+    date = build[:10]
+    if len(date) != 10 or date[4] != "-" or date[7] != "-":
+        return False
+    if not (date[:4].isdigit() and date[5:7].isdigit() and date[8:10].isdigit()):
+        return False
+    return date >= ANDROID_MIN_KERNEL_BUILD[:10]
 
 
 @dataclass

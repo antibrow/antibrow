@@ -20,7 +20,7 @@ See https://antibrow.com and the project README for the full API.
 
 from __future__ import annotations
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 from .browser import (
     Antibrow,
@@ -42,6 +42,7 @@ from .config import (
     profile_dir,
     profiles_dir,
 )
+from .devices import fetch_real_device
 from .errors import (
     AntibrowError,
     ConcurrencyLimitError,
@@ -54,6 +55,8 @@ from .errors import (
 )
 from .geoip import ProxyGeo, lookup_proxy_geo
 from .kernel import (
+    ANDROID_MIN_KERNEL_BUILD,
+    ANDROID_MIN_KERNEL_VERSION,
     KERNEL_MANIFEST_URL,
     KERNEL_VERSIONS,
     KernelUpdateStatus,
@@ -63,10 +66,13 @@ from .kernel import (
     delete_kernel,
     ensure_kernel,
     find_kernel_version,
+    find_kernel_version_strict,
     installed_kernel_updates,
     is_kernel_installed,
     kernel_dir,
     kernel_dir_size,
+    kernel_supports_android,
+    kernel_version_at_least,
     kernels_for_platform,
     list_installed_kernels,
     load_cached_kernel_versions,
@@ -74,7 +80,14 @@ from .kernel import (
     refresh_kernel_versions,
 )
 from .license import LicenseInfo, fetch_license_token, get_license_token
-from .persona import Persona, generate_persona, load_or_generate_persona, persona_to_fp_config
+from .persona import (
+    DeviceType,
+    Persona,
+    generate_persona,
+    load_or_generate_persona,
+    persona_to_fp_config,
+    read_persona,
+)
 from .portable import (
     PROFILE_ARCHIVE_EXT,
     ImportedProfileMeta,
@@ -112,6 +125,7 @@ __all__ = [
     "current_platform",
     "default_kernel_version",
     "find_kernel_version",
+    "find_kernel_version_strict",
     "kernels_for_platform",
     "ensure_kernel",
     "is_kernel_installed",
@@ -123,10 +137,18 @@ __all__ = [
     "kernel_dir",
     "kernel_dir_size",
     "delete_kernel",
+    # android device profiles
+    "DeviceType",
+    "fetch_real_device",
+    "kernel_supports_android",
+    "kernel_version_at_least",
+    "ANDROID_MIN_KERNEL_VERSION",
+    "ANDROID_MIN_KERNEL_BUILD",
     # profiles and identity
     "Persona",
     "generate_persona",
     "load_or_generate_persona",
+    "read_persona",
     "persona_to_fp_config",
     "list_profiles",
     "profile_dir",

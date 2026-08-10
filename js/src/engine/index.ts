@@ -6,11 +6,17 @@ import {
   KERNEL_VERSIONS,
   DEFAULT_KERNEL_VERSION,
   findKernelVersion,
+  findKernelVersionStrict,
   refreshKernelVersions,
   kernelUpdateStatus,
+  kernelSupportsAndroid,
+  ANDROID_MIN_KERNEL_VERSION,
+  ANDROID_MIN_KERNEL_BUILD,
+  installedKernelBuild,
   type KernelVersion,
 } from './downloader'
-import { loadOrGeneratePersona, type ApiLogMode } from './persona'
+import { loadOrGeneratePersona, type ApiLogMode, type DeviceType, type PersonaInit } from './persona'
+import { fetchRealDevice } from './devices'
 import { lookupProxyGeo, type ProxyGeo } from './geoip'
 import { getLicenseToken } from './license'
 import { launchKernel, type KernelSession } from './launcher'
@@ -23,13 +29,15 @@ import {
 } from './profile-cache'
 import { resolveProfileDir, readProfileMeta } from './profile-dir'
 
-export { KERNEL_VERSIONS, DEFAULT_KERNEL_VERSION, ensureKernel, isKernelInstalled, findKernelVersion, listInstalledKernels, kernelDirSize, deleteKernel, kernelDir, kernelAvailableOnPlatform, kernelsForPlatform, allKernelVersions, registerKernelVersions, fetchRemoteKernelVersions, refreshKernelVersions, loadCachedKernelVersions, KERNEL_MANIFEST_URL, KERNEL_MANIFEST_TTL_MS, KERNEL_VERSION_CACHE_FILE, currentPlatform, installedKernelBuild, writeInstalledKernelBuild, kernelUpdateStatus, installedKernelUpdates } from './downloader'
+export { KERNEL_VERSIONS, DEFAULT_KERNEL_VERSION, ensureKernel, isKernelInstalled, findKernelVersion, findKernelVersionStrict, listInstalledKernels, kernelDirSize, deleteKernel, kernelDir, kernelAvailableOnPlatform, kernelsForPlatform, allKernelVersions, registerKernelVersions, fetchRemoteKernelVersions, refreshKernelVersions, loadCachedKernelVersions, KERNEL_MANIFEST_URL, KERNEL_MANIFEST_TTL_MS, KERNEL_VERSION_CACHE_FILE, currentPlatform, installedKernelBuild, writeInstalledKernelBuild, kernelUpdateStatus, installedKernelUpdates, kernelSupportsAndroid, kernelVersionAtLeast, ANDROID_MIN_KERNEL_VERSION, ANDROID_MIN_KERNEL_BUILD } from './downloader'
 export type { KernelVersion, KernelUpdateStatus } from './downloader'
 export type { KernelSession as EngineSession } from './launcher'
 export { downloadProfileCache, uploadProfileCache, packProfileCache, unpackProfileCache, exportProfileArchive, importProfileArchive, PROFILE_ARCHIVE_EXT, ARCHIVE_VERSION_FILE, readArchiveVersion, writeArchiveVersion, clearArchiveVersion, normalizeArchiveVersion } from './profile-cache'
 export type { PortableProfileMeta, ImportedProfileMeta } from './profile-cache'
-export { generatePersona, loadOrGeneratePersona } from './persona'
-export type { Persona, ApiLogMode } from './persona'
+export { generatePersona, loadOrGeneratePersona, readPersona } from './persona'
+export type { Persona, ApiLogMode, DeviceType, CapturedFacts, PersonaInit } from './persona'
+export { fetchRealDevice } from './devices'
+export type { RealDevice } from './devices'
 export { getLicenseToken, fetchLicenseToken, type LicenseInfo } from './license'
 export { lookupProxyGeo as lookupEngineProxyGeo, probeProxyExit, type ProxyGeo, type ProxyProbeResult } from './geoip'
 export { resolveProfileDir, resolveProfileDirSync, listProfileEntries, readProfileMeta, writeProfileMeta, sanitizeProfileName } from './profile-dir'
@@ -76,6 +84,10 @@ export interface OpenProfileOptions {
   webauthnCapture?: boolean
   /** Reopen the previous session's tabs. Default true. */
   restoreTabs?: boolean
+  /** Device profile. New profiles only; an existing one keeps its own. */
+  deviceType?: DeviceType
+  /** Draw the identity from the real-device library (paid). New profiles only. */
+  realFingerprint?: boolean
   onProgress?: (message: string) => void
   /** `download` runs before launch, `upload` after openProfile has returned. */
   onArchiveSync?: (e: ArchiveSyncEvent) => void
@@ -93,6 +105,38 @@ export interface OpenedProfile extends KernelSession {
   geo?: ProxyGeo
   /** The exit-triggered upload; prefer `onArchiveSync` over polling it. */
   archiveUpload?: Promise<void>
+}
+
+/**
+ * Decide what identity a brand-new profile gets. Runs after the archive is
+ * restored, because persona.json travels inside the archive - checking earlier
+ * would mint a fresh identity for a profile that already has one on another
+ * machine.
+ */
+export async function resolvePersonaInit(
+  profileDir: string,
+  opts: Pick<OpenProfileOptions, 'deviceType' | 'realFingerprint' | 'key' | 'server'>,
+): Promise<PersonaInit | undefined> {
+  if (fs.existsSync(path.join(profileDir, 'persona.json'))) return undefined
+  if (!opts.deviceType && !opts.realFingerprint) return undefined
+  const device = opts.realFingerprint
+    ? await fetchRealDevice({
+        os: opts.deviceType === 'android' ? 'android' : 'windows',
+        key: opts.key,
+        server: opts.server,
+      })
+    : undefined
+  return { deviceType: opts.deviceType, device }
+}
+
+/** An Android config on a pre-mobile kernel is worse than no Android at all. */
+export function assertAndroidKernel(version: string | undefined, build: string | undefined): void {
+  if (kernelSupportsAndroid(version, build)) return
+  throw new Error(
+    `Android profiles need kernel ${ANDROID_MIN_KERNEL_VERSION} built on or after ` +
+      `${ANDROID_MIN_KERNEL_BUILD.slice(0, 10)}; this install reports version "${version ?? 'unknown'}" ` +
+      `build "${build ?? 'unknown'}". Update the kernel and retry.`,
+  )
 }
 
 /**
@@ -147,14 +191,26 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
   // it cannot read a cached one.
   await refreshKernelVersions(cacheDir, { force: opts.updateKernelBeforeLaunch })
 
-  const defaultKv = opts.kernelVersion
-    ? findKernelVersion(opts.kernelVersion)
-    : DEFAULT_KERNEL_VERSION
+  const personaInit = await resolvePersonaInit(profileDir, opts)
+
+  // An Android profile is pinned to the kernel that carries the mobile patches.
+  // That pin must never resolve to something else: the Android version lives
+  // only in the manifest, so a plain lookup would hand back the compiled-in
+  // default and freeze a desktop kernel into a profile claiming to be a phone.
+  const wantsAndroid = personaInit?.deviceType === 'android'
+  const requestedVersion = wantsAndroid ? ANDROID_MIN_KERNEL_VERSION : opts.kernelVersion
+  const defaultKv = wantsAndroid
+    ? findKernelVersionStrict(ANDROID_MIN_KERNEL_VERSION)
+    : requestedVersion
+      ? findKernelVersion(requestedVersion)
+      : DEFAULT_KERNEL_VERSION
 
   opts.onProgress?.('Loading persona')
-  const persona = loadOrGeneratePersona(profileDir, defaultKv.version)
+  const persona = loadOrGeneratePersona(profileDir, defaultKv.version, personaInit)
 
-  const kv = findKernelVersion(persona.kernelVersion)
+  const kv = persona.deviceType === 'android'
+    ? findKernelVersionStrict(persona.kernelVersion)
+    : findKernelVersion(persona.kernelVersion)
 
   if (opts.updateKernelBeforeLaunch) {
     const status = kernelUpdateStatus(cacheDir, kv.version)
@@ -166,6 +222,18 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
 
   opts.onProgress?.(`Ensuring kernel ${kv.label}`)
   const exePath = await ensureKernel(cacheDir, kv, opts.onProgress)
+
+  if (persona.deviceType === 'android') {
+    let build = installedKernelBuild(cacheDir, kv.version)
+    if (!kernelSupportsAndroid(kv.version, build)) {
+      // The marker can lag a rebuild of the same version, so force one refetch
+      // before giving up.
+      opts.onProgress?.('Updating kernel for Android device support')
+      await ensureKernel(cacheDir, kv, opts.onProgress, { force: true })
+      build = installedKernelBuild(cacheDir, kv.version)
+    }
+    assertAndroidKernel(kv.version, build)
+  }
 
   let timezone = persona.timezone
   let publicIp: string | undefined

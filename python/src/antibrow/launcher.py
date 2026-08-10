@@ -19,7 +19,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence
+from typing import Callable, List, Optional, Sequence, Tuple
 
 from .errors import ConcurrencyLimitError, LaunchError
 from .profile_cache import PASSKEYS_ENTRY
@@ -58,6 +58,7 @@ def build_launch_args(
     profile_dir: Optional[Path | str] = None,
     webauthn_capture: Optional[bool] = None,
     restore_tabs: bool = True,
+    android_screen: Optional[Tuple[int, int]] = None,
     extra_args: Optional[Sequence[str]] = None,
 ) -> List[str]:
     """Assemble the kernel command line (without the executable itself).
@@ -112,6 +113,11 @@ def build_launch_args(
     if is_win and headless:
         # Not --headless=new: real headless has its own detectable fingerprint.
         args += ["--window-position=-10000,-10000", "--window-size=1,1"]
+
+    if android_screen and not headless:
+        # Match the window to the persona's screen: reporting screen.width 412
+        # beside an innerWidth of 1280 is a one-line tell.
+        args.append("--window-size={0},{1}".format(android_screen[0], android_screen[1]))
 
     if platform == "darwin":
         # macOS only: ICU on macOS resolves Intl.* (locale, month names,

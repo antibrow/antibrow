@@ -152,6 +152,8 @@ Starts the kernel and returns a handle that is ready to drive. Blocking (sync) A
 | `license_token` | `str` | `None` | Use a pre-minted token instead of calling the server. |
 | `license_provider` | `callable` | `None` | Return a token from your own issuer (self-hosted, vault, CI). |
 | `update_kernel` | `bool` | `False` | Check for a newer build of this profile's kernel and install it before launching. |
+| `device_type` | `"desktop" \| "android"` | `"desktop"` | Simulate an Android phone instead of a desktop browser. Applies only when the profile is **created**; see [Android profiles](#android-profiles). |
+| `real_fingerprint` | `bool` | `False` | Draw the identity from the fingerprint library on the server instead of generating one (paid plans). Also creation-time only. |
 | `sync` | `bool` | plan default | Cloud profile sync: restore before launching, save after closing. `None` follows the plan the key is on, `False` keeps the launch local, `True` attempts it regardless. |
 | `on_sync` | `callable` | `None` | Receives a `SyncEvent` as each transfer starts and finishes. |
 | `webauthn_capture` | `bool` | `True` | Keep new passkeys in the profile's portable store, so they travel with a sync or an export. `False` lets the browser ask where to save instead (phone / security key) and those stay on this device. |
@@ -256,6 +258,38 @@ print(browser.persona.ua, browser.persona.gpu_renderer, browser.persona.screen_w
 ```
 
 Sanity checks worth running once: [creepjs](https://abrahamjuliot.github.io/creepjs/), [whoer.net](https://whoer.net), [browserleaks.com/canvas](https://browserleaks.com/canvas), [pixelscan.net](https://pixelscan.net).
+
+### Android profiles
+
+A profile can be a phone instead of a desktop - running on the same Windows, macOS or Linux machine, with no device farm and no remote hardware:
+
+```python
+browser = launch(profile="phone-01", device_type="android")
+```
+
+Everything a page can read is answered in the kernel, from one real device:
+
+| Surface | Android profile reports |
+|---|---|
+| UA + client hints | `Mobile Safari` UA, `Sec-CH-UA-Mobile: ?1`, `Sec-CH-UA-Platform: "Android"`, real `model` and `platformVersion`, `formFactors: ["Mobile"]`, empty `architecture` / `bitness` |
+| `navigator` | `platform` `"Linux armv81"`, `maxTouchPoints`, mobile core/memory counts, no plugins or mime types, `pdfViewerEnabled` false |
+| Touch and layout | `ontouchstart`, `window.orientation`, portrait `screen.orientation`, `(pointer: coarse)` / `(hover: none)`, window sized to the device screen so `innerWidth == screen.width` on a viewport-meta page |
+| GPU | mobile unmasked vendor/renderer plus the ETC/ASTC compressed-texture extensions a phone GPU actually exposes |
+| Screen, audio, fonts, connection | drawn from that same device |
+
+Three real phones ship inside the package, so a free-plan profile can be Android with nothing to download first. A whole device row is picked at once, never field by field - that is what keeps the screen, the GPU report and the client hints agreeing with each other.
+
+```python
+browser = launch(profile="phone-01", device_type="android")
+print(browser.persona.android_model, browser.persona.android_os_major)
+```
+
+Two constraints:
+
+- **The device type is frozen at creation**, inside `persona.json`. Passing `device_type` to an existing profile does nothing; create a new profile to switch.
+- **Android needs kernel `151.0.7922.72`**, build `2026-08-07` or newer. That version is pinned automatically for Android profiles and installed (or refreshed) for you; if the install still lacks mobile support the launch raises rather than starting a desktop kernel behind a phone's fingerprint. `antibrow.kernel_supports_android(version, build)` answers the same question directly.
+
+For a different real machine each time instead of the three bundled rows, add `real_fingerprint=True` (paid plans; it works for `device_type="desktop"` too, drawing a Windows machine). A free key is rejected by the server rather than quietly downgraded to a generated persona.
 
 ## Proxies
 

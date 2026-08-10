@@ -244,6 +244,21 @@ export function findKernelVersion(version: string): KernelVersion {
   return allKernelVersions().find((kv) => kv.version === version) ?? DEFAULT_KERNEL_VERSION
 }
 
+/**
+ * Look up a version that the caller cannot substitute. Versions published after
+ * this release exist only in the manifest, so an offline or stale catalogue
+ * would otherwise hand back the compiled-in default - a silent downgrade for
+ * anything pinned to a specific kernel.
+ */
+export function findKernelVersionStrict(version: string): KernelVersion {
+  const kv = allKernelVersions().find((k) => k.version === version)
+  if (kv) return kv
+  throw new Error(
+    `Kernel ${version} is not in the catalogue. Refresh the kernel list with an internet ` +
+      'connection and retry; falling back to another version would change this profile\'s identity.',
+  )
+}
+
 /** Resolve the current process platform to a SupportedPlatform key. */
 export function currentPlatform(): SupportedPlatform {
   if (process.platform === 'win32') return 'win32'
@@ -293,6 +308,34 @@ export function writeInstalledKernelBuild(cacheDir: string, version: string, bui
   } catch {
     /* best-effort */
   }
+}
+
+export const ANDROID_MIN_KERNEL_VERSION = '151.0.7922.72'
+/** Build stamp of the first kernel carrying the mobile device patches. */
+export const ANDROID_MIN_KERNEL_BUILD = '2026-08-07 05:17'
+
+/** True when `version` is at or above `min`, comparing numerically per segment. */
+export function kernelVersionAtLeast(version: string | undefined, min: string): boolean {
+  if (!version) return false
+  // compareVersionsDesc sorts newest first, so <= 0 means version >= min.
+  return compareVersionsDesc(version, min) <= 0
+}
+
+/**
+ * Both halves are load-bearing. The version alone cannot answer it: the same
+ * version shipped twice, once before the mobile patches and once after. The
+ * build date alone cannot either: every kernel version gets rebuilt on the same
+ * day when the whole set is republished, so a date-only rule lets a kernel with
+ * none of the mobile patches through. An older binary handed an Android config
+ * produces a profile whose UA says Android while its client hints say desktop -
+ * worse than no Android at all.
+ */
+export function kernelSupportsAndroid(version: string | undefined, build: string | undefined): boolean {
+  if (!kernelVersionAtLeast(version, ANDROID_MIN_KERNEL_VERSION)) return false
+  if (!build || build.length < 10) return false
+  const date = build.slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false
+  return date >= ANDROID_MIN_KERNEL_BUILD.slice(0, 10)
 }
 
 export function kernelExePath(cacheDir: string, kv: KernelVersion, platform?: SupportedPlatform): string {

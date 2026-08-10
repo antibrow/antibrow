@@ -67,6 +67,10 @@ other, with the identical fingerprint.
   find.
 - **Coherent real-device profiles.** 30+ categories, 500+ parameters, all drawn from the
   same real machine. Randomized values contradict each other; these don't.
+- **Android profiles on a desktop machine.** `device_type="android"` (`deviceType: 'android'`
+  in JS) gives a profile a real phone's identity - mobile client hints, touch input, portrait
+  screen, mobile GPU - with no device farm and no remote hardware. Real phones ship inside
+  both packages, so it works on the free tier.
 - **Timezone and locale follow the proxy.** Pass a proxy and the exit IP's geo is resolved
   and written into the fingerprint before launch.
 - **Proxy auth handled in the engine.** `http` / `https` / `socks5` credentials go inline on

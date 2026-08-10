@@ -199,7 +199,11 @@ def test_an_unknown_format_is_refused(tmp_path):
 def test_an_archive_from_a_newer_release_is_refused_with_advice(tmp_path):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("manifest.json", json.dumps({"format": "fp-launcher-profile", "version": 2}))
+        # 99, not 2: an Android archive legitimately carries version 2 now
+        # (P.FORMAT_VERSION), so the probe needs a value beyond what any
+        # release actually writes - matches the JS SDK's own test, which
+        # made the same change (2 -> 99) when it bumped its format version.
+        zf.writestr("manifest.json", json.dumps({"format": "fp-launcher-profile", "version": 99}))
 
     with pytest.raises(ProfileCacheError, match="newer"):
         P.import_profile_archive(buf.getvalue(), tmp_path / "restored")

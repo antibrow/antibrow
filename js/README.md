@@ -75,6 +75,42 @@ const { page } = await ab.launch({
 
 `launch()` resolves to `{ browser, context, page, profileDir }` — `context` and `page` are the real Playwright objects.
 
+## Android profiles
+
+Ask for a phone and the profile becomes one - on the same Windows, macOS or Linux machine you already run:
+
+```ts
+const { page } = await ab.launch({
+  profile: 'phone-01',
+  deviceType: 'android',   // 'desktop' (default) | 'android'
+})
+```
+
+This is a **desktop-hosted simulation**, not a device farm and not a remote phone. What changes is the identity the page sees, all of it answered in the kernel:
+
+| Surface | Android profile reports |
+|---|---|
+| UA + client hints | `Mobile Safari` UA, `Sec-CH-UA-Mobile: ?1`, `Sec-CH-UA-Platform: "Android"`, real `model` and `platformVersion`, `formFactors: ["Mobile"]`, empty `architecture` / `bitness` |
+| `navigator` | `platform: "Linux armv81"`, `maxTouchPoints`, mobile core/memory counts, no plugins or mime types, `pdfViewerEnabled: false` |
+| Touch & layout | `ontouchstart`, `window.orientation`, `screen.orientation` portrait, `(pointer: coarse)` / `(hover: none)`, window sized to the device screen so `innerWidth === screen.width` on a viewport-meta page |
+| GPU | mobile unmasked vendor/renderer plus the ETC/ASTC compressed-texture extensions a phone GPU actually exposes |
+| Screen, audio, fonts, connection | taken from the same device as everything above |
+
+Three real phones ship **inside the package**, so a free-plan profile can be Android with no network round-trip. Every field comes from one device - the package picks a whole row, never a field, because that is the only way the numbers agree with each other.
+
+Two things to know:
+
+- **The device type is fixed at creation.** It lives in the profile's persona, so passing `deviceType` to an existing profile does nothing. Make a new profile to switch.
+- **Android needs kernel `151.0.7922.72`** (build `2026-08-07` or newer), which carries the mobile support. The SDK pins that version for Android profiles, installs or refreshes it for you, and fails with an explicit message rather than launching a desktop kernel behind a phone's fingerprint. Check an install yourself with `kernelSupportsAndroid(version, build)`.
+
+Want the identity drawn from the fingerprint library on the server instead of the bundled table - a different real machine each time, Android or Windows?
+
+```ts
+await ab.launch({ profile: 'phone-02', deviceType: 'android', realFingerprint: true })
+```
+
+`realFingerprint` is on the paid plans; free keys are rejected by the server rather than quietly downgraded to a generated persona. Like `deviceType`, it applies only when the profile is first created.
+
 ## Keeping the browser kernel up to date
 
 The fingerprint browser kernel ships new builds over time (fresh Chrome majors, spoofing fixes). Installed kernels are cached and **never swapped under you** — you decide when to update.
@@ -129,11 +165,14 @@ Add it to your MCP client config and your agent gets a stealth browser:
 
 **Tools:** `launch_browser`, `navigate`, `click`, `fill`, `screenshot`, `evaluate`, `get_content`, `list_profiles`, `create_profile`, `list_proxies`, `claim_proxy`, `start_live_view`, and more.
 
+`launch_browser` and `create_profile` both take `deviceType` (`"desktop"` / `"android"`) and `realFingerprint`, so an agent can ask for a phone profile in the same call that starts it.
+
 ## What you get
 
 | Feature | |
 |---|---|
 | **Real-device fingerprints** | Kernel-level spoofing, coherent across Canvas / WebGL / WebGPU / fonts / audio / timezone |
+| **Android profiles** | `deviceType: 'android'` turns a profile into a real phone identity - touch, mobile client hints, mobile GPU - on your desktop |
 | **Unlimited local profiles** | Free on every plan — isolated, persistent, no per-profile cost |
 | **Standard Playwright API** | `launch()` returns real `BrowserContext` / `Page` — zero to learn |
 | **Self-updating kernel** | Detect new browser-kernel builds and pull them on demand, or check-and-update before launch |

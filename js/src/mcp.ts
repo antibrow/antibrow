@@ -8,7 +8,15 @@ import { AntiDetectBrowser } from './browser'
 import { listProxies, claimManagedProxy } from './api'
 import { LiveViewStream, registerLiveSession, unregisterLiveSession } from './liveview'
 import { ensureCacheDir, listProfiles, getProfileDir } from './profile'
-import { loadOrGeneratePersona, DEFAULT_KERNEL_VERSION, readProfileMeta } from './engine'
+import {
+  loadOrGeneratePersona,
+  DEFAULT_KERNEL_VERSION,
+  readProfileMeta,
+  resolvePersonaInit,
+  findKernelVersionStrict,
+  refreshKernelVersions,
+  ANDROID_MIN_KERNEL_VERSION,
+} from './engine'
 import { rmSync } from 'node:fs'
 import type { McpSession } from './types'
 
@@ -31,7 +39,7 @@ export async function startMcpServer(): Promise<void> {
     notify: (m) => console.error(m),
   })
 
-  ensureCacheDir(cacheDir)
+  const resolvedCacheDir = ensureCacheDir(cacheDir)
   const sessions = new Map<string, McpSession>()
   let sessionCounter = 0
 
@@ -63,6 +71,8 @@ export async function startMcpServer(): Promise<void> {
             proxy: { type: 'string', description: 'Proxy URL (protocol://user:pass@host:port)' },
             proxyId: { type: 'string', description: 'Managed proxy id to use (activates it and meters monthly quota). Get one via list_proxies / claim_proxy.' },
             headless: { type: 'boolean', description: 'Run in headless mode' },
+            deviceType: { type: 'string', enum: ['desktop', 'android'], description: 'Simulate an Android phone (running on this desktop/server, not on a physical device) instead of a desktop browser. Applies only when the profile is first created; an existing profile keeps its own device type.' },
+            realFingerprint: { type: 'boolean', description: 'Draw the identity from the Captured-machine fingerprint library instead of generating one. Requires a paid plan; the server rejects this on free plans. Applies only when the profile is first created.' },
           },
           required: ['profile'],
         },
@@ -101,6 +111,8 @@ export async function startMcpServer(): Promise<void> {
           type: 'object' as const,
           properties: {
             name: { type: 'string', description: 'Profile name (must be unique on this machine)' },
+            deviceType: { type: 'string', enum: ['desktop', 'android'], description: 'Simulate an Android phone (running on this desktop/server, not on a physical device) instead of a desktop browser.' },
+            realFingerprint: { type: 'boolean', description: 'Draw the identity from the Captured-machine fingerprint library instead of generating one. Requires a paid plan; the server rejects this on free plans.' },
           },
           required: ['name'],
         },
@@ -245,6 +257,8 @@ export async function startMcpServer(): Promise<void> {
             proxy: args?.proxy as string | undefined,
             proxyId: args?.proxyId as string | undefined,
             headless: args?.headless as boolean | undefined,
+            deviceType: args?.deviceType as 'desktop' | 'android' | undefined,
+            realFingerprint: args?.realFingerprint as boolean | undefined,
           })
 
           const sessionId = `session_${++sessionCounter}`
@@ -319,7 +333,22 @@ export async function startMcpServer(): Promise<void> {
             return { content: [{ type: 'text' as const, text: 'Profile name is required' }], isError: true }
           }
           const profileDir = getProfileDir(name, cacheDir)
-          const persona = loadOrGeneratePersona(profileDir, DEFAULT_KERNEL_VERSION.version)
+          // The Android kernel exists only in the manifest, and a fresh MCP
+          // process has an empty catalogue - without this the pin below would
+          // resolve to the compiled-in default every time.
+          await refreshKernelVersions(resolvedCacheDir)
+          const personaInit = await resolvePersonaInit(profileDir, {
+            deviceType: args?.deviceType as 'desktop' | 'android' | undefined,
+            realFingerprint: args?.realFingerprint as boolean | undefined,
+            key: apiKey,
+            server,
+          })
+          // An Android profile is pinned to the kernel that carries the mobile
+          // patches, same as the engine's own default resolution in openProfile.
+          const defaultKv = personaInit?.deviceType === 'android'
+            ? findKernelVersionStrict(ANDROID_MIN_KERNEL_VERSION)
+            : DEFAULT_KERNEL_VERSION
+          const persona = loadOrGeneratePersona(profileDir, defaultKv.version, personaInit)
           return {
             content: [{
               type: 'text' as const,

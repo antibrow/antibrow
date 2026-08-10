@@ -15,17 +15,18 @@ import io
 import json
 import re
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, fields as _dataclass_fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from . import kernel as _kernel
 from .errors import ProfileCacheError
 from .persona import (
+    CapturedFacts,
     Persona,
     chrome_major_of,
     generate_persona,
-    load_or_generate_persona,
+    read_persona,
     write_persona,
 )
 from .profile_cache import PASSKEYS_ENTRY, SKIP_DIRS, SKIP_FILES, clear_archive_version
@@ -35,7 +36,12 @@ PROFILE_ARCHIVE_EXT = "fpprofile"
 
 MANIFEST_ENTRY = "manifest.json"
 FORMAT_ID = "fp-launcher-profile"
-FORMAT_VERSION = 1
+# Desktop profiles stay at 1 so older readers keep importing them. An Android
+# profile bumps to 2 because those readers would silently drop its device type
+# and launch it as a desktop identity - a loud "upgrade your app" beats one
+# profile quietly meaning two different things in two places.
+FORMAT_VERSION = 2
+FORMAT_VERSION_DESKTOP = 1
 
 #: Metadata entry of the older ``.zip`` export, still importable.
 LEGACY_META_ENTRY = "profile.json"
@@ -104,6 +110,12 @@ class PortableProfileMeta:
     api_log: str = "off"
     canvas_noise: bool = True
     webauthn_capture: bool = True
+    #: Device profile. On export it is the caller's own record of what this
+    #: profile is, checked against the persona on disk; on import it is what the
+    #: persona says, so the caller's row can be built to match.
+    device_type: Optional[str] = None
+    #: Whether the identity came from the captured-machine library.
+    real_fingerprint: Optional[bool] = None
     #: App-specific extras. Other readers ignore them.
     extra: Optional[Dict[str, Any]] = None
 
@@ -115,10 +127,32 @@ class ImportedProfileMeta(PortableProfileMeta):
     source: str = "launcher"  # "launcher" | "legacy"
 
 
+def _captured_to_manifest(cap: CapturedFacts) -> Dict[str, Any]:
+    """``CapturedFacts`` attributes are already the launcher's snake_case keys."""
+    return {
+        f.name: getattr(cap, f.name)
+        for f in _dataclass_fields(cap)
+        if getattr(cap, f.name) is not None
+    }
+
+
+def _manifest_to_captured(raw: Dict[str, Any]) -> CapturedFacts:
+    names = {f.name for f in _dataclass_fields(CapturedFacts)}
+    return CapturedFacts(**{key: value for key, value in raw.items() if key in names})
+
+
 def _persona_to_manifest(persona: Persona) -> Dict[str, Any]:
     out: Dict[str, Any] = {field_name: getattr(persona, field_name) for field_name in _PERSONA_FIELDS}
     if persona.captured_webgl:
         out["captured_webgl"] = persona.captured_webgl
+    if persona.device_type:
+        out["device_type"] = persona.device_type
+    if persona.android_model:
+        out["android_model"] = persona.android_model
+    if persona.android_os_major is not None:
+        out["android_os_major"] = persona.android_os_major
+    if persona.captured is not None:
+        out["captured"] = _captured_to_manifest(persona.captured)
     return out
 
 
@@ -160,10 +194,33 @@ def export_profile_archive(profile_dir: Path | str, meta: PortableProfileMeta) -
     torn copy loses cookies and tabs on import.
     """
     root = Path(profile_dir)
-    persona = load_or_generate_persona(root, meta.kernel_version or _default_version())
+    # Export must not create the identity it exports. An Android or
+    # captured-machine profile deliberately has no persona until its first
+    # launch, and generating one here would both freeze a plain desktop identity
+    # onto it forever and stamp the archive as a desktop profile.
+    persona = read_persona(root)
+    if persona is None:
+        raise ProfileCacheError(
+            "This profile has no identity yet - open it once, then export. Its fingerprint "
+            "is resolved at first launch, and exporting now would create a different one."
+        )
+    # A caller that tracks the device type separately must agree with the
+    # persona: whichever of the two is wrong, the export carries the
+    # disagreement to another machine and one kernel edit there destroys it.
+    if meta.device_type and meta.device_type != (persona.device_type or "desktop"):
+        raise ProfileCacheError(
+            "This profile is recorded as {0!r} but its identity is {1!r}. Exporting would "
+            "carry the mismatch forward.".format(meta.device_type, persona.device_type or "desktop")
+        )
+    # `real_fingerprint` has no home in the interchange schema (the identity
+    # itself travels as the persona's captured facts), so it rides in our own
+    # extras block.
+    extra: Dict[str, Any] = dict(meta.extra or {})
+    if meta.real_fingerprint:
+        extra["realFingerprint"] = True
     manifest: Dict[str, Any] = {
         "format": FORMAT_ID,
-        "version": FORMAT_VERSION,
+        "version": FORMAT_VERSION if persona.device_type == "android" else FORMAT_VERSION_DESKTOP,
         "profile": {
             "id": meta.id or root.name,
             "name": meta.name,
@@ -175,8 +232,8 @@ def export_profile_archive(profile_dir: Path | str, meta: PortableProfileMeta) -
             "webauthn_capture": meta.webauthn_capture,
         },
     }
-    if meta.extra:
-        manifest["antibrow"] = meta.extra
+    if extra:
+        manifest["antibrow"] = extra
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -224,6 +281,13 @@ def _import_manifest_archive(
     zf: zipfile.ZipFile, manifest: Dict[str, Any], root: Path
 ) -> ImportedProfileMeta:
     entry = manifest.get("profile") or {}
+    # Resolved before anything is written: an Android pin that cannot be
+    # honoured here must fail with the target directory still untouched.
+    manifest_persona = entry.get("persona") or {}
+    android = isinstance(manifest_persona, dict) and manifest_persona.get("device_type") == "android"
+    kernel_version = _resolve_kernel_version(
+        entry.get("kernel_version") or _default_version(), android
+    )
     root.mkdir(parents=True, exist_ok=True)
 
     for info in zf.infolist():
@@ -238,8 +302,8 @@ def _import_manifest_archive(
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(zf.read(info))
 
-    kernel_version = _resolve_kernel_version(entry.get("kernel_version") or _default_version())
-    write_persona(root, _manifest_to_persona(entry.get("persona") or {}, kernel_version))
+    persona = _manifest_to_persona(manifest_persona, kernel_version)
+    write_persona(root, persona)
     # The generation this machine held belonged to whatever profile used to live
     # here; an imported archive's generation is unknowable, so the next launch
     # must restore rather than trust a stale marker.
@@ -247,6 +311,7 @@ def _import_manifest_archive(
 
     proxy = entry.get("proxy") or {}
     raw = proxy.get("raw") if isinstance(proxy, dict) else None
+    extra = manifest.get("antibrow") if isinstance(manifest.get("antibrow"), dict) else None
     return ImportedProfileMeta(
         source="launcher",
         id=entry.get("id"),
@@ -256,7 +321,11 @@ def _import_manifest_archive(
         api_log=_as_api_log_mode(entry.get("api_log")),
         canvas_noise=entry.get("canvas_noise") is not False,
         webauthn_capture=entry.get("webauthn_capture") is not False,
-        extra=manifest.get("antibrow") if isinstance(manifest.get("antibrow"), dict) else None,
+        # The persona is authoritative for both: an importer that drops them
+        # ends up with a row saying "desktop" on top of an Android identity.
+        device_type=persona.device_type,
+        real_fingerprint=True if (extra or {}).get("realFingerprint") is True else None,
+        extra=extra,
     )
 
 
@@ -326,11 +395,16 @@ def _as_api_log_mode(value: Any) -> str:
     return value if value in ("curated", "all") else "off"
 
 
-def _resolve_kernel_version(wanted: str) -> str:
+def _resolve_kernel_version(wanted: str, android: bool = False) -> str:
     """The kernel an imported profile can actually launch here.
 
     The exact version, else the newest known build of the same Chrome major, else
     the default - an archive from another machine must not be unlaunchable.
+
+    An Android profile gets none of that latitude. Its version is a pin, not a
+    preference, and rewriting it to a kernel without the mobile patches would
+    turn the import into a profile that claims to be a phone and cannot behave
+    like one.
     """
     try:
         known: List[str] = [kv.version for kv in _kernel.kernels_for_platform()]
@@ -338,6 +412,11 @@ def _resolve_kernel_version(wanted: str) -> str:
         known = []
     if wanted in known:
         return wanted
+    if android:
+        raise ProfileCacheError(
+            "This Android profile needs kernel {0}, which is not in the catalogue here. "
+            "Refresh the kernel list with an internet connection and import again.".format(wanted)
+        )
     major = wanted.split(".")[0]
     for version in known:
         if version.split(".")[0] == major:
@@ -360,9 +439,22 @@ def _manifest_to_persona(entry: Dict[str, Any], kernel_version: str) -> Persona:
         value = entry.get(field_name)
         if value not in (None, "", []):
             setattr(persona, field_name, value)
-    captured = entry.get("captured_webgl")
+    captured_webgl = entry.get("captured_webgl")
+    if isinstance(captured_webgl, dict):
+        persona.captured_webgl = captured_webgl
+
+    device_type = entry.get("device_type")
+    if device_type in ("android", "desktop"):
+        persona.device_type = device_type
+    android_model = entry.get("android_model")
+    if isinstance(android_model, str) and android_model:
+        persona.android_model = android_model
+    android_os_major = entry.get("android_os_major")
+    if isinstance(android_os_major, int) and not isinstance(android_os_major, bool):
+        persona.android_os_major = android_os_major
+    captured = entry.get("captured")
     if isinstance(captured, dict):
-        persona.captured_webgl = captured
+        persona.captured = _manifest_to_captured(captured)
 
     ua = entry.get("ua")
     if isinstance(ua, str) and ua:
