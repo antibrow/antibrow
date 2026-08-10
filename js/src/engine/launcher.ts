@@ -379,9 +379,14 @@ export function buildLaunchArgs(opts: BuildLaunchArgsOptions): string[] {
         '--disable-crash-reporter',
         '--no-zygote'] : []),
     // Windows headless: move the window off-screen rather than --headless=new,
-    // which is detectable.
-    ...(isWin && opts.headless ? ['--window-position=-10000,-10000', '--window-size=1,1'] : []),
-    ...(opts.androidScreen && !opts.headless
+    // which is detectable. The size is deliberately left alone - shrinking the
+    // window shrinks the viewport with it (a desktop fp-config does not spoof
+    // outerWidth), which breaks page layout and contradicts the spoofed screen.
+    ...(isWin && opts.headless ? ['--window-position=-10000,-10000'] : []),
+    // Android keeps its window sized to the persona screen even when hidden:
+    // innerWidth === screen.width is part of the phone's identity, and being
+    // off-screen does not change what the page measures.
+    ...(opts.androidScreen
       ? [`--window-size=${opts.androidScreen.width},${opts.androidScreen.height}`]
       : []),
     // macOS ICU resolves Intl.* from CFLocale/AppleLanguages and silently

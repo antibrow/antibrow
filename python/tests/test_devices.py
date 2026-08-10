@@ -174,12 +174,11 @@ def test_desktop_launch_args_have_no_window_size():
     assert not any(a.startswith("--window-size=") for a in args)
 
 
-def test_headless_android_launch_args_have_no_window_size():
-    # --window-size=1,1 already claims the argument for the off-screen trick;
-    # a second occurrence would be the last-wins Chromium switch fighting itself.
+def test_headless_android_keeps_the_persona_screen_size():
+    # Hidden or not, innerWidth == screen.width is part of the phone's identity.
     args = build_launch_args(
         fp_config_path="/p/fp.json", license_token="t", user_data_dir="/p/ud",
         label="demo", cdp_port=9222, platform="win32", headless=True, android_screen=(412, 917),
     )
-    assert args.count("--window-size=1,1") == 1
-    assert "--window-size=412,917" not in args
+    assert args.count("--window-size=412,917") == 1
+    assert "--window-position=-10000,-10000" in args

@@ -29,8 +29,16 @@ export interface ProfileEntry {
   dir: string
 }
 
-export function profilesRoot(cacheDir: string): string {
-  return path.join(cacheDir, 'profiles')
+/** Kept out of `profiles/` so tools that enumerate managed profiles never see throwaway automation runs. */
+export const TEMPORARY_PROFILES_DIR = 'profiles-temp'
+
+export interface ProfileRootOptions {
+  /** Resolve against the temporary tree instead of the managed one. */
+  temporary?: boolean
+}
+
+export function profilesRoot(cacheDir: string, opts?: ProfileRootOptions): string {
+  return path.join(cacheDir, opts?.temporary ? TEMPORARY_PROFILES_DIR : 'profiles')
 }
 
 /** Directory-safe form of a name. Kept identical in the Python SDK. */
@@ -62,16 +70,17 @@ export function writeProfileMeta(dir: string, meta: ProfileMeta): void {
   fs.writeFileSync(path.join(dir, META_FILE), JSON.stringify(meta, null, 2), 'utf8')
 }
 
-export function listProfileEntries(cacheDir: string): ProfileEntry[] {
+export function listProfileEntries(cacheDir: string, opts?: ProfileRootOptions): ProfileEntry[] {
+  const root = profilesRoot(cacheDir, opts)
   let names: string[]
   try {
-    names = fs.readdirSync(profilesRoot(cacheDir))
+    names = fs.readdirSync(root)
   } catch {
     return []
   }
   const entries: ProfileEntry[] = []
   for (const name of names) {
-    const dir = path.join(profilesRoot(cacheDir), name)
+    const dir = path.join(root, name)
     try {
       if (!fs.statSync(dir).isDirectory()) continue
     } catch {
@@ -130,8 +139,8 @@ function renameToId(dir: string, id: string): string {
   }
 }
 
-function createProfileDir(cacheDir: string, meta: ProfileMeta): ResolvedProfile {
-  const dir = path.join(profilesRoot(cacheDir), meta.id)
+function createProfileDir(cacheDir: string, meta: ProfileMeta, opts?: ProfileRootOptions): ResolvedProfile {
+  const dir = path.join(profilesRoot(cacheDir, opts), meta.id)
   writeProfileMeta(dir, meta)
   return { dir, id: meta.id, name: meta.name }
 }
@@ -170,14 +179,18 @@ function shadow(entry: ProfileEntry, name: string): void {
 }
 
 /** Directory for a name without consulting the server. */
-export function resolveProfileDirSync(cacheDir: string, profileName: string): ResolvedProfile {
+export function resolveProfileDirSync(
+  cacheDir: string,
+  profileName: string,
+  opts?: ProfileRootOptions,
+): ResolvedProfile {
   const name = profileName
   sanitizeProfileName(name)   // reject names that cannot become a directory
-  const found = findByName(listProfileEntries(cacheDir), name)
+  const found = findByName(listProfileEntries(cacheDir, opts), name)
   if (found && found.origin !== 'legacy') return { dir: found.dir, id: found.id, name }
   const id = randomUUID()
   if (found) return adopt(found, id, name, 'local')
-  return createProfileDir(cacheDir, { id, name, origin: 'local' })
+  return createProfileDir(cacheDir, { id, name, origin: 'local' }, opts)
 }
 
 interface ServerLookup {
@@ -222,22 +235,28 @@ export async function resolveProfileDir(opts: {
   profileName: string
   key?: string
   server?: string
+  /** Skips the server entirely: a temporary profile has no cloud counterpart. */
+  temporary?: boolean
   onProgress?: (message: string) => void
 }): Promise<ResolvedProfile> {
   const name = opts.profileName
   sanitizeProfileName(name)
-  const root = profilesRoot(opts.cacheDir)
-  const entries = listProfileEntries(opts.cacheDir)
+  const root = profilesRoot(opts.cacheDir, opts)
+  const entries = listProfileEntries(opts.cacheDir, opts)
   const found = findByName(entries, name)
   const lookup: ServerLookup =
-    opts.key && opts.server && needsLookup(found)
+    !opts.temporary && opts.key && opts.server && needsLookup(found)
       ? await lookupServerId(name, opts.key, opts.server)
       : { checked: false }
   const checkedAt = lookup.checked ? new Date().toISOString() : undefined
 
   if (!found) {
     if (lookup.id) return claim(holderOf(entries, root, lookup.id, '') ?? path.join(root, lookup.id), lookup.id, name)
-    return createProfileDir(opts.cacheDir, { id: randomUUID(), name, origin: 'local', serverCheckedAt: checkedAt })
+    return createProfileDir(
+      opts.cacheDir,
+      { id: randomUUID(), name, origin: 'local', serverCheckedAt: checkedAt },
+      opts,
+    )
   }
 
   if (!lookup.id && found.origin !== 'legacy') {

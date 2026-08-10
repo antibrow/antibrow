@@ -91,6 +91,15 @@ describe('openProfile directory resolution', () => {
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 
+  it('routes to the temporary tree without touching the server', async () => {
+    const cacheDir = tmp()
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    await openProfile({ cacheDir, profileName: 'gmail', key: 'adb_k', server: 'https://x.test', licenseToken: 'tok', temporary: true })
+    const dir = launches[0].profileDir
+    expect(path.dirname(dir)).toBe(path.join(cacheDir, 'profiles-temp'))
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
   it('lets an explicit directory name itself: its record beats the passed name', async () => {
     // The archive is addressed by name, so the two SDKs have to agree on which
     // name wins here. The record inside the directory is its identity.

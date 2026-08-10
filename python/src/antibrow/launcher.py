@@ -112,11 +112,15 @@ def build_launch_args(
 
     if is_win and headless:
         # Not --headless=new: real headless has its own detectable fingerprint.
-        args += ["--window-position=-10000,-10000", "--window-size=1,1"]
+        # The size is deliberately left alone - shrinking the window shrinks the
+        # viewport with it (a desktop fp-config does not spoof outerWidth), which
+        # breaks page layout and contradicts the spoofed screen.
+        args.append("--window-position=-10000,-10000")
 
-    if android_screen and not headless:
+    if android_screen:
         # Match the window to the persona's screen: reporting screen.width 412
-        # beside an innerWidth of 1280 is a one-line tell.
+        # beside an innerWidth of 1280 is a one-line tell. Holds when hidden too,
+        # since being off-screen does not change what the page measures.
         args.append("--window-size={0},{1}".format(android_screen[0], android_screen[1]))
 
     if platform == "darwin":

@@ -71,8 +71,8 @@ def write_profile_meta(directory: Path, meta: ProfileMeta) -> None:
     (directory / META_FILE).write_text(json.dumps(payload, indent=2), encoding="utf8")
 
 
-def list_profile_entries(cache_dir: Path | str | None = None) -> list[ProfileEntry]:
-    root = _config.profiles_dir(cache_dir)
+def list_profile_entries(cache_dir: Path | str | None = None, *, temporary: bool = False) -> list[ProfileEntry]:
+    root = _config.profiles_dir(cache_dir, temporary=temporary)
     if not root.is_dir():
         return []
     entries: list[ProfileEntry] = []
@@ -186,17 +186,20 @@ def resolve_profile_dir(
     cache_dir: Path | str | None = None,
     api_key: Optional[str] = None,
     server: Optional[str] = None,
+    *,
+    temporary: bool = False,
 ) -> ResolvedProfile:
     """Directory holding ``profile_name``, preferring the server's stable id so
     the SDKs and the desktop app land on the same one. Every failure degrades to
-    a local id; resolution never blocks a launch."""
+    a local id; resolution never blocks a launch. A temporary profile skips the
+    server entirely - it has no cloud counterpart."""
     _config.sanitize_profile_name(profile_name)
-    root = _config.profiles_dir(cache_dir)
-    entries = list_profile_entries(cache_dir)
+    root = _config.profiles_dir(cache_dir, temporary=temporary)
+    entries = list_profile_entries(cache_dir, temporary=temporary)
     found = _find_by_name(entries, profile_name)
     server_id: Optional[str] = None
     answered = False
-    if api_key and server and _needs_lookup(found):
+    if not temporary and api_key and server and _needs_lookup(found):
         server_id, answered = _lookup_server_id(profile_name, api_key, server)
     checked_at = _now() if answered else None
 

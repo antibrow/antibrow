@@ -90,8 +90,9 @@ describe('android launch args', () => {
     expect(args.some((a) => a.startsWith('--window-size='))).toBe(false)
   })
 
-  it('lets headless keep its own window size on Windows', () => {
-    const args = buildLaunchArgs({ ...base, headless: true })
-    expect(args).toContain('--window-size=1,1')
+  it('keeps the persona screen size when headless moves the window off-screen', () => {
+    const args = buildLaunchArgs({ ...base, headless: true, androidScreen: { width: 412, height: 917 } })
+    expect(args).toContain('--window-size=412,917')
+    expect(args).toContain('--window-position=-10000,-10000')
   })
 })

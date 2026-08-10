@@ -20,10 +20,7 @@ const CONTAINER_SWITCHES = [
   '--no-zygote',
 ]
 
-const WINDOWS_HEADLESS_SWITCHES = [
-  '--window-position=-10000,-10000',
-  '--window-size=1,1',
-]
+const WINDOWS_HEADLESS_SWITCHES = ['--window-position=-10000,-10000']
 
 const ALWAYS_PRESENT_PREFIXES = [
   '--fp-config',

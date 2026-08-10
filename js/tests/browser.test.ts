@@ -56,9 +56,12 @@ vi.mock('../src/engine', () => ({
 }))
 
 const getOrCreateProfileSpy = vi.fn(async () => ({ id: 'profile-1', name: 'amazon-us', config: null }))
+const getProfileSpy = vi.fn(async () => ({ id: 'profile-1', name: 'amazon-us', config: null }))
 const getProfileArchiveUrlsSpy = vi.fn(async () => ({ downloadUrl: 'https://r2/get', uploadUrl: 'https://r2/put' }))
+const getProfileArchiveUploadUrlSpy = vi.fn(async () => 'https://r2/put-fresh' as string | undefined)
 vi.mock('../src/api', () => ({
   getOrCreateProfile: (...args: unknown[]) => getOrCreateProfileSpy(...(args as [])),
+  getProfile: (...args: unknown[]) => getProfileSpy(...(args as [])),
   activateProxy: vi.fn(async () => ({ proxy: { id: 'px1', protocol: 'http', host: 'proxy.local', port: 8080, username: 'u', password: 'p' } })),
   managedProxyToRelayUrl: vi.fn((proxyId: string, secret: string) => `relay://${proxyId}:${secret}@proxy.antibrow.com`),
   issueProxyTicket: vi.fn(async () => ({
@@ -68,6 +71,7 @@ vi.mock('../src/api', () => ({
   revokeProxyTicket: vi.fn(async () => undefined),
   DEFAULT_RELAY_HOST: 'proxy.antibrow.com',
   getProfileArchiveUrls: (...args: unknown[]) => getProfileArchiveUrlsSpy(...(args as [])),
+  getProfileArchiveUploadUrl: (...args: unknown[]) => getProfileArchiveUploadUrlSpy(...(args as [])),
 }))
 
 const versionCheckSpy = vi.fn(async () => ({ status: 'ok', current: '1.0.0' }))
@@ -76,7 +80,7 @@ vi.mock('../src/version', () => ({
   checkClientVersion: (...args: unknown[]) => versionCheckSpy(...(args as [])),
 }))
 
-import { AntiDetectBrowser } from '../src/browser'
+import { AntiDetectBrowser, resolveSyncMode } from '../src/browser'
 
 beforeEach(() => {
   closeListeners = []
@@ -89,7 +93,9 @@ beforeEach(() => {
   installedKernelUpdatesSpy.mockReturnValue([])
   ensureKernelSpy.mockClear()
   getOrCreateProfileSpy.mockClear()
+  getProfileSpy.mockClear()
   getProfileArchiveUrlsSpy.mockClear()
+  getProfileArchiveUploadUrlSpy.mockClear()
 })
 
 /** Let the fire-and-forget kernel-update check settle. */
@@ -137,18 +143,14 @@ describe('AntiDetectBrowser.launch (engine)', () => {
     expect(openProfileSpy).not.toHaveBeenCalled()
   })
 
-  it('applies the floating label via addInitScript when label is provided', async () => {
+  it('hands the label to the kernel and injects nothing into the page', async () => {
     fakeSession.context.addInitScript.mockClear()
     const ab = new AntiDetectBrowser({ key: 'k' })
     await ab.launch({ profile: 'p', label: 'acct@x.com' })
-    expect(fakeSession.context.addInitScript).toHaveBeenCalled()
-    // The label travels as a serialised argument, never spliced into script
-    // source: the first arg is the function, the second is the data.
-    const call = fakeSession.context.addInitScript.mock.calls.find(
-      (c) => typeof c[0] === 'function',
-    )
-    expect(call).toBeDefined()
-    expect(call![1]).toEqual({ labelText: 'acct@x.com', bgColor: '#333333' })
+    expect(openProfileSpy.mock.calls.at(-1)![0]).toMatchObject({ label: 'acct@x.com' })
+    // The label used to be a fixed-position div, which any page could read back
+    // off the DOM. The kernel draws it now, so nothing is injected.
+    expect(fakeSession.context.addInitScript).not.toHaveBeenCalled()
   })
 
   it('does NOT cap concurrency in the SDK — mi is enforced by the kernel', async () => {
@@ -254,24 +256,312 @@ describe('AntiDetectBrowser.launch (engine)', () => {
     const ab = new AntiDetectBrowser({ key: 'k' })
     await ab.launch({ profile: 'gmail', userDataDir: dir })
 
-    expect(getOrCreateProfileSpy).toHaveBeenCalledWith(expect.objectContaining({ name: 'work' }))
+    expect(getProfileSpy).toHaveBeenCalledWith(expect.objectContaining({ name: 'work' }))
     expect(getProfileArchiveUrlsSpy).toHaveBeenCalledWith(expect.objectContaining({ name: 'work' }))
     const params = openProfileSpy.mock.calls[0][0] as Record<string, unknown>
     expect(params.profileName).toBe('work')
 
     // The deferred re-fetch inside getArchivePutUrl must resolve the same name.
-    getProfileArchiveUrlsSpy.mockClear()
     await (params.getArchivePutUrl as () => Promise<string | undefined>)()
-    expect(getProfileArchiveUrlsSpy).toHaveBeenCalledWith(expect.objectContaining({ name: 'work' }))
+    expect(getProfileArchiveUploadUrlSpy).toHaveBeenCalledWith(expect.objectContaining({ name: 'work' }))
+  })
+
+  it('re-signs the exit-time upload without asking for the download side', async () => {
+    // The GET half makes the server HEAD the cloud object, and the object it
+    // would report is the one this session is about to overwrite anyway.
+    const ab = new AntiDetectBrowser({ key: 'k' })
+    await ab.launch({ profile: 'amazon-us' })
+    const params = openProfileSpy.mock.calls[0][0] as Record<string, unknown>
+    getProfileArchiveUrlsSpy.mockClear()
+
+    const url = await (params.getArchivePutUrl as () => Promise<string | undefined>)()
+
+    expect(url).toBe('https://r2/put-fresh')
+    expect(getProfileArchiveUploadUrlSpy).toHaveBeenCalledTimes(1)
+    expect(getProfileArchiveUrlsSpy).not.toHaveBeenCalled()
   })
 
   it('falls back to the passed profile name when userDataDir carries no record', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ab-userdata-none-'))
     const ab = new AntiDetectBrowser({ key: 'k' })
     await ab.launch({ profile: 'gmail', userDataDir: dir })
-    expect(getOrCreateProfileSpy).toHaveBeenCalledWith(expect.objectContaining({ name: 'gmail' }))
+    expect(getProfileSpy).toHaveBeenCalledWith(expect.objectContaining({ name: 'gmail' }))
     const params = openProfileSpy.mock.calls[0][0] as Record<string, unknown>
     expect(params.profileName).toBe('gmail')
+  })
+})
+
+describe('resolveSyncMode', () => {
+  it('refuses to sync a temporary profile', () => {
+    expect(() => resolveSyncMode({ temporary: true, sync: true, licenseSync: true })).toThrow(/temporary/i)
+  })
+
+  it('keeps a temporary profile local', () => {
+    expect(resolveSyncMode({ temporary: true, licenseSync: true })).toBe('off')
+    expect(resolveSyncMode({ temporary: true, sync: false, licenseSync: true })).toBe('off')
+  })
+
+  it('only adopts profiles the server already knows by default', () => {
+    expect(resolveSyncMode({ temporary: false, licenseSync: true })).toBe('existing')
+    expect(resolveSyncMode({ temporary: false, licenseSync: false })).toBe('off')
+  })
+
+  it('creates the server row only when asked explicitly', () => {
+    expect(resolveSyncMode({ temporary: false, sync: true, licenseSync: true })).toBe('create')
+    expect(() => resolveSyncMode({ temporary: false, sync: true, licenseSync: false })).toThrow(/plan/i)
+  })
+
+  it('honours sync: false even on a syncing plan', () => {
+    expect(resolveSyncMode({ temporary: false, sync: false, licenseSync: true })).toBe('off')
+  })
+})
+
+describe('launch sync behaviour', () => {
+  beforeEach(() => {
+    getProfileSpy.mockClear()
+    getOrCreateProfileSpy.mockClear()
+    getProfileArchiveUrlsSpy.mockClear()
+  })
+
+  it('never creates a server row for an unknown profile name', async () => {
+    getProfileSpy.mockRejectedValueOnce(new Error('Failed to get profile: HTTP 404. '))
+    const ab = new AntiDetectBrowser({ key: 'adb_test' })
+    await ab.launch({ profile: 'brand-new' })
+
+    expect(getProfileSpy).toHaveBeenCalledTimes(1)
+    expect(getOrCreateProfileSpy).not.toHaveBeenCalled()
+    expect(getProfileArchiveUrlsSpy).not.toHaveBeenCalled()
+  })
+
+  it('syncs a profile the server already knows', async () => {
+    const ab = new AntiDetectBrowser({ key: 'adb_test' })
+    await ab.launch({ profile: 'amazon-us' })
+
+    expect(getProfileSpy).toHaveBeenCalledTimes(1)
+    expect(getOrCreateProfileSpy).not.toHaveBeenCalled()
+    expect(getProfileArchiveUrlsSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('creates the server row when sync is explicit', async () => {
+    const ab = new AntiDetectBrowser({ key: 'adb_test' })
+    await ab.launch({ profile: 'brand-new', sync: true })
+
+    expect(getOrCreateProfileSpy).toHaveBeenCalledTimes(1)
+    expect(getProfileArchiveUrlsSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('degrades to local when the existence probe fails', async () => {
+    getProfileSpy.mockRejectedValueOnce(new Error('fetch failed'))
+    const ab = new AntiDetectBrowser({ key: 'adb_test' })
+    await ab.launch({ profile: 'amazon-us' })
+
+    expect(getProfileArchiveUrlsSpy).not.toHaveBeenCalled()
+    expect(openProfileSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('probes once per profile name per process', async () => {
+    const ab = new AntiDetectBrowser({ key: 'adb_test' })
+    await ab.launch({ profile: 'amazon-us' })
+    await ab.close()
+    await ab.launch({ profile: 'amazon-us' })
+
+    expect(getProfileSpy).toHaveBeenCalledTimes(1)
+  })
+
+  // A default launch concluding "the server does not have it" must not answer
+  // for a later explicit sync: true, or the profile the caller asked to create
+  // is silently never created.
+  it('still creates the row when sync: true follows a default launch of an unknown name', async () => {
+    getProfileSpy.mockRejectedValueOnce(new Error('Failed to get profile: HTTP 404. '))
+    const ab = new AntiDetectBrowser({ key: 'adb_test' })
+    await ab.launch({ profile: 'brand-new' })
+    await ab.close()
+    expect(getOrCreateProfileSpy).not.toHaveBeenCalled()
+
+    await ab.launch({ profile: 'brand-new', sync: true })
+
+    expect(getOrCreateProfileSpy).toHaveBeenCalledTimes(1)
+    expect(getProfileArchiveUrlsSpy).toHaveBeenCalledTimes(1)
+  })
+
+  // The flip side: a repeated default launch of a local-only name must stay at
+  // one round trip, which is what the cache is for.
+  it('does not re-probe a name the server already denied', async () => {
+    getProfileSpy.mockRejectedValueOnce(new Error('Failed to get profile: HTTP 404. '))
+    const ab = new AntiDetectBrowser({ key: 'adb_test' })
+    await ab.launch({ profile: 'brand-new' })
+    await ab.close()
+    await ab.launch({ profile: 'brand-new' })
+
+    expect(getProfileSpy).toHaveBeenCalledTimes(1)
+  })
+
+  // A dropped connection is not an answer. Remembering one would keep a
+  // long-lived process local-only for its whole life, never uploading again.
+  it('re-probes after a transport failure instead of remembering it', async () => {
+    getProfileSpy.mockRejectedValueOnce(new Error('fetch failed'))
+    const ab = new AntiDetectBrowser({ key: 'adb_test' })
+    await ab.launch({ profile: 'amazon-us' })
+    await ab.close()
+    expect(getProfileArchiveUrlsSpy).not.toHaveBeenCalled()
+
+    await ab.launch({ profile: 'amazon-us' })
+
+    expect(getProfileSpy).toHaveBeenCalledTimes(2)
+    expect(getProfileArchiveUrlsSpy).toHaveBeenCalledTimes(1)
+  })
+
+  // Creating the row makes it a row the server knows, so the default mode has
+  // to see it too - otherwise the launch after the creating one silently
+  // neither restores nor uploads.
+  it('lets a default launch see a row created by an earlier sync: true launch', async () => {
+    getProfileSpy.mockRejectedValueOnce(new Error('Failed to get profile: HTTP 404. '))
+    const ab = new AntiDetectBrowser({ key: 'adb_test' })
+    await ab.launch({ profile: 'brand-new' })
+    await ab.close()
+    expect(getProfileArchiveUrlsSpy).not.toHaveBeenCalled()
+
+    await ab.launch({ profile: 'brand-new', sync: true })
+    await ab.close()
+    expect(getProfileArchiveUrlsSpy).toHaveBeenCalledTimes(1)
+
+    await ab.launch({ profile: 'brand-new' })
+
+    expect(getProfileArchiveUrlsSpy).toHaveBeenCalledTimes(2)
+    expect(getProfileSpy).toHaveBeenCalledTimes(1) // the created row needs no re-probe
+  })
+
+  it('retries creation after a transport failure under sync: true', async () => {
+    getOrCreateProfileSpy.mockRejectedValueOnce(new Error('fetch failed'))
+    const ab = new AntiDetectBrowser({ key: 'adb_test' })
+    await ab.launch({ profile: 'brand-new', sync: true })
+    await ab.close()
+    expect(getProfileArchiveUrlsSpy).not.toHaveBeenCalled()
+
+    await ab.launch({ profile: 'brand-new', sync: true })
+
+    expect(getOrCreateProfileSpy).toHaveBeenCalledTimes(2)
+    expect(getProfileArchiveUrlsSpy).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('local-only notice', () => {
+  beforeEach(() => {
+    getProfileSpy.mockClear()
+    getOrCreateProfileSpy.mockClear()
+  })
+
+  it('tells the caller a fresh name defaulted to local-only', async () => {
+    getProfileSpy.mockRejectedValueOnce(new Error('Failed to get profile: HTTP 404. '))
+    const notify = vi.fn()
+    const ab = new AntiDetectBrowser({ key: 'adb_test', notify })
+    await ab.launch({ profile: 'brand-new' })
+
+    expect(notify).toHaveBeenCalledTimes(1)
+    expect(notify.mock.calls[0][0]).toMatch(/local-only/i)
+    expect(notify.mock.calls[0][0]).toContain('brand-new')
+    expect(notify.mock.calls[0][0]).toContain('sync: true')
+  })
+
+  it('stays silent when sync: false was passed', async () => {
+    const notify = vi.fn()
+    const ab = new AntiDetectBrowser({ key: 'adb_test', notify })
+    await ab.launch({ profile: 'brand-new', sync: false })
+
+    expect(notify).not.toHaveBeenCalled()
+    expect(getProfileSpy).not.toHaveBeenCalled()
+  })
+
+  it('stays silent for a temporary profile', async () => {
+    const notify = vi.fn()
+    const ab = new AntiDetectBrowser({ key: 'adb_test', notify })
+    await ab.launch({ profile: 'task-1', temporary: true })
+
+    expect(notify).not.toHaveBeenCalled()
+  })
+
+  it('stays silent when the plan has no cloud sync', async () => {
+    licenseSpy.mockResolvedValue({ token: 'tok', exp: Math.floor(Date.now() / 1000) + 86400, mi: 1, sync: false })
+    const notify = vi.fn()
+    const ab = new AntiDetectBrowser({ key: 'adb_test', notify })
+    await ab.launch({ profile: 'brand-new' })
+
+    expect(notify).not.toHaveBeenCalled()
+  })
+
+  it('stays silent when the profile already syncs', async () => {
+    const notify = vi.fn()
+    const ab = new AntiDetectBrowser({ key: 'adb_test', notify })
+    await ab.launch({ profile: 'amazon-us' })
+
+    expect(notify).not.toHaveBeenCalled()
+  })
+
+  it('stays silent on a transient probe failure', async () => {
+    getProfileSpy.mockRejectedValueOnce(new Error('fetch failed'))
+    const notify = vi.fn()
+    const ab = new AntiDetectBrowser({ key: 'adb_test', notify })
+    await ab.launch({ profile: 'amazon-us' })
+
+    expect(notify).not.toHaveBeenCalled()
+  })
+
+  it('fires only once across repeated launches of the same name', async () => {
+    getProfileSpy.mockRejectedValue(new Error('Failed to get profile: HTTP 404. '))
+    const notify = vi.fn()
+    const ab = new AntiDetectBrowser({ key: 'adb_test', notify })
+    await ab.launch({ profile: 'brand-new' })
+    await ab.close()
+    await ab.launch({ profile: 'brand-new' })
+    await ab.close()
+    await ab.launch({ profile: 'brand-new' })
+
+    expect(notify).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('launch temporary flag', () => {
+  beforeEach(() => {
+    openProfileSpy.mockClear()
+    getProfileSpy.mockClear()
+  })
+
+  it('passes the constructor default through to openProfile', async () => {
+    const ab = new AntiDetectBrowser({ key: 'adb_test', temporary: true })
+    await ab.launch({ profile: 'task-1' })
+
+    expect(openProfileSpy.mock.calls[0][0]).toMatchObject({ temporary: true })
+    expect(getProfileSpy).not.toHaveBeenCalled()
+  })
+
+  it('lets a single launch override the constructor default', async () => {
+    const ab = new AntiDetectBrowser({ key: 'adb_test', temporary: true })
+    await ab.launch({ profile: 'amazon-us', temporary: false })
+
+    expect(openProfileSpy.mock.calls[0][0]).toMatchObject({ temporary: false })
+    expect(getProfileSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('defaults to false', async () => {
+    const ab = new AntiDetectBrowser({ key: 'adb_test' })
+    await ab.launch({ profile: 'amazon-us' })
+
+    expect(openProfileSpy.mock.calls[0][0]).toMatchObject({ temporary: false })
+  })
+
+  it('rejects a temporary profile that also asks for sync', async () => {
+    const ab = new AntiDetectBrowser({ key: 'adb_test', temporary: true })
+    await expect(ab.launch({ profile: 'task-1', sync: true })).rejects.toThrow(/temporary/i)
+  })
+
+  // The rejection has to land before anything is issued server-side, or a
+  // retry loop mints one live proxy credential per rejected attempt.
+  it('issues no proxy ticket for a rejected option combination', async () => {
+    const { issueProxyTicket } = await import('../src/api')
+    ;(issueProxyTicket as any).mockClear()
+    const ab = new AntiDetectBrowser({ key: 'adb_test', temporary: true })
+    await expect(ab.launch({ profile: 'task-1', sync: true, proxyId: 'px1' })).rejects.toThrow(/temporary/i)
+    expect(issueProxyTicket).not.toHaveBeenCalled()
   })
 })
 

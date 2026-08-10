@@ -4,6 +4,29 @@ All notable changes to the `antibrow` Python SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-08-10
+
+### Added
+
+- `temporary=True` on `launch()` and `launch_async()`: profiles land in a
+  separate tree that profile managers never enumerate. Recommended for
+  automation.
+- `clear_temporary_profiles()` and `python -m antibrow clear-temp`.
+- `get_profile_archive_upload_url()`: signs an upload slot without also signing
+  a download. Used for the re-sign after a browser exits.
+
+### Changed
+
+- A launch no longer creates a cloud profile by itself. A profile syncs when the
+  server already knows the name; pass `sync=True` to create it, `sync=False`
+  to stay local. Profiles that already sync are unaffected.
+- `sync=True` on a plan whose license does not include cloud sync now raises,
+  where it previously would have silently proceeded without syncing.
+- A default launch of a name the server has never seen, on a plan that supports
+  sync, now reports (once per name per process) that the profile is local-only
+  and how to opt it into cloud sync - printed to stdout, or sent to
+  `on_progress` instead when the caller supplied one.
+
 ## [0.6.0] - 2026-08-10
 
 0.5.0 was tagged but never reached PyPI, so this release carries its changes too.
@@ -20,6 +43,13 @@ All notable changes to the `antibrow` Python SDK. Format follows
 - `DeviceType`, `fetch_real_device`, `kernel_supports_android`,
   `kernel_version_at_least` and `ANDROID_MIN_KERNEL_VERSION` / `_BUILD` are
   exported from the package root, matching the Node SDK.
+
+### Changed
+
+- `headless=True` on Windows no longer shrinks the window to 1x1, it only moves
+  it off-screen. The 1x1 window took the viewport down with it, so pages laid
+  out at 1px wide and `innerWidth` contradicted the spoofed `screen.width`. An
+  Android profile now keeps its persona screen size while hidden.
 
 ### Security
 

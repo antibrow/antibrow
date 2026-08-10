@@ -4,6 +4,27 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.6.0] - 2026-08-10
+
+### Added
+
+- `temporary` on the constructor and on `launch()`: profiles land in a separate
+  tree that profile managers never enumerate. Recommended for automation.
+- `clearTemporaryProfiles()` and `anti-detect-browser --clear-temp`.
+- `getProfileArchiveUploadUrl()`: signs an upload slot without also signing a
+  download. Used for the re-sign after a browser exits.
+
+### Changed
+
+- A launch no longer creates a cloud profile by itself. A profile syncs when the
+  server already knows the name; pass `sync: true` to create it, `sync: false`
+  to stay local. Profiles that already sync are unaffected.
+- `sync: true` on a plan whose license does not include cloud sync now throws,
+  where it previously would have silently proceeded without syncing.
+- A default launch of a name the server has never seen, on a plan that supports
+  sync, now prints one notice (via `notify`, once per name per process) that the
+  profile is local-only and how to opt it into cloud sync.
+
 ## [2.5.0] - 2026-08-10
 
 ### Added
@@ -16,6 +37,19 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
 - `realFingerprint: true` draws a new profile's identity from the device library
   instead of generating one (paid plans).
 - The MCP tools `launch_browser` and `create_profile` accept both options.
+
+### Changed
+
+- `launch({ label })` is drawn by the kernel in front of the address bar instead
+  of being injected into the page. The old `#__anti-detect-label` element was a
+  fixed-position div any script on the page could read back, which defeated the
+  point of spoofing in the engine. `color` no longer has an effect, and the
+  `installLabel` / `labelOptions` exports are gone.
+- `headless: true` on Windows no longer shrinks the window to 1x1, it only moves
+  it off-screen. The 1x1 window took the viewport down with it (a desktop
+  fp-config does not spoof `outerWidth`), so pages laid out at 1px wide and
+  `innerWidth` contradicted the spoofed `screen.width`. An Android profile now
+  keeps its persona screen size while hidden.
 
 ### Security
 

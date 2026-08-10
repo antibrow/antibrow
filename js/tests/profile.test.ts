@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdirSync, rmSync, existsSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { tmpdir } from 'node:os'
+import fs from 'node:fs'
+import path from 'node:path'
 import {
   getProfileDir,
   getProfilesDir,
@@ -99,6 +101,22 @@ describe('profile management', () => {
     it('should not throw if directory already exists', () => {
       const result = ensureCacheDir(testCacheDir)
       expect(existsSync(result)).toBe(true)
+    })
+  })
+
+  describe('temporary tree helpers', () => {
+    it('routes every helper to profiles-temp when asked', () => {
+      expect(getProfilesDir(testCacheDir, { temporary: true }))
+        .toBe(path.join(testCacheDir, 'profiles-temp'))
+
+      const dir = getProfileDir('task-1', testCacheDir, { temporary: true })
+      expect(dir.startsWith(path.join(testCacheDir, 'profiles-temp') + path.sep)).toBe(true)
+      expect(fs.existsSync(dir)).toBe(true)
+
+      expect(listProfiles(testCacheDir, { temporary: true })).toEqual(['task-1'])
+      expect(listProfiles(testCacheDir)).toEqual([])
+      expect(profileExists('task-1', testCacheDir, { temporary: true })).toBe(true)
+      expect(profileExists('task-1', testCacheDir)).toBe(false)
     })
   })
 })

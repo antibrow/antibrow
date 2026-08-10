@@ -39,6 +39,7 @@ That is a real Chromium — with a real device's fingerprint, its own persistent
 - [Proxies](#proxies)
 - [Framework integrations](#framework-integrations)
   - [Playwright](#playwright) · [Puppeteer / Node](#coming-from-puppeteer-or-the-node-sdk) · [browser-use](#browser-use) · [crawl4ai](#crawl4ai) · [Scrapling](#scrapling) · [MCP](#ai-agents-and-mcp) · [Selenium](#selenium)
+- [Running automation at scale](#running-automation-at-scale)
 - [Docker](#docker)
 - [CLI](#cli)
 - [Platform support](#platform-support)
@@ -440,6 +441,54 @@ The Node package ships an MCP server out of the box (`npx anti-detect-browser --
 
 Selenium cannot attach to a CDP-only endpoint without a matching chromedriver, so there is no supported Selenium binding today. If you are migrating, the Playwright section above is the shortest path; open an issue if chromedriver support matters to you.
 
+## Running automation at scale
+
+Automation tends to mint a profile per task. Pass `temporary=True` so those
+profiles land in their own directory tree, out of the way of the profiles you
+actually manage:
+
+```python
+from antibrow import launch, clear_temporary_profiles
+
+for task in tasks:
+    browser = launch(f"task-{task.id}", temporary=True)
+    page = browser.new_page()
+    page.goto(task.url)
+    browser.close()
+
+# Temporary profiles are never deleted for you.
+removed = clear_temporary_profiles(older_than_days=7)
+print(f"removed {len(removed)} temporary profiles")
+```
+
+Three things to know:
+
+- **They do not show up in the desktop app.** The desktop app only reads the
+  managed tree, so a temporary profile is invisible to it.
+- **The two trees are separate namespaces.** A temporary `gmail` and a managed
+  `gmail` are two different profiles with their own identity and cookies.
+- **Nothing is deleted automatically.** A temporary profile keeps its identity
+  and its logins for as long as you leave it on disk, which is what makes it
+  reusable. Clear them yourself with `clear_temporary_profiles()` or
+  `python -m antibrow clear-temp --older-than=7`.
+
+Per launch, `temporary=False` puts one profile back in the managed tree.
+
+### Cloud sync
+
+A launch never creates a cloud profile on its own. By default a profile syncs
+only when the server already knows the name, so an automation run cannot fill
+your sync quota with profiles you never meant to keep. To put a new profile in
+the cloud, ask for it:
+
+```python
+launch("main-account", sync=True)    # create + sync
+launch("main-account", sync=False)   # stay local
+```
+
+`sync=True` and `temporary=True` are mutually exclusive; passing both raises.
+`sync=True` also raises when your plan does not include cloud sync.
+
 ## Docker
 
 The Linux kernel runs headful under Xvfb - real headless Chromium has its own fingerprint, so the image renders to a virtual display instead. The image below works on both `linux/amd64` and `linux/arm64`; the matching kernel build is chosen from the container's CPU, so nothing here is architecture-specific.
@@ -470,6 +519,7 @@ Mounting the cache volume keeps the kernel (and your profiles) between runs. The
 python -m antibrow install [--version 150.0.7871.182] [--force]   # get the kernel
 python -m antibrow info                                           # kernels, profiles, license
 python -m antibrow login [--key ab_live_…]                        # store an API key
+python -m antibrow clear-temp [--older-than 7] [--dry-run]        # delete temporary profiles
 python -m antibrow version                                        # SDK + default kernel
 ```
 

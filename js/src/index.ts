@@ -1,6 +1,19 @@
 export { AntiDetectBrowser } from './browser'
-export { listProfiles, profileExists, getProfileDir, listProfileEntries } from './profile'
-export { installLabel, labelOptions, type LabelOptions } from './label'
+export {
+  listProfiles,
+  profileExists,
+  getProfileDir,
+  listProfileEntries,
+  getProfilesDir,
+  TEMPORARY_PROFILES_DIR,
+  type ProfileRootOptions,
+} from './profile'
+export {
+  clearTemporaryProfiles,
+  temporaryProfileLastUsed,
+  type ClearTemporaryOptions,
+  type ClearedTemporaryProfile,
+} from './temporary-profiles'
 export {
   createProfile,
   updateProfile,
@@ -11,6 +24,7 @@ export {
   syncPullProfiles,
   getProfileForLaunch,
   getProfileArchiveUrls,
+  getProfileArchiveUploadUrl,
   listProxies,
   claimManagedProxy,
   releaseManagedProxy,

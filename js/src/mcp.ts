@@ -20,6 +20,11 @@ import {
 import { rmSync } from 'node:fs'
 import type { McpSession } from './types'
 
+/** The tree a profile tool should act on. Anything but `true` means managed. */
+export function mcpRootOptions(args: Record<string, unknown> | undefined): { temporary: boolean } {
+  return { temporary: args?.temporary === true }
+}
+
 /** Start the MCP server over stdio. */
 export async function startMcpServer(): Promise<void> {
   const apiKey = process.env.ANTI_DETECT_BROWSER_KEY
@@ -60,19 +65,19 @@ export async function startMcpServer(): Promise<void> {
     tools: [
       {
         name: 'launch_browser',
-        description: 'Launch a new anti-detect browser instance with a spoofed fingerprint. Auto-creates a profile if it does not exist.',
+        description: 'Launch a new anti-detect browser instance with a spoofed fingerprint. Auto-creates a profile if it does not exist. For automation runs, set temporary: true so the profile stays out of the desktop app list.',
         inputSchema: {
           type: 'object' as const,
           properties: {
             profile: { type: 'string', description: 'Profile name (required). Server assigns a fingerprint automatically.' },
             tags: { type: 'array', items: { type: 'string' }, description: 'Tags stored on profile metadata when creating a new profile' },
-            label: { type: 'string', description: 'Label text shown in browser window' },
-            color: { type: 'string', description: 'Theme color in hex format (e.g., #e74c3c)' },
+            label: { type: 'string', description: "Text the kernel shows in front of the address bar, so windows are tellable apart. Defaults to the profile name." },
             proxy: { type: 'string', description: 'Proxy URL (protocol://user:pass@host:port)' },
             proxyId: { type: 'string', description: 'Managed proxy id to use (activates it and meters monthly quota). Get one via list_proxies / claim_proxy.' },
             headless: { type: 'boolean', description: 'Run in headless mode' },
             deviceType: { type: 'string', enum: ['desktop', 'android'], description: 'Simulate an Android phone (running on this desktop/server, not on a physical device) instead of a desktop browser. Applies only when the profile is first created; an existing profile keeps its own device type.' },
             realFingerprint: { type: 'boolean', description: 'Draw the identity from the Captured-machine fingerprint library instead of generating one. Requires a paid plan; the server rejects this on free plans. Applies only when the profile is first created.' },
+            temporary: { type: 'boolean', description: 'Use the temporary profile tree. Recommended for automation: temporary profiles are local-only and do not appear in the desktop app profile list. They persist on disk and are never deleted automatically.' },
           },
           required: ['profile'],
         },
@@ -101,7 +106,9 @@ export async function startMcpServer(): Promise<void> {
         description: 'List local browser profiles. Profiles are stored on disk and unlimited.',
         inputSchema: {
           type: 'object' as const,
-          properties: {},
+          properties: {
+            temporary: { type: 'boolean', description: 'Use the temporary profile tree. Recommended for automation: temporary profiles are local-only and do not appear in the desktop app profile list. They persist on disk and are never deleted automatically.' },
+          },
         },
       },
       {
@@ -113,6 +120,7 @@ export async function startMcpServer(): Promise<void> {
             name: { type: 'string', description: 'Profile name (must be unique on this machine)' },
             deviceType: { type: 'string', enum: ['desktop', 'android'], description: 'Simulate an Android phone (running on this desktop/server, not on a physical device) instead of a desktop browser.' },
             realFingerprint: { type: 'boolean', description: 'Draw the identity from the Captured-machine fingerprint library instead of generating one. Requires a paid plan; the server rejects this on free plans.' },
+            temporary: { type: 'boolean', description: 'Use the temporary profile tree. Recommended for automation: temporary profiles are local-only and do not appear in the desktop app profile list. They persist on disk and are never deleted automatically.' },
           },
           required: ['name'],
         },
@@ -124,6 +132,7 @@ export async function startMcpServer(): Promise<void> {
           type: 'object' as const,
           properties: {
             name: { type: 'string', description: 'Profile name to delete' },
+            temporary: { type: 'boolean', description: 'Use the temporary profile tree. Recommended for automation: temporary profiles are local-only and do not appear in the desktop app profile list. They persist on disk and are never deleted automatically.' },
           },
           required: ['name'],
         },
@@ -253,12 +262,12 @@ export async function startMcpServer(): Promise<void> {
             profile: args?.profile as string,
             tags: args?.tags as string[] | undefined,
             label: args?.label as string | undefined,
-            color: args?.color as string | undefined,
             proxy: args?.proxy as string | undefined,
             proxyId: args?.proxyId as string | undefined,
             headless: args?.headless as boolean | undefined,
             deviceType: args?.deviceType as 'desktop' | 'android' | undefined,
             realFingerprint: args?.realFingerprint as boolean | undefined,
+            temporary: mcpRootOptions(args).temporary,
           })
 
           const sessionId = `session_${++sessionCounter}`
@@ -321,7 +330,7 @@ export async function startMcpServer(): Promise<void> {
         }
 
         case 'list_profiles': {
-          const names = listProfiles(cacheDir)
+          const names = listProfiles(cacheDir, mcpRootOptions(args))
           return {
             content: [{ type: 'text' as const, text: JSON.stringify(names, null, 2) }],
           }
@@ -332,7 +341,7 @@ export async function startMcpServer(): Promise<void> {
           if (!name) {
             return { content: [{ type: 'text' as const, text: 'Profile name is required' }], isError: true }
           }
-          const profileDir = getProfileDir(name, cacheDir)
+          const profileDir = getProfileDir(name, cacheDir, mcpRootOptions(args))
           // The Android kernel exists only in the manifest, and a fresh MCP
           // process has an empty catalogue - without this the pin below would
           // resolve to the compiled-in default every time.
@@ -362,7 +371,7 @@ export async function startMcpServer(): Promise<void> {
           if (!name) {
             return { content: [{ type: 'text' as const, text: 'Profile name is required' }], isError: true }
           }
-          const profileDir = getProfileDir(name, cacheDir)
+          const profileDir = getProfileDir(name, cacheDir, mcpRootOptions(args))
           rmSync(profileDir, { recursive: true, force: true })
           return {
             content: [{ type: 'text' as const, text: `Profile "${name}" deleted from disk` }],

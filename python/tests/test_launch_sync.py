@@ -60,18 +60,27 @@ def free_license(monkeypatch):
 @pytest.fixture
 def server_stub(monkeypatch):
     """Record archive calls and hand out presigned URLs."""
-    calls = {"ensure": [], "sign": []}
+    calls = {"ensure": [], "sign": [], "sign_upload": []}
 
-    def ensure(api_key, server=None, *, name, tags=None):
+    # `create` is False on a default launch: a launch only looks the profile up,
+    # it never spends a cloud-sync slot on a name nobody asked to keep.
+    def ensure(api_key, server=None, *, name, tags=None, create=True, probe_status=None):
         calls["ensure"].append(name)
+        if probe_status is not None:
+            probe_status.append(200)
         return True
 
     def sign(api_key, server=None, *, name):
         calls["sign"].append(name)
         return ArchiveUrls(download_url="https://r2/get", upload_url="https://r2/put")
 
+    def sign_upload(api_key, server=None, *, name):
+        calls["sign_upload"].append(name)
+        return "https://r2/put"
+
     monkeypatch.setattr(B._sync, "ensure_server_profile", ensure)
     monkeypatch.setattr(B._sync, "get_profile_archive_urls", sign)
+    monkeypatch.setattr(B._sync, "get_profile_archive_upload_url", sign_upload)
     return calls
 
 
@@ -166,6 +175,46 @@ def test_a_failed_restore_does_not_break_the_launch(tmp_path, fake_kernel, paid_
     assert "HTTP 500" in events[-1].error
 
 
+# -- local-only notice, through the real launch path ----------------------
+#
+# `_restore_archive` is exercised directly (and more exhaustively) in
+# test_launch_temporary.py; these two go through `prepare_launch` itself to
+# pin the one thing that matters for a bare `launch("name")` call: the
+# notice must reach the user even though nothing else in this function does
+# without an explicit `on_progress`.
+
+
+def _unknown_name(monkeypatch) -> None:
+    def ensure(api_key, server=None, *, name, tags=None, create=True, probe_status=None):
+        if probe_status is not None:
+            probe_status.append(404)
+        return False
+
+    monkeypatch.setattr(B._sync, "ensure_server_profile", ensure)
+
+
+def test_a_bare_launch_prints_the_local_only_notice_to_stdout(tmp_path, fake_kernel, paid_license, monkeypatch, capsys):
+    _unknown_name(monkeypatch)
+
+    plan = plan_for(tmp_path)
+
+    assert plan.archive is None
+    out = capsys.readouterr().out
+    assert "local-only" in out
+    assert "sync=True" in out
+
+
+def test_an_on_progress_caller_gets_it_there_instead_of_stdout(tmp_path, fake_kernel, paid_license, monkeypatch, capsys):
+    _unknown_name(monkeypatch)
+    messages = []
+
+    plan = plan_for(tmp_path, on_progress=messages.append)
+
+    assert plan.archive is None
+    assert capsys.readouterr().out == ""
+    assert any("local-only" in m for m in messages)
+
+
 # -- upload on close ------------------------------------------------------
 
 
@@ -229,8 +278,11 @@ def test_upload_runs_after_the_kernel_is_gone_with_a_freshly_signed_url(tmp_path
 
     assert log.index("kernel-gone") < log.index("uploaded")
     assert uploads == ["https://r2/put"]
-    # Signed again at exit rather than reusing the launch-time signature.
-    assert len(server_stub["sign"]) == signed_at_launch + 1
+    # Signed again at exit rather than reusing the launch-time signature - and
+    # through the upload-only route, which spares the server a HEAD on an object
+    # this upload is about to replace.
+    assert server_stub["sign_upload"] == ["p1"]
+    assert len(server_stub["sign"]) == signed_at_launch
     assert session.sync_error is None
 
 

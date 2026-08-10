@@ -40,8 +40,8 @@ export { fetchRealDevice } from './devices'
 export type { RealDevice } from './devices'
 export { getLicenseToken, fetchLicenseToken, type LicenseInfo } from './license'
 export { lookupProxyGeo as lookupEngineProxyGeo, probeProxyExit, type ProxyGeo, type ProxyProbeResult } from './geoip'
-export { resolveProfileDir, resolveProfileDirSync, listProfileEntries, readProfileMeta, writeProfileMeta, sanitizeProfileName } from './profile-dir'
-export type { ProfileEntry, ProfileMeta, ResolvedProfile } from './profile-dir'
+export { resolveProfileDir, resolveProfileDirSync, listProfileEntries, readProfileMeta, writeProfileMeta, sanitizeProfileName, profilesRoot, TEMPORARY_PROFILES_DIR } from './profile-dir'
+export type { ProfileEntry, ProfileMeta, ResolvedProfile, ProfileRootOptions } from './profile-dir'
 
 export function defaultCacheDir(): string {
   return path.join(os.homedir(), '.anti-detect-browser')
@@ -74,6 +74,8 @@ export interface OpenProfileOptions {
   cacheDir?: string
   /** Explicit profile directory; takes precedence over cacheDir + profileName. */
   profileDir?: string
+  /** Use the temporary profile tree. Never touches the server. */
+  temporary?: boolean
   /** For new profiles only; existing ones use their persona's version. */
   kernelVersion?: string
   /** Pull a newer build of this profile's kernel before launching. */
@@ -160,6 +162,7 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
         profileName: opts.profileName,
         key: opts.key,
         server: opts.server,
+        temporary: opts.temporary,
         onProgress: opts.onProgress,
       })
   const profileDir = resolved.dir

@@ -19,10 +19,11 @@ from __future__ import annotations
 import asyncio
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from . import config as _config
 from . import devices as _devices
@@ -159,6 +160,7 @@ def prepare_launch(
     device_type: Optional[DeviceType] = None,
     real_fingerprint: bool = False,
     sync: Optional[bool] = None,
+    temporary: bool = False,
     on_sync: Optional[SyncCallback] = None,
     on_progress: Optional[ProgressCallback] = None,
 ) -> LaunchPlan:
@@ -168,6 +170,24 @@ def prepare_launch(
     can inspect the exact command line without a browser.
     """
     notify = on_progress or (lambda _message: None)
+
+    # Checked before anything is created or fetched: temporary+sync=True is a
+    # pure contradiction that never needs a license or a directory to detect,
+    # so a typo'd combination costs nothing instead of leaving an orphaned
+    # profiles-temp/<name>/ behind.
+    _reject_temporary_sync(temporary, sync)
+
+    # The license comes first because its `sync` flag decides whether there is a
+    # cloud archive to restore, and because rejecting an unsupported plan has to
+    # happen before the profile directory exists.
+    notify("Obtaining license token")
+    license_info = get_license_token(
+        api_key,
+        server,
+        license_token=license_token,
+        license_provider=license_provider,
+    )
+    _reject_unsynced_plan(sync, license_info.sync)
 
     root = Path(cache_dir).expanduser() if cache_dir else _config.default_cache_dir()
     if profile_dir:
@@ -180,21 +200,14 @@ def prepare_launch(
         # arguments would silently skip the lookup and strand this profile on a
         # local id the Node SDK never resolves to.
         resolved = resolve_profile_dir(
-            profile, root, api_key=resolve_api_key(api_key), server=server or _config.default_server()
+            profile,
+            root,
+            api_key=resolve_api_key(api_key),
+            server=server or _config.default_server(),
+            temporary=temporary,
         )
         directory, resolved_name = resolved.dir, resolved.name
     directory.mkdir(parents=True, exist_ok=True)
-
-    # The license comes first because its `sync` flag decides whether there is a
-    # cloud archive to restore, and the restore has to land before the persona is
-    # read - persona.json is itself part of the archive.
-    notify("Obtaining license token")
-    license_info = get_license_token(
-        api_key,
-        server,
-        license_token=license_token,
-        license_provider=license_provider,
-    )
 
     archive = _restore_archive(
         profile_name=resolved_name,
@@ -203,8 +216,10 @@ def prepare_launch(
         server=server,
         license_info=license_info,
         sync=sync,
+        temporary=temporary,
         on_sync=on_sync,
         notify=notify,
+        on_progress=on_progress,
     )
 
     # Kernels published after this SDK was built are only known from the manifest,
@@ -369,6 +384,50 @@ def _assert_android_kernel(version: Optional[str], build: Optional[str]) -> None
     )
 
 
+def _reject_temporary_sync(temporary: bool, sync: Optional[bool]) -> None:
+    """A temporary profile has no cloud counterpart to sync to.
+
+    Pure - no license or directory needed - so both `prepare_launch` (before
+    doing any I/O) and `_restore_archive` (exercised directly by tests) can
+    call this and never drift apart on what counts as a conflict.
+    """
+    if temporary and sync is True:
+        raise ValueError(
+            "A temporary profile cannot be synced. Drop temporary= or drop sync=True."
+        )
+
+
+def _reject_unsynced_plan(sync: Optional[bool], license_sync: bool) -> None:
+    """`sync=True` on a plan without cloud sync is a hard error, not a silent no-op."""
+    if sync is True and not license_sync:
+        raise ValueError("Cloud sync is not available on your plan.")
+
+
+_local_only_notified: Set[str] = set()
+_local_only_notified_lock = threading.Lock()
+
+
+def _notify_local_only(name: str, on_progress: Optional[ProgressCallback]) -> None:
+    """Once per profile name per process.
+
+    Unlike every other message in this module, this one is not gated behind
+    ``on_progress`` being set: those describe work in flight and are fine to
+    drop when nobody is listening, but this one reports data loss that
+    already happened silently - the caller who never wired a callback is
+    exactly who needs to see it. A caller who did wire one gets it there
+    instead, so they are not also hit with an uncontrolled print.
+    """
+    with _local_only_notified_lock:
+        if name in _local_only_notified:
+            return
+        _local_only_notified.add(name)
+    message = 'Profile "{0}" is local-only; pass sync=True to sync it to the cloud.'.format(name)
+    if on_progress is not None:
+        on_progress(message)
+    else:
+        print(message)
+
+
 def _restore_archive(
     *,
     profile_name: str,
@@ -377,18 +436,32 @@ def _restore_archive(
     server: Optional[str],
     license_info: LicenseInfo,
     sync: Optional[bool],
+    temporary: bool,
     on_sync: Optional[SyncCallback],
     notify: ProgressCallback,
+    on_progress: Optional[ProgressCallback] = None,
 ) -> Optional[ArchivePlan]:
     """Claim this profile's cloud archive slot and restore what is in it.
 
     Returns None whenever the profile is local-only, which is the normal outcome
-    for a free plan, ``sync=False``, a pre-minted token with no key, or a server
-    that cannot be reached. Sync failures are reported, never raised: a launch
-    must still work from the local profile directory.
+    for a temporary profile, a free plan, ``sync=False``, a pre-minted token with
+    no key, or a server that cannot be reached. Sync failures are reported, never
+    raised: a launch must still work from the local profile directory.
+
+    ``on_progress`` is the caller's raw callback (unlike ``notify``, which is
+    already defaulted to a no-op) - passed through only so the local-only
+    notice can fall back to stdout when nobody is listening.
+
+    `prepare_launch` already rejects the illegal combinations before this runs;
+    the checks are repeated here so a direct call - as the tests make - still
+    enforces them.
     """
+    _reject_temporary_sync(temporary, sync)
+    if temporary:
+        return None
     if sync is False:
         return None
+    _reject_unsynced_plan(sync, license_info.sync)
     if sync is None and not license_info.sync:
         return None
 
@@ -396,7 +469,19 @@ def _restore_archive(
     if not key:
         return None
 
-    if not _sync.ensure_server_profile(key, server, name=profile_name):
+    # A launch never creates a cloud profile on its own: an automation run that
+    # mints a name per task would fill the account's sync quota with profiles
+    # nobody asked to keep.
+    probe_status: List[int] = []
+    known = _sync.ensure_server_profile(
+        key, server, name=profile_name, create=sync is True, probe_status=probe_status
+    )
+    if not known:
+        # A confirmed 404 (not a dropped connection) on a default launch means
+        # this name silently stayed local-only - worth a nudge, since the
+        # caller only finds out the hard way, on another machine.
+        if sync is None and probe_status == [404]:
+            _notify_local_only(profile_name, on_progress)
         return None
     urls = _sync.get_profile_archive_urls(key, server, name=profile_name)
     if not urls:
@@ -405,7 +490,7 @@ def _restore_archive(
     plan = ArchivePlan(
         profile=profile_name,
         can_upload=bool(urls.upload_url),
-        sign_upload=lambda: _sync.get_profile_archive_urls(key, server, name=profile_name).upload_url,
+        sign_upload=lambda: _sync.get_profile_archive_upload_url(key, server, name=profile_name),
         on_event=on_sync,
         version=urls.version,
     )
@@ -885,6 +970,7 @@ def launch(
     device_type: Optional[DeviceType] = None,
     real_fingerprint: bool = False,
     sync: Optional[bool] = None,
+    temporary: bool = False,
     on_sync: Optional[SyncCallback] = None,
     reuse_initial_page: bool = True,
     timeout: float = DEFAULT_LAUNCH_TIMEOUT,
@@ -944,6 +1030,10 @@ def launch(
             it after closing, so another machine opens the same cookies, storage
             and passkeys. Default (``None``) follows the plan the API key is on;
             ``False`` keeps this launch local; ``True`` attempts it regardless.
+        temporary: Put this profile in the temporary tree. Temporary profiles
+            are local-only, do not appear in the desktop app profile list, and
+            are never deleted automatically - clear them with
+            ``clear_temporary_profiles()``.
         on_sync: Called with a :class:`SyncEvent` as each transfer starts and
             finishes. Sync problems are reported here and on
             ``session.sync_error``, never raised.
@@ -979,6 +1069,7 @@ def launch(
         device_type=device_type,
         real_fingerprint=real_fingerprint,
         sync=sync,
+        temporary=temporary,
         on_sync=on_sync,
         on_progress=on_progress,
     )
@@ -1026,6 +1117,7 @@ async def launch_async(
     device_type: Optional[DeviceType] = None,
     real_fingerprint: bool = False,
     sync: Optional[bool] = None,
+    temporary: bool = False,
     on_sync: Optional[SyncCallback] = None,
     reuse_initial_page: bool = True,
     timeout: float = DEFAULT_LAUNCH_TIMEOUT,
@@ -1068,6 +1160,7 @@ async def launch_async(
             device_type=device_type,
             real_fingerprint=real_fingerprint,
             sync=sync,
+            temporary=temporary,
             on_sync=on_sync,
             on_progress=on_progress,
         )

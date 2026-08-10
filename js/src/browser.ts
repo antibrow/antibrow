@@ -5,6 +5,7 @@ import type {
   LiveViewStreamOptions,
 } from './types'
 import {
+  getProfile,
   getOrCreateProfile,
   activateProxy,
   managedProxyToRelayUrl,
@@ -12,6 +13,7 @@ import {
   revokeProxyTicket,
   DEFAULT_RELAY_HOST,
   getProfileArchiveUrls,
+  getProfileArchiveUploadUrl,
 } from './api'
 import { ensureCacheDir } from './profile'
 import {
@@ -28,7 +30,33 @@ import {
 } from './engine'
 import { LiveViewStream, registerLiveSession, unregisterLiveSession, heartbeatLiveSession } from './liveview'
 import { checkClientVersion, SDK_VERSION, type VersionCheckResult } from './version'
-import { installLabel, labelOptions } from './label'
+import { clearTemporaryProfiles, type ClearTemporaryOptions, type ClearedTemporaryProfile } from './temporary-profiles'
+
+export type SyncMode = 'off' | 'existing' | 'create'
+
+/**
+ * A launch never creates a cloud profile on its own: an automation run that
+ * mints a name per task would otherwise fill the account's sync quota with
+ * profiles nobody asked to keep.
+ */
+export function resolveSyncMode(input: {
+  temporary: boolean
+  sync?: boolean
+  licenseSync: boolean
+}): SyncMode {
+  if (input.temporary) {
+    if (input.sync === true) {
+      throw new Error('A temporary profile cannot be synced. Drop `temporary` or drop `sync: true`.')
+    }
+    return 'off'
+  }
+  if (input.sync === false) return 'off'
+  if (input.sync === true) {
+    if (!input.licenseSync) throw new Error('Cloud sync is not available on your plan.')
+    return 'create'
+  }
+  return input.licenseSync ? 'existing' : 'off'
+}
 
 export interface BuildOpenProfileOptionsInput {
   key?: string
@@ -40,17 +68,18 @@ export interface BuildOpenProfileOptionsInput {
   getArchivePutUrl?: () => Promise<string | undefined>
   cacheDir?: string
   profileDir?: string
+  temporary: boolean
   options: LaunchOptions
 }
 
 /**
  * Assembles the engine's `openProfile()` call from a `launch()` invocation.
  * Pulled out as a pure function so the device-option plumbing (deviceType,
- * realFingerprint) is testable without starting a browser: feed it
+ * realFingerprint, label) is testable without starting a browser: feed it
  * deterministic inputs and assert on the object it returns.
  */
 export function buildOpenProfileOptions(input: BuildOpenProfileOptionsInput): OpenProfileOptions {
-  const { key, server, profileName, licenseToken, proxyUrl, archive, getArchivePutUrl, cacheDir, profileDir, options } = input
+  const { key, server, profileName, licenseToken, proxyUrl, archive, getArchivePutUrl, cacheDir, profileDir, temporary, options } = input
   return {
     key,
     server,
@@ -65,10 +94,12 @@ export function buildOpenProfileOptions(input: BuildOpenProfileOptionsInput): Op
     getArchivePutUrl,
     cacheDir: profileDir ? undefined : cacheDir,
     profileDir,
+    temporary,
     headless: options.headless,
     updateKernelBeforeLaunch: options.updateKernelBeforeLaunch,
     deviceType: options.deviceType,
     realFingerprint: options.realFingerprint,
+    label: options.label,
   }
 }
 
@@ -79,6 +110,7 @@ export class AntiDetectBrowser {
   private readonly relayUrl: string
   private readonly proxyHost: string
   private readonly notify: (message: string) => void
+  private readonly temporary: boolean
   private activeSessions: Map<string, {
     session: EngineSession
     profileName: string
@@ -88,9 +120,11 @@ export class AntiDetectBrowser {
   }> = new Map()
   private versionCheckPromise?: Promise<VersionCheckResult>
   private versionWarned = false
-  /** Profiles already ensured server-side this process; keeps relaunches cheap. */
-  private ensuredProfiles: Set<string> = new Set()
+  /** Sync conclusion per `<mode>:<name>`, so a relaunch loop probes the server once. */
+  private syncedProfiles: Map<string, boolean> = new Map()
   private kernelUpdateChecked = false
+  /** Local-only notice already printed for this name, so a relaunch loop prints it once. */
+  private localOnlyNotified: Set<string> = new Set()
 
   constructor(options: AntiDetectBrowserOptions) {
     if (!options.key) {
@@ -102,6 +136,7 @@ export class AntiDetectBrowser {
     this.relayUrl = options.relayUrl || 'wss://liveview-relay.antibrow.com'
     this.proxyHost = options.proxyHost || DEFAULT_RELAY_HOST
     this.notify = options.notify ?? ((m) => console.log(m))
+    this.temporary = options.temporary ?? false
   }
 
   async launch(options: LaunchOptions): Promise<LaunchResult> {
@@ -130,6 +165,11 @@ export class AntiDetectBrowser {
     // Concurrency is capped by the kernel, not here.
     const license = await getLicenseToken({ key: this.key, server: this.server })
 
+    // Resolved before anything is issued server-side: a rejected combination
+    // must not leave a live proxy ticket behind.
+    const temporary = options.temporary ?? this.temporary
+    const syncMode = resolveSyncMode({ temporary, sync: options.sync, licenseSync: license.sync })
+
     let proxyUrl: string | undefined = options.proxy
     let ticket: { proxyId: string; ticketId: string } | undefined
     if (options.proxyId) {
@@ -155,23 +195,10 @@ export class AntiDetectBrowser {
       ? readProfileMeta(options.userDataDir)?.name ?? options.profile
       : options.profile
 
-    // Only sync-capable plans touch the server; otherwise everything runs from
-    // the local profile directory.
     let archive: { downloadUrl?: string; uploadUrl?: string; version?: string } = {}
     let session: EngineSession
     try {
-      if (license.sync) {
-        if (!this.ensuredProfiles.has(profileName)) {
-          const ensured = await getOrCreateProfile({
-            key: this.key,
-            server: this.server,
-            name: profileName,
-            tags: options.tags,
-          })
-            .then(() => true)
-            .catch(() => false)
-          if (ensured) this.ensuredProfiles.add(profileName)
-        }
+      if (syncMode !== 'off' && await this.hasCloudProfile(profileName, syncMode, options.tags)) {
         archive = await getProfileArchiveUrls({
           key: this.key,
           server: this.server,
@@ -187,11 +214,11 @@ export class AntiDetectBrowser {
         proxyUrl,
         archive,
         getArchivePutUrl: archive.uploadUrl
-          ? () => getProfileArchiveUrls({ key: this.key, server: this.server, name: profileName })
-              .then((a) => a.uploadUrl)
+          ? () => getProfileArchiveUploadUrl({ key: this.key, server: this.server, name: profileName })
           : undefined,
         cacheDir: this.cacheDir,
         profileDir: options.userDataDir,
+        temporary,
         options,
       }))
     } catch (error) {
@@ -205,14 +232,6 @@ export class AntiDetectBrowser {
     }
     const { context } = session
     const page = context.pages()[0] ?? await context.newPage()
-
-    if (options.label) {
-      const labelArg = labelOptions(options.label, options.color)
-      if (labelArg) {
-        await context.addInitScript(installLabel, labelArg)
-        for (const p of context.pages()) await p.evaluate(installLabel, labelArg).catch(() => {})
-      }
-    }
 
     const sessionId = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`
     this.activeSessions.set(sessionId, { session, profileName: options.profile, ticket })
@@ -264,6 +283,48 @@ export class AntiDetectBrowser {
       profileDir: session.profileDir,
       ...(liveViewInfo ? { liveView: liveViewInfo } : {}),
     }
+  }
+
+  /** Whether the server holds this profile; `create` mode makes it so.
+   *  Cached per mode: a default launch's "no" must not answer for a later
+   *  explicit `sync: true`, whose whole point is to create the row. */
+  private async hasCloudProfile(name: string, mode: SyncMode, tags?: string[]): Promise<boolean> {
+    const cacheKey = `${mode}:${name}`
+    const cached = this.syncedProfiles.get(cacheKey)
+    if (cached !== undefined) return cached
+    try {
+      if (mode === 'create') {
+        await getOrCreateProfile({ key: this.key, server: this.server, name, tags })
+        // A created row is one the server now knows, so the default mode has to
+        // stop answering "no" for this name.
+        this.syncedProfiles.set(`existing:${name}`, true)
+      } else {
+        await getProfile({ key: this.key, server: this.server, name })
+      }
+      this.syncedProfiles.set(cacheKey, true)
+      return true
+    } catch (error) {
+      // Only a definitive "no such profile" is worth remembering. Caching a
+      // dropped connection or a 5xx would keep a long-lived process local-only
+      // for the rest of its life, silently never uploading again.
+      const definitive = error instanceof Error && error.message.includes('HTTP 404')
+      if (definitive && mode !== 'create') {
+        this.syncedProfiles.set(cacheKey, false)
+        this.notifyLocalOnly(name)
+      }
+      return false
+    }
+  }
+
+  /** Once per name per process: a default launch of a name the server has
+   *  never heard of silently stays local-only, which is easy to miss until
+   *  a machine switch loses the data. */
+  private notifyLocalOnly(name: string): void {
+    if (this.localOnlyNotified.has(name)) return
+    this.localOnlyNotified.add(name)
+    this.notify(
+      `[anti-detect-browser] Profile "${name}" is local-only; pass { sync: true } to sync it to the cloud.`,
+    )
   }
 
   private async ensureVersionOk(): Promise<void> {
@@ -332,6 +393,12 @@ export class AntiDetectBrowser {
       updated.push(u.version)
     }
     return updated
+  }
+
+  /** Delete this cache directory's temporary profiles, skipping live sessions. */
+  clearTemporaryProfiles(opts?: ClearTemporaryOptions): ClearedTemporaryProfile[] {
+    const live = Array.from(this.activeSessions.values()).map((s) => s.session.profileDir)
+    return clearTemporaryProfiles(this.cacheDir, { ...opts, skipDirs: [...(opts?.skipDirs ?? []), ...live] })
   }
 
   async close(): Promise<void> {

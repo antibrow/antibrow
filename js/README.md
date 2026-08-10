@@ -68,8 +68,7 @@ With a managed residential proxy (timezone & geo follow it) and a visual label:
 const { page } = await ab.launch({
   profile: 'shopper-02',
   proxyId: 'px_xxxxxxxx',   // managed residential proxy — activated + injected for you
-  label: 'acct@shop.com',   // floating tag + window title, so windows are tellable apart
-  color: '#6366f1',
+  label: 'acct@shop.com',   // drawn by the kernel in front of the address bar
 })
 ```
 
@@ -166,6 +165,56 @@ Add it to your MCP client config and your agent gets a stealth browser:
 **Tools:** `launch_browser`, `navigate`, `click`, `fill`, `screenshot`, `evaluate`, `get_content`, `list_profiles`, `create_profile`, `list_proxies`, `claim_proxy`, `start_live_view`, and more.
 
 `launch_browser` and `create_profile` both take `deviceType` (`"desktop"` / `"android"`) and `realFingerprint`, so an agent can ask for a phone profile in the same call that starts it.
+
+## Running automation at scale
+
+Automation tends to mint a profile per task. Pass `temporary: true` so those
+profiles land in their own directory tree, out of the way of the profiles you
+actually manage:
+
+```js
+import { AntiDetectBrowser } from 'anti-detect-browser'
+
+const ab = new AntiDetectBrowser({ key: process.env.ANTI_DETECT_BROWSER_KEY, temporary: true })
+
+for (const task of tasks) {
+  const { page, browser } = await ab.launch({ profile: `task-${task.id}` })
+  await page.goto(task.url)
+  await browser.close()
+}
+
+// Temporary profiles are never deleted for you.
+const removed = ab.clearTemporaryProfiles({ olderThanDays: 7 })
+console.log(`removed ${removed.length} temporary profiles`)
+```
+
+Three things to know:
+
+- **They do not show up in the desktop app.** The desktop app only reads the
+  managed tree, so a temporary profile is invisible to it.
+- **The two trees are separate namespaces.** A temporary `gmail` and a managed
+  `gmail` are two different profiles with their own identity and cookies.
+- **Nothing is deleted automatically.** A temporary profile keeps its identity
+  and its logins for as long as you leave it on disk, which is what makes it
+  reusable. Clear them yourself with `ab.clearTemporaryProfiles()` or
+  `npx anti-detect-browser --clear-temp --older-than=7`.
+
+Per launch, `temporary: false` puts one profile back in the managed tree.
+
+### Cloud sync
+
+A launch never creates a cloud profile on its own. By default a profile syncs
+only when the server already knows the name, so an automation run cannot fill
+your sync quota with profiles you never meant to keep. To put a new profile in
+the cloud, ask for it:
+
+```js
+await ab.launch({ profile: 'main-account', sync: true })   // create + sync
+await ab.launch({ profile: 'main-account', sync: false })  // stay local
+```
+
+`sync: true` and `temporary: true` are mutually exclusive; passing both throws.
+`sync: true` also throws when your plan does not include cloud sync.
 
 ## What you get
 

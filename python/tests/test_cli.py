@@ -102,3 +102,16 @@ def test_login_reports_a_rejected_key_and_stores_nothing(capsys, monkeypatch):
     assert main(["login", "--key", "nope"]) == 1
     assert "Authentication failed" in capsys.readouterr().err
     assert L.read_key_file() is None
+
+
+def test_clear_temp_accepts_zero(capsys):
+    assert main(["clear-temp", "--older-than=0"]) == 0
+    assert "0 temporary profile(s)" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("value", ["-5", "nan", "inf", "-inf"])
+def test_clear_temp_rejects_negative_or_non_finite_older_than(value, capsys):
+    assert main(["clear-temp", "--older-than={0}".format(value)]) == 1
+    err = capsys.readouterr().err
+    assert "invalid" in err.lower()
+    assert "--older-than" in err

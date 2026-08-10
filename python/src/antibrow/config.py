@@ -16,6 +16,7 @@ Layout::
         fp-config.json              per-launch serialization of the persona
         user-data/                  Chromium --user-data-dir
         proxy-auth-ext/             only in proxy_auth="extension" mode
+      profiles-temp/<name>/          same layout; temporary profiles, local only
 
     ~/.antibrow/
       license.key                   API key written by `python -m antibrow login`
@@ -30,6 +31,10 @@ from pathlib import Path
 
 #: Cache root shared with the Node SDK (`anti-detect-browser`) and the desktop app.
 DEFAULT_CACHE_DIR_NAME = ".anti-detect-browser"
+
+#: Tree for temporary profiles. Kept out of ``profiles/`` so profile managers
+#: never enumerate throwaway automation runs. Matches the Node SDK.
+TEMPORARY_PROFILES_DIR_NAME = "profiles-temp"
 
 #: Per-user config dir for this SDK (holds the API key written by `antibrow login`).
 CONFIG_DIR_NAME = ".antibrow"
@@ -106,20 +111,20 @@ def encode_path_segment(value: str) -> str:
     return urllib.parse.quote(value, safe=_PATH_SEGMENT_SAFE)
 
 
-def profiles_dir(cache_dir: Path | str | None = None) -> Path:
+def profiles_dir(cache_dir: Path | str | None = None, *, temporary: bool = False) -> Path:
     base = Path(cache_dir).expanduser() if cache_dir else default_cache_dir()
-    return base / "profiles"
+    return base / (TEMPORARY_PROFILES_DIR_NAME if temporary else "profiles")
 
 
-def profile_dir(name: str, cache_dir: Path | str | None = None) -> Path:
+def profile_dir(name: str, cache_dir: Path | str | None = None, *, temporary: bool = False) -> Path:
     """Absolute directory for a named profile (not created here)."""
     from .profile_dir import resolve_profile_dir
 
-    return resolve_profile_dir(name, cache_dir).dir
+    return resolve_profile_dir(name, cache_dir, temporary=temporary).dir
 
 
-def list_profiles(cache_dir: Path | str | None = None) -> list[str]:
+def list_profiles(cache_dir: Path | str | None = None, *, temporary: bool = False) -> list[str]:
     """Names of every profile in the cache (sorted)."""
     from .profile_dir import list_profile_entries
 
-    return sorted(entry.name for entry in list_profile_entries(cache_dir))
+    return sorted(entry.name for entry in list_profile_entries(cache_dir, temporary=temporary))

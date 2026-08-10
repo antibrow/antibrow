@@ -1,20 +1,18 @@
 import { mkdirSync, existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { homedir } from 'node:os'
-import { resolveProfileDirSync, listProfileEntries } from './engine/profile-dir'
+import { resolveProfileDirSync, listProfileEntries, profilesRoot, type ProfileRootOptions } from './engine/profile-dir'
 
 const DEFAULT_CACHE_DIR = join(homedir(), '.anti-detect-browser')
-const PROFILES_DIR = 'profiles'
 
 /** The profiles root directory. */
-export function getProfilesDir(cacheDir?: string): string {
-  const base = cacheDir || DEFAULT_CACHE_DIR
-  return resolve(base, PROFILES_DIR)
+export function getProfilesDir(cacheDir?: string, opts?: ProfileRootOptions): string {
+  return profilesRoot(resolve(cacheDir || DEFAULT_CACHE_DIR), opts)
 }
 
 /** Get or create a profile's user data directory. */
-export function getProfileDir(profileName: string, cacheDir?: string): string {
-  const dir = resolveProfileDirSync(cacheDir || DEFAULT_CACHE_DIR, profileName).dir
+export function getProfileDir(profileName: string, cacheDir?: string, opts?: ProfileRootOptions): string {
+  const dir = resolveProfileDirSync(cacheDir || DEFAULT_CACHE_DIR, profileName, opts).dir
   mkdirSync(dir, { recursive: true })
   return dir
 }
@@ -29,13 +27,13 @@ export function createTempProfileDir(cacheDir?: string): string {
 }
 
 /** All existing profile names. */
-export function listProfiles(cacheDir?: string): string[] {
-  return listProfileEntries(cacheDir || DEFAULT_CACHE_DIR).map((e) => e.name)
+export function listProfiles(cacheDir?: string, opts?: ProfileRootOptions): string[] {
+  return listProfileEntries(cacheDir || DEFAULT_CACHE_DIR, opts).map((e) => e.name)
 }
 
 /** Whether a profile with this name exists. */
-export function profileExists(profileName: string, cacheDir?: string): boolean {
-  return listProfileEntries(cacheDir || DEFAULT_CACHE_DIR).some((e) => e.name === profileName)
+export function profileExists(profileName: string, cacheDir?: string, opts?: ProfileRootOptions): boolean {
+  return listProfileEntries(cacheDir || DEFAULT_CACHE_DIR, opts).some((e) => e.name === profileName)
 }
 
 /** The cache directory, created if needed. */
@@ -47,4 +45,4 @@ export function ensureCacheDir(cacheDir?: string): string {
   return dir
 }
 
-export { listProfileEntries } from './engine/profile-dir'
+export { listProfileEntries, TEMPORARY_PROFILES_DIR, type ProfileRootOptions } from './engine/profile-dir'

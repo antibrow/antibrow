@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import math
 import os
 import sys
 import time
@@ -166,6 +167,30 @@ def cmd_info(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_clear_temp(args: argparse.Namespace) -> int:
+    from .temporary_profiles import clear_temporary_profiles
+
+    if args.older_than is not None and (not math.isfinite(args.older_than) or args.older_than < 0):
+        print("error: invalid --older-than value: {0}".format(args.older_than), file=sys.stderr)
+        return 1
+
+    cleared = clear_temporary_profiles(
+        args.cache_dir,
+        older_than_days=args.older_than,
+        dry_run=args.dry_run,
+    )
+    verb = "would remove" if args.dry_run else "removed"
+    for item in cleared:
+        print("{0} {1}".format(verb, item.name))
+    total = sum(item.bytes for item in cleared)
+    print(
+        "{0} temporary profile(s), {1}{2}".format(
+            len(cleared), _human_size(total), " (dry run)" if args.dry_run else ""
+        )
+    )
+    return 0
+
+
 def cmd_login(args: argparse.Namespace) -> int:
     server = args.server or _config.default_server()
     key = args.key or os.environ.get(_config.ENV_API_KEY)
@@ -225,6 +250,12 @@ def build_parser() -> argparse.ArgumentParser:
     info = sub.add_parser("info", help="show kernels, profiles and license status")
     info.add_argument("--cache-dir", help="override the cache directory")
     info.set_defaults(func=cmd_info)
+
+    clear_temp = sub.add_parser("clear-temp", help="delete temporary profiles")
+    clear_temp.add_argument("--older-than", type=float, help="only those unused for this many days")
+    clear_temp.add_argument("--dry-run", action="store_true", help="report without deleting")
+    clear_temp.add_argument("--cache-dir", help="override the cache directory")
+    clear_temp.set_defaults(func=cmd_clear_temp)
 
     login = sub.add_parser("login", help="store an API key in ~/.antibrow/license.key")
     login.add_argument("--key", help="API key (prompted for when omitted)")

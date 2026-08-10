@@ -97,6 +97,26 @@ def test_archive_urls_version_is_none_on_a_server_that_predates_it(api):
     assert urls.version is None
 
 
+def test_the_upload_only_signer_asks_the_post_side_alone(api):
+    # The GET half costs the server a HEAD on the cloud object, and a re-sign
+    # before an upload is about to overwrite that object anyway.
+    api.routes = {
+        ("GET", "/api/v1/profiles/p1/archive"): (200, {"downloadUrl": "https://r2/get"}),
+        ("POST", "/api/v1/profiles/p1/archive"): (200, {"uploadUrl": "https://r2/put"}),
+    }
+
+    url = S.get_profile_archive_upload_url("adb_key", api.base, name="p1")
+
+    assert url == "https://r2/put"
+    assert [r["method"] for r in api.requests] == ["POST"]
+
+
+def test_the_upload_only_signer_returns_none_without_a_slot(api):
+    api.routes = {("POST", "/api/v1/profiles/p1/archive"): (403, {"error": "paid plan"})}
+
+    assert S.get_profile_archive_upload_url("adb_key", api.base, name="p1") is None
+
+
 def test_a_plan_without_sync_gets_no_urls_and_no_exception(api):
     api.routes = {
         ("GET", "/api/v1/profiles/p1/archive"): (403, {"error": "Profile sync requires a paid plan."}),
@@ -141,6 +161,13 @@ def test_ensure_does_not_recreate_an_existing_profile(api):
     api.routes = {("GET", "/api/v1/profiles/p1"): (200, {"name": "p1"})}
 
     assert S.ensure_server_profile("adb_key", api.base, name="p1") is True
+    assert [r["method"] for r in api.requests] == ["GET"]
+
+
+def test_ensure_without_create_only_looks_it_up(api):
+    api.routes = {("GET", "/api/v1/profiles/p1"): (404, {"error": "not found"})}
+
+    assert S.ensure_server_profile("adb_key", api.base, name="p1", create=False) is False
     assert [r["method"] for r in api.requests] == ["GET"]
 
 

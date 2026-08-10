@@ -91,7 +91,9 @@ def test_linux_gets_the_container_safe_switches_and_windows_does_not():
 def test_headless_moves_the_window_off_screen_instead_of_using_headless_new():
     args = args_for(platform="win32", headless=True)
     assert "--window-position=-10000,-10000" in args
-    assert "--window-size=1,1" in args
+    # The size is left alone: a 1x1 window means a 1x1 viewport, which breaks
+    # layout and contradicts the spoofed screen.
+    assert not [a for a in args if a.startswith("--window-size=")]
     # Real headless Chromium has its own detectable fingerprint - never use it.
     assert not [a for a in args if a.startswith("--headless")]
 

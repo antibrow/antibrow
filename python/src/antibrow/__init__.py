@@ -20,7 +20,7 @@ See https://antibrow.com and the project README for the full API.
 
 from __future__ import annotations
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 from .browser import (
     Antibrow,
@@ -35,6 +35,7 @@ from .browser import (
     prepare_launch,
 )
 from .config import (
+    TEMPORARY_PROFILES_DIR_NAME,
     config_dir,
     default_cache_dir,
     default_server,
@@ -101,8 +102,18 @@ from .profile_cache import (
     unpack_profile_cache,
     upload_profile_cache,
 )
-from .profile_sync import ArchiveUrls, ensure_server_profile, get_profile_archive_urls
+from .profile_sync import (
+    ArchiveUrls,
+    ensure_server_profile,
+    get_profile_archive_upload_url,
+    get_profile_archive_urls,
+)
 from .proxy import ProxySpec, parse_proxy
+from .temporary_profiles import (
+    ClearedTemporaryProfile,
+    clear_temporary_profiles,
+    temporary_profile_last_used,
+)
 
 __all__ = [
     "__version__",
@@ -156,8 +167,13 @@ __all__ = [
     "default_cache_dir",
     "config_dir",
     "default_server",
+    "TEMPORARY_PROFILES_DIR_NAME",
+    "ClearedTemporaryProfile",
+    "clear_temporary_profiles",
+    "temporary_profile_last_used",
     # cloud sync and portable archives
     "ArchiveUrls",
+    "get_profile_archive_upload_url",
     "get_profile_archive_urls",
     "ensure_server_profile",
     "pack_profile_cache",

@@ -173,17 +173,21 @@ export async function getProfileForLaunch(options: { key: string; server?: strin
   return out
 }
 
+function archiveUrl(options: { key: string; server?: string; name: string }): string {
+  const server = options.server || DEFAULT_SERVER
+  return new URL(`/api/v1/profiles/${encodePathSegment(options.name)}/archive`, server).toString()
+}
+
 export async function getProfileArchiveUrls(options: {
   key: string
   server?: string
   name: string
 }): Promise<{ downloadUrl?: string; uploadUrl?: string; version?: string }> {
-  const server = options.server || DEFAULT_SERVER
-  const url = new URL(`/api/v1/profiles/${encodePathSegment(options.name)}/archive`, server)
+  const url = archiveUrl(options)
   const headers = authHeaders(options.key)
   const [getRes, postRes] = await Promise.all([
-    fetch(url.toString(), { method: 'GET', headers }),
-    fetch(url.toString(), { method: 'POST', headers }),
+    fetch(url, { method: 'GET', headers }),
+    fetch(url, { method: 'POST', headers }),
   ])
 
   const out: { downloadUrl?: string; uploadUrl?: string; version?: string } = {}
@@ -196,6 +200,19 @@ export async function getProfileArchiveUrls(options: {
   }
   if (postRes.ok) out.uploadUrl = ((await postRes.json()) as { uploadUrl?: string }).uploadUrl
   return out
+}
+
+/** Sign an upload slot only. The download side costs the server a HEAD on the
+ *  cloud object, so anything that only needs to write (the re-sign after exit,
+ *  a promotion to cloud) must not ask for the pair. */
+export async function getProfileArchiveUploadUrl(options: {
+  key: string
+  server?: string
+  name: string
+}): Promise<string | undefined> {
+  const res = await fetch(archiveUrl(options), { method: 'POST', headers: authHeaders(options.key) })
+  if (!res.ok) return undefined
+  return ((await res.json()) as { uploadUrl?: string }).uploadUrl
 }
 
 export interface ProfileStateCookie {

@@ -16,6 +16,11 @@ export interface AntiDetectBrowserOptions {
    * redirects it to stderr so notices cannot corrupt the JSON-RPC channel.
    */
   notify?: (message: string) => void
+  /**
+   * Default for `launch({ temporary })`. Temporary profiles live in their own
+   * directory tree, so profile managers never enumerate throwaway runs.
+   */
+  temporary?: boolean
 }
 
 export interface LaunchOptions {
@@ -27,9 +32,16 @@ export interface LaunchOptions {
   proxyId?: string
   /** Profile name for persistent browser data */
   profile: string
-  /** Label text shown in floating tag and window title */
+  /**
+   * Text the kernel draws in front of the address bar, so several open windows
+   * are tellable apart. Defaults to the profile name.
+   */
   label?: string
-  /** Window label color in hex format */
+  /**
+   * @deprecated No longer has any effect. It used to colour a label injected
+   * into the page; the label is drawn by the kernel now, and the kernel's
+   * switch takes no colour.
+   */
   color?: string
   /** Headless mode, default false */
   headless?: boolean
@@ -51,6 +63,14 @@ export interface LaunchOptions {
    * requests). Applies only when the profile is first created.
    */
   realFingerprint?: boolean
+  /** Overrides the constructor's `temporary`. Temporary profiles are local-only. */
+  temporary?: boolean
+  /**
+   * Cloud sync for this profile. Left unset, the profile syncs only if the
+   * server already knows the name - a launch never creates a cloud profile by
+   * itself. `true` creates it; `false` keeps everything local.
+   */
+  sync?: boolean
 }
 
 export interface LiveViewStreamOptions {

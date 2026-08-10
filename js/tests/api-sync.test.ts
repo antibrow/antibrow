@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { createProfile, updateProfile, deleteProfile, syncPullProfiles } from '../src/api'
+import {
+  createProfile, updateProfile, deleteProfile, syncPullProfiles,
+  getProfileArchiveUrls, getProfileArchiveUploadUrl,
+} from '../src/api'
 import type { ProfileConfig, SyncedProfile } from '../src/types'
 
 const cfg: ProfileConfig = { label: 'Work', tags: ['us'] }
@@ -74,5 +77,34 @@ describe('syncPullProfiles', () => {
     const fn = mockFetchOnce({ profiles: [], serverTime: '2026-01-05T00:00:00.000Z' })
     await syncPullProfiles({ key: 'k', server: 'https://s', since: '2026-01-04T00:00:00.000Z' })
     expect(String(fn.mock.calls[0][0])).toBe('https://s/api/v1/profiles?since=2026-01-04T00%3A00%3A00.000Z')
+  })
+})
+
+describe('getProfileArchiveUrls', () => {
+  it('signs both slots from one GET and one POST', async () => {
+    const fn = vi.fn().mockImplementation((_u: string, init: RequestInit) =>
+      Promise.resolve(Response.json(init.method === 'GET'
+        ? { downloadUrl: 'https://r2/get', version: 'etag-1' }
+        : { uploadUrl: 'https://r2/put' })))
+    vi.stubGlobal('fetch', fn)
+    const r = await getProfileArchiveUrls({ key: 'k', server: 'https://s', name: 'work' })
+    expect(r).toEqual({ downloadUrl: 'https://r2/get', version: 'etag-1', uploadUrl: 'https://r2/put' })
+  })
+})
+
+describe('getProfileArchiveUploadUrl', () => {
+  it('POSTs only - a re-sign must not cost the GET side', async () => {
+    const fn = mockFetchOnce({ uploadUrl: 'https://r2/put' })
+    const url = await getProfileArchiveUploadUrl({ key: 'k', server: 'https://s', name: 'work' })
+    expect(url).toBe('https://r2/put')
+    expect(fn.mock.calls).toHaveLength(1)
+    const [u, init] = fn.mock.calls[0]
+    expect(String(u)).toBe('https://s/api/v1/profiles/work/archive')
+    expect(init.method).toBe('POST')
+  })
+
+  it('returns undefined when the profile has no archive slot', async () => {
+    mockFetchOnce({ error: { message: 'Profile sync requires a paid plan.' } }, 403)
+    await expect(getProfileArchiveUploadUrl({ key: 'k', server: 'https://s', name: 'work' })).resolves.toBeUndefined()
   })
 })

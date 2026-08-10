@@ -20,7 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .config import USER_AGENT, default_server, encode_path_segment
 
@@ -107,25 +107,47 @@ def get_profile_archive_urls(
     return urls
 
 
+def get_profile_archive_upload_url(
+    api_key: str, server: Optional[str] = None, *, name: str
+) -> Optional[str]:
+    """Sign an upload slot only.
+
+    The download side costs the server a HEAD on the cloud object, so anything
+    that only writes (the re-sign after exit) must not ask for the pair.
+    """
+    status, body = _request("POST", _archive_url(server, name), api_key)
+    if status != 200:
+        return None
+    upload = body.get("uploadUrl")
+    return upload if isinstance(upload, str) else None
+
+
 def ensure_server_profile(
     api_key: str,
     server: Optional[str] = None,
     *,
     name: str,
     tags: Optional[Sequence[str]] = None,
+    create: bool = True,
+    probe_status: Optional[List[int]] = None,
 ) -> bool:
-    """Make sure the server knows this profile, creating it if it does not.
+    """Whether the server knows this profile, creating it when ``create``.
 
     Returns False when the server could not confirm it - the caller then keeps
-    the profile local instead of failing the launch.
+    the profile local instead of failing the launch. ``probe_status``, when
+    given, gets the GET status appended (200/404/0-unreachable), so a caller
+    can tell "confirmed absent" apart from "could not ask" without a second
+    round trip.
     """
     base = (server or default_server()).rstrip("/")
     quoted = encode_path_segment(name)
 
     status, _ = _request("GET", "{0}{1}/{2}".format(base, PROFILES_PATH, quoted), api_key)
+    if probe_status is not None:
+        probe_status.append(status)
     if status == 200:
         return True
-    if status != 404:
+    if status != 404 or not create:
         return False
 
     payload: Dict[str, Any] = {"name": name}
