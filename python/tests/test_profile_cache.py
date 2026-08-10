@@ -180,7 +180,7 @@ def test_unpack_leaves_an_item_alone_when_the_archive_never_mentions_it(tmp_path
 def test_unpack_leaves_the_profile_intact_when_the_archive_is_unreadable(tmp_path):
     dest = make_profile(tmp_path / "dest")
 
-    with pytest.raises(Exception):
+    with pytest.raises(zipfile.BadZipFile):
         P.unpack_profile_cache(b"not a zip at all", dest)
 
     assert (dest / "user-data" / "Default" / "Cookies").read_text() == "cookie-db"

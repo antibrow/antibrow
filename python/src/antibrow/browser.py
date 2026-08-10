@@ -37,8 +37,8 @@ from .launcher import (
     build_launch_args,
     is_stray_locale_tab_url,
     kill_process_tree,
-    shutdown_kernel,
     pick_free_port,
+    shutdown_kernel,
     spawn_kernel,
     wait_for_cdp,
 )

@@ -57,6 +57,7 @@ def test_skip_dirs_are_left_alone(tmp_path: Path) -> None:
 
     assert [c.name for c in cleared] == ["dead"]
     assert live.exists()
+    assert not dead.exists()
 
 
 def test_never_touches_the_managed_tree(tmp_path: Path) -> None:

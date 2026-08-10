@@ -11,6 +11,7 @@ import pytest
 
 from antibrow import browser as _browser
 from antibrow.license import LicenseInfo
+from antibrow.profile_dir import ResolvedProfile
 
 
 @pytest.fixture(autouse=True)
@@ -164,6 +165,10 @@ def test_prepare_launch_rejects_unsynced_plan_before_creating_the_directory(tmp_
     assert not (tmp_path / "profiles").exists()
 
 
+class _StoppedAfterResolve(RuntimeError):
+    """Marker raised by the test stub below - never raised by real code."""
+
+
 def test_temporary_launch_uses_the_temporary_tree(tmp_path, monkeypatch):
     seen = {}
 
@@ -171,11 +176,19 @@ def test_temporary_launch_uses_the_temporary_tree(tmp_path, monkeypatch):
         seen["temporary"] = temporary
         directory = _browser._config.profiles_dir(cache_dir, temporary=temporary) / name
         directory.mkdir(parents=True, exist_ok=True)
-        return _browser.ResolvedProfile(dir=directory, id=name, name=name)
+        return ResolvedProfile(dir=directory, id=name, name=name)
+
+    def _stop(*a, **k):
+        raise _StoppedAfterResolve
 
     monkeypatch.setattr(_browser, "resolve_profile_dir", _resolve)
     monkeypatch.setattr(_browser, "get_license_token", lambda *a, **k: _license(True))
-    with pytest.raises(Exception):
-        # The kernel is not installed in CI; the resolution above is what matters.
+    # Everything past the resolver needs a real kernel download, which is
+    # unavailable in some CI runs and slow-but-available in others - neither
+    # is what this test is about. Stop right after the resolver runs instead,
+    # with a marker type nothing else in the codebase raises, so the only
+    # thing under test is that `temporary` reached it.
+    monkeypatch.setattr(_browser._kernel, "refresh_kernel_versions", _stop)
+    with pytest.raises(_StoppedAfterResolve):
         _browser.prepare_launch("task-1", cache_dir=tmp_path, temporary=True, license_token="tok")
     assert seen["temporary"] is True

@@ -5,11 +5,11 @@ roundtrip, ETag unquoting, exclusion from a packed archive, and clearing on
 portable import.
 """
 
+from test_profile_cache import entries, make_profile
+
 from antibrow import profile_cache as P
 from antibrow.persona import generate_persona, write_persona
 from antibrow.portable import PortableProfileMeta, export_profile_archive, import_profile_archive
-
-from test_profile_cache import entries, make_profile
 
 
 def test_marker_roundtrips_and_reports_absence_as_none(tmp_path):
