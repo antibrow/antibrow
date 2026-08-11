@@ -31,6 +31,20 @@ describe('launch options carry the device choice to the engine', () => {
     expect(built.label).toBe('acct@shop.com')
   })
 
+  it('forwards focusWindow so the kernel opens the window behind the caller', () => {
+    const built = buildOpenProfileOptions({
+      key: 'adb_test',
+      server: 'https://antibrow.com',
+      profileName: 'p',
+      licenseToken: 'tok',
+      archive: {},
+      cacheDir: '/tmp/cache',
+      temporary: false,
+      options: { profile: 'p', focusWindow: false },
+    })
+    expect(built.focusWindow).toBe(false)
+  })
+
   it('leaves both undefined when the caller does not ask for them', () => {
     const built = buildOpenProfileOptions({
       key: 'adb_test',

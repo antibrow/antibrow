@@ -189,6 +189,22 @@ describe('buildLaunchArgs', () => {
     expect(args).not.toContain('--restore-last-session')
     expect(args).not.toContain('--hide-crash-restore-bubble')
   })
+
+  it('retires the -AppleLanguages pair on kernels that read the locale from fp-config', () => {
+    const withPair = buildLaunchArgs(baseOptions('darwin'))
+    expect(withPair).toContain('-AppleLanguages')
+    // The pair is what makes Chromium open http://(en-us)/ - a kernel that takes
+    // the locale from fp-config does not need it, and then there is no stray tab.
+    const withoutPair = buildLaunchArgs({ ...baseOptions('darwin'), localeFromConfig: true })
+    expect(withoutPair).not.toContain('-AppleLanguages')
+    expect(withoutPair.some((a) => a.startsWith('('))).toBe(false)
+  })
+
+  it('asks the kernel to skip focus only when focusWindow is explicitly false', () => {
+    expect(buildLaunchArgs({ ...baseOptions('darwin'), focusWindow: false })).toContain('--fp-no-activate')
+    expect(buildLaunchArgs({ ...baseOptions('darwin'), focusWindow: true })).not.toContain('--fp-no-activate')
+    expect(buildLaunchArgs(baseOptions('darwin'))).not.toContain('--fp-no-activate')
+  })
 })
 
 // The `(en-US)` half of the pair has no leading dash, so Chromium's own parser

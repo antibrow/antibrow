@@ -507,6 +507,31 @@ def kernel_version_at_least(version: Optional[str], minimum: str) -> bool:
     return a >= b
 
 
+#: First kernel that reads the macOS application locale out of fp-config.
+APP_LOCALE_MIN_KERNEL_VERSION = "151.0.7922.72"
+APP_LOCALE_MIN_KERNEL_BUILD = "2026-08-10"
+
+
+def kernel_reads_app_locale_from_config(version: Optional[str], build: Optional[str]) -> bool:
+    """Whether the kernel takes the macOS application locale from fp-config.
+
+    Same two halves as :func:`kernel_supports_android`, and getting it wrong is
+    worse than the stray tab the argv pair causes: dropping the pair on a kernel
+    that still needs it leaves ``navigator.language`` spoofed while ``Intl``
+    reports the host locale, a contradiction any script can read.
+    """
+    if not kernel_version_at_least(version, APP_LOCALE_MIN_KERNEL_VERSION):
+        return False
+    if not build or len(build) < 10:
+        return False
+    date = build[:10]
+    if date[4] != "-" or date[7] != "-":
+        return False
+    if not (date[:4].isdigit() and date[5:7].isdigit() and date[8:10].isdigit()):
+        return False
+    return date >= APP_LOCALE_MIN_KERNEL_BUILD
+
+
 def kernel_supports_android(version: Optional[str], build: Optional[str]) -> bool:
     """Both halves are load-bearing.
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "antibrow"
-version = "0.7.0"
+version = "0.8.0"
 description = "The antidetect browser your AI agent can drive - kernel-level fingerprint spoofing with the Playwright API"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -84,6 +84,7 @@ include = [
     "/tests",
     "/examples",
     "/README.md",
+    "/README.ru.md",
     "/LICENSE",
     "/BINARY-LICENSE.md",
 ]

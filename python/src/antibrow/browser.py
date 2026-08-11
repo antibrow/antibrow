@@ -141,6 +141,7 @@ def prepare_launch(
     profile: str = DEFAULT_PROFILE,
     *,
     headless: bool = False,
+    focus_window: bool = True,
     proxy: ProxyLike = None,
     geoip: bool = True,
     timezone: Optional[str] = None,
@@ -279,6 +280,10 @@ def prepare_launch(
             build = _kernel.installed_kernel_build(root, kv.version)
         _assert_android_kernel(kv.version, build)
 
+    locale_from_config = _kernel.kernel_reads_app_locale_from_config(
+        kv.version, _kernel.installed_kernel_build(root, kv.version)
+    )
+
     proxy_spec = parse_proxy(proxy)
     resolved_timezone = timezone or persona.timezone
     public_ip: Optional[str] = None
@@ -314,6 +319,8 @@ def prepare_launch(
         cdp_port=cdp_port,
         language=persona.languages[0] if persona.languages else "en-US",
         headless=headless,
+        focus_window=focus_window,
+        locale_from_config=locale_from_config,
         platform=_kernel.current_platform(),
         proxy=proxy_spec,
         proxy_auth=proxy_auth,
@@ -951,6 +958,7 @@ def launch(
     profile: str = DEFAULT_PROFILE,
     *,
     headless: bool = False,
+    focus_window: bool = True,
     proxy: ProxyLike = None,
     geoip: bool = True,
     timezone: Optional[str] = None,
@@ -990,6 +998,10 @@ def launch(
         headless: Hide the window. On Windows the window is moved off-screen
             rather than using ``--headless=new`` (headless Chromium has its own
             detectable fingerprint). On Linux, run under Xvfb.
+        focus_window: Whether the new window takes focus. ``False`` opens it
+            behind whatever is in front, so a launch does not interrupt what you
+            are doing - the window is still there, just not focused. Needs a
+            kernel build carrying the switch; older ones focus it either way.
         proxy: ``"http://user:pass@host:port"``, ``"socks5://..."``, or a
             Playwright-style ``{"server": ..., "username": ..., "password": ...}``.
         geoip: Look the proxy's exit IP up and make the browser's timezone follow
@@ -1050,6 +1062,7 @@ def launch(
     plan = prepare_launch(
         profile,
         headless=headless,
+        focus_window=focus_window,
         proxy=proxy,
         geoip=geoip,
         timezone=timezone,
@@ -1098,6 +1111,7 @@ async def launch_async(
     profile: str = DEFAULT_PROFILE,
     *,
     headless: bool = False,
+    focus_window: bool = True,
     proxy: ProxyLike = None,
     geoip: bool = True,
     timezone: Optional[str] = None,
@@ -1141,6 +1155,7 @@ async def launch_async(
         return prepare_launch(
             profile,
             headless=headless,
+            focus_window=focus_window,
             proxy=proxy,
             geoip=geoip,
             timezone=timezone,

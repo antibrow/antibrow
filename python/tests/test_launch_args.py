@@ -88,6 +88,22 @@ def test_linux_gets_the_container_safe_switches_and_windows_does_not():
     assert not [a for a in windows if a in ("--no-sandbox", "--no-zygote")]
 
 
+def test_locale_argv_is_dropped_only_for_kernels_that_read_it_from_fp_config():
+    with_pair = args_for(platform="darwin")
+    assert "-AppleLanguages" in with_pair
+    # That pair is what makes Chromium open http://(en-us)/; a kernel reading the
+    # locale from fp-config needs neither the pair nor the tab.
+    without = args_for(platform="darwin", locale_from_config=True)
+    assert "-AppleLanguages" not in without
+    assert not [a for a in without if a.startswith("(")]
+
+
+def test_focus_window_false_is_the_only_thing_that_adds_the_kernel_switch():
+    assert "--fp-no-activate" in args_for(platform="darwin", focus_window=False)
+    assert "--fp-no-activate" not in args_for(platform="darwin", focus_window=True)
+    assert "--fp-no-activate" not in args_for(platform="darwin")
+
+
 def test_headless_moves_the_window_off_screen_instead_of_using_headless_new():
     args = args_for(platform="win32", headless=True)
     assert "--window-position=-10000,-10000" in args

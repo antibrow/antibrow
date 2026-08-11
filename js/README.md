@@ -2,6 +2,8 @@
 
 # anti-detect-browser
 
+**English** | [Русский](README.ru.md)
+
 **The antidetect browser your AI agent can drive.**
 
 Kernel-level fingerprint spoofing · **unlimited local profiles, free** · standard Playwright API · built-in MCP server.
@@ -200,6 +202,25 @@ Three things to know:
   `npx anti-detect-browser --clear-temp --older-than=7`.
 
 Per launch, `temporary: false` puts one profile back in the managed tree.
+
+### Keeping the window out of your way
+
+A launch takes focus, which is a problem when the automation is meant to run
+beside your own work. `focusWindow: false` opens the browser behind whatever is
+in front:
+
+```js
+await ab.launch({ profile: 'task-01', focusWindow: false })
+```
+
+The window is still there and still normally sized - this is not headless, so
+nothing about the fingerprint changes; it just does not come to the front.
+
+It needs a kernel that carries the switch: today that is **Chrome 151
+(`151.0.7922.72`), build `2026-08-10c` or newer, macOS only**. Anything else
+ignores the option and focuses the window as before, so check the profile's
+kernel before relying on it - a profile created by `launch()` is on the default
+kernel, which does not have the switch yet.
 
 ### Cloud sync
 

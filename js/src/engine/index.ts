@@ -10,6 +10,7 @@ import {
   refreshKernelVersions,
   kernelUpdateStatus,
   kernelSupportsAndroid,
+  kernelReadsAppLocaleFromConfig,
   ANDROID_MIN_KERNEL_VERSION,
   ANDROID_MIN_KERNEL_BUILD,
   installedKernelBuild,
@@ -29,7 +30,7 @@ import {
 } from './profile-cache'
 import { resolveProfileDir, readProfileMeta } from './profile-dir'
 
-export { KERNEL_VERSIONS, DEFAULT_KERNEL_VERSION, ensureKernel, isKernelInstalled, findKernelVersion, findKernelVersionStrict, listInstalledKernels, kernelDirSize, deleteKernel, kernelDir, kernelAvailableOnPlatform, kernelsForPlatform, allKernelVersions, registerKernelVersions, fetchRemoteKernelVersions, refreshKernelVersions, loadCachedKernelVersions, KERNEL_MANIFEST_URL, KERNEL_MANIFEST_TTL_MS, KERNEL_VERSION_CACHE_FILE, currentPlatform, installedKernelBuild, writeInstalledKernelBuild, kernelUpdateStatus, installedKernelUpdates, kernelSupportsAndroid, kernelVersionAtLeast, ANDROID_MIN_KERNEL_VERSION, ANDROID_MIN_KERNEL_BUILD } from './downloader'
+export { KERNEL_VERSIONS, DEFAULT_KERNEL_VERSION, ensureKernel, isKernelInstalled, findKernelVersion, findKernelVersionStrict, listInstalledKernels, kernelDirSize, deleteKernel, kernelDir, kernelAvailableOnPlatform, kernelsForPlatform, allKernelVersions, registerKernelVersions, fetchRemoteKernelVersions, refreshKernelVersions, loadCachedKernelVersions, KERNEL_MANIFEST_URL, KERNEL_MANIFEST_TTL_MS, KERNEL_VERSION_CACHE_FILE, currentPlatform, installedKernelBuild, writeInstalledKernelBuild, kernelUpdateStatus, installedKernelUpdates, kernelSupportsAndroid, kernelReadsAppLocaleFromConfig, kernelVersionAtLeast, ANDROID_MIN_KERNEL_VERSION, ANDROID_MIN_KERNEL_BUILD, APP_LOCALE_MIN_KERNEL_VERSION, APP_LOCALE_MIN_KERNEL_BUILD } from './downloader'
 export type { KernelVersion, KernelUpdateStatus } from './downloader'
 export type { KernelSession as EngineSession } from './launcher'
 export { downloadProfileCache, uploadProfileCache, packProfileCache, unpackProfileCache, exportProfileArchive, importProfileArchive, PROFILE_ARCHIVE_EXT, ARCHIVE_VERSION_FILE, readArchiveVersion, writeArchiveVersion, clearArchiveVersion, normalizeArchiveVersion } from './profile-cache'
@@ -61,6 +62,8 @@ export interface OpenProfileOptions {
   /** Proxy URL: scheme://user:pass@host:port */
   proxyUrl?: string
   headless?: boolean
+  /** Whether the new window takes focus. Default true. */
+  focusWindow?: boolean
   /** Presigned download URL for the profile archive (restores browser state). */
   archiveGetUrl?: string
   /** The cloud archive's generation. Equal to the local marker means this
@@ -263,6 +266,8 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
     licenseToken,
     label: opts.label ?? resolved.name,
     headless: opts.headless,
+    focusWindow: opts.focusWindow,
+    localeFromConfig: kernelReadsAppLocaleFromConfig(kv.version, installedKernelBuild(cacheDir, kv.version)),
     canvasNoise: opts.canvasNoise,
     apiLog: opts.apiLog,
     webauthnCapture: opts.webauthnCapture,

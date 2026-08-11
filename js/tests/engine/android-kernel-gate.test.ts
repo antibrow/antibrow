@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  kernelReadsAppLocaleFromConfig,
   kernelSupportsAndroid,
   findKernelVersion,
   findKernelVersionStrict,
@@ -94,5 +95,16 @@ describe('android launch args', () => {
     const args = buildLaunchArgs({ ...base, headless: true, androidScreen: { width: 412, height: 917 } })
     expect(args).toContain('--window-size=412,917')
     expect(args).toContain('--window-position=-10000,-10000')
+  })
+})
+
+describe('kernelReadsAppLocaleFromConfig', () => {
+  it('needs both the version and a build from the day the patch shipped', () => {
+    // 150 was rebuilt the same day without the patch, so the date alone is not
+    // enough; 151's earlier builds predate it, so the version alone is not either.
+    expect(kernelReadsAppLocaleFromConfig('151.0.7922.72', '2026-08-10c')).toBe(true)
+    expect(kernelReadsAppLocaleFromConfig('151.0.7922.72', '2026-08-08 16:23')).toBe(false)
+    expect(kernelReadsAppLocaleFromConfig('150.0.7871.182', '2026-08-10')).toBe(false)
+    expect(kernelReadsAppLocaleFromConfig('151.0.7922.72', undefined)).toBe(false)
   })
 })

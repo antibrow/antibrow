@@ -96,6 +96,7 @@ export function buildOpenProfileOptions(input: BuildOpenProfileOptionsInput): Op
     profileDir,
     temporary,
     headless: options.headless,
+    focusWindow: options.focusWindow,
     updateKernelBeforeLaunch: options.updateKernelBeforeLaunch,
     deviceType: options.deviceType,
     realFingerprint: options.realFingerprint,

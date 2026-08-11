@@ -19,6 +19,8 @@ vi.mock('../../src/engine/downloader', () => ({
   ensureKernel: (...a: unknown[]) => ensureKernelSpy(...(a as [])),
   refreshKernelVersions: (...a: unknown[]) => refreshSpy(...(a as [])),
   kernelUpdateStatus: (...a: unknown[]) => kernelUpdateStatusSpy(...(a as [])),
+  installedKernelBuild: () => undefined,
+  kernelReadsAppLocaleFromConfig: () => false,
 }))
 
 vi.mock('../../src/engine/persona', () => ({

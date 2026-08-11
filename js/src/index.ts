@@ -80,6 +80,7 @@ export {
   kernelUpdateStatus,
   installedKernelUpdates,
   kernelSupportsAndroid,
+  kernelReadsAppLocaleFromConfig,
   ANDROID_MIN_KERNEL_VERSION,
   ANDROID_MIN_KERNEL_BUILD,
   defaultCacheDir,

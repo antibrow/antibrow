@@ -4,6 +4,8 @@
 
 # antibrow
 
+**English** | [Русский](https://github.com/antibrow/antibrow/blob/main/python/README.ru.md)
+
 **The antidetect browser your AI agent can drive.**
 
 Kernel-level fingerprint spoofing · unlimited local profiles, free · the Playwright API you already write
@@ -138,6 +140,7 @@ Starts the kernel and returns a handle that is ready to drive. Blocking (sync) A
 | Option | Type | Default | What it does |
 |---|---|---|---|
 | `profile` | `str` | `"default"` | Profile name. Same name → same identity, cookies, storage. Unlimited, free, local. |
+| `focus_window` | `bool` | `True` | Whether the new window takes focus. `False` opens it behind whatever is in front, so a launch does not interrupt you - the window is still there, just not focused. Not headless. Needs Chrome 151 build `2026-08-10c`+ on macOS; every other kernel ignores it and focuses the window. |
 | `headless` | `bool` | `False` | Hide the window. On Windows the window is moved off-screen instead of `--headless=new`, because headless Chromium has its own detectable fingerprint. On Linux use Xvfb (see [Docker](#docker)); on macOS it has no effect yet. |
 | `proxy` | `str \| dict` | `None` | `"http://user:pass@host:port"`, `"socks5://…"`, `"https://…"`, or Playwright's `{"server": …, "username": …, "password": …}`. |
 | `geoip` | `bool` | `True` | Resolve the proxy's exit IP through the proxy and make timezone + WebRTC match it. No-op without a proxy. |

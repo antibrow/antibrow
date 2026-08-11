@@ -18,6 +18,8 @@ vi.mock('../../src/engine/downloader', () => ({
   ensureKernel: async () => 'C:/kernels/chrome.exe',
   refreshKernelVersions: async () => undefined,
   kernelUpdateStatus: () => null,
+  installedKernelBuild: () => undefined,
+  kernelReadsAppLocaleFromConfig: () => false,
 }))
 
 vi.mock('../../src/engine/persona', () => ({

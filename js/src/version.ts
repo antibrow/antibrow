@@ -1,7 +1,7 @@
-/** Version gate: the SDK reports its version, the server decides. */
-export const SDK_VERSION = '2.6.0'
+/** Version gate: the client reads a static policy manifest and decides locally. */
+export const SDK_VERSION = '2.7.0'
 
-const DEFAULT_SERVER = 'https://antibrow.com'
+const DEFAULT_MANIFEST_URL = 'https://download.antibrow.com/app-versions.json'
 
 export interface VersionCheckResult {
   status: 'ok' | 'recommended' | 'required'
@@ -12,37 +12,74 @@ export interface VersionCheckResult {
   notes?: string | null
 }
 
-/** Fails open: any error resolves to `ok`, so an outage never bricks a client. */
+interface ManifestEntry {
+  latest?: unknown
+  minSupported?: unknown
+  downloadUrl?: unknown
+  notes?: unknown
+}
+
+function parseVersion(v: string): number[] {
+  return v.trim().replace(/^v/i, '').split('.').map((seg) => parseInt(seg, 10) || 0)
+}
+
+/** -1 / 0 / 1. Missing trailing segments count as zero, so 1.2 equals 1.2.0. */
+export function compareVersions(a: string, b: string): number {
+  const pa = parseVersion(a)
+  const pb = parseVersion(b)
+  const len = Math.max(pa.length, pb.length)
+  for (let i = 0; i < len; i++) {
+    const x = pa[i] ?? 0
+    const y = pb[i] ?? 0
+    if (x < y) return -1
+    if (x > y) return 1
+  }
+  return 0
+}
+
+/** The manifest keeps a fixed filename, so an update can sit in a CDN edge cache. */
+function cacheBustUrl(url: string): string {
+  const sep = url.includes('?') ? '&' : '?'
+  return `${url}${sep}_cb=${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
+}
+
+/** Fails open: anything unreadable resolves to `ok`, so an outage or a broken
+ *  manifest never bricks a client. */
 export async function checkClientVersion(options: {
   client: string
   version: string
+  manifestUrl?: string
+  /** Ignored - kept so existing call sites that build `{ ..., server }` still typecheck. */
   server?: string
 }): Promise<VersionCheckResult> {
   const { client, version } = options
-  const server = options.server || DEFAULT_SERVER
-
-  const url = new URL('/api/v1/version/check', server)
-  url.searchParams.set('client', client)
-  url.searchParams.set('version', version)
+  const url = cacheBustUrl(options.manifestUrl || DEFAULT_MANIFEST_URL)
 
   try {
-    const res = await fetch(url.toString(), { headers: { Accept: 'application/json' } })
+    const res = await fetch(url, { headers: { Accept: 'application/json' } })
     if (!res.ok) return { status: 'ok', current: version }
 
-    const body = (await res.json()) as Partial<VersionCheckResult>
+    const body = (await res.json()) as { clients?: Record<string, ManifestEntry> }
+    const entry = body?.clients?.[client]
+    if (!entry || typeof entry.latest !== 'string' || typeof entry.minSupported !== 'string') {
+      return { status: 'ok', current: version }
+    }
+
+    const { latest, minSupported } = entry
     const status =
-      body.status === 'required' || body.status === 'recommended' ? body.status : 'ok'
+      compareVersions(version, minSupported) < 0 ? 'required'
+      : compareVersions(version, latest) < 0 ? 'recommended'
+      : 'ok'
 
     return {
       status,
       current: version,
-      latest: body.latest ?? null,
-      minSupported: body.minSupported ?? null,
-      downloadUrl: body.downloadUrl ?? null,
-      notes: body.notes ?? null,
+      latest,
+      minSupported,
+      downloadUrl: typeof entry.downloadUrl === 'string' ? entry.downloadUrl : null,
+      notes: typeof entry.notes === 'string' ? entry.notes : null,
     }
   } catch {
-
     return { status: 'ok', current: version }
   }
 }

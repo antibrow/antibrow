@@ -52,6 +52,8 @@ def build_launch_args(
     cdp_port: int,
     language: str = "en-US",
     headless: bool = False,
+    focus_window: bool = True,
+    locale_from_config: bool = False,
     platform: str = "win32",
     proxy: Optional[ProxySpec] = None,
     proxy_auth: str = "native",
@@ -117,6 +119,11 @@ def build_launch_args(
         # breaks page layout and contradicts the spoofed screen.
         args.append("--window-position=-10000,-10000")
 
+    if not focus_window:
+        # Open behind whatever has focus instead of taking it. Kernel builds
+        # without the switch ignore it, so this stays safe on an older install.
+        args.append("--fp-no-activate")
+
     if android_screen:
         # Match the window to the persona's screen: reporting screen.width 412
         # beside an innerWidth of 1280 is a one-line tell. Holds when hidden too,
@@ -143,7 +150,8 @@ def build_launch_args(
         # over CDP, and every existing profile opens with two windows. Kernels
         # carrying the mac-locale patch read the locale from fp-config, which
         # retires the pair entirely.
-        args += ["-AppleLanguages", "({0})".format(language)]
+        if not locale_from_config:
+            args += ["-AppleLanguages", "({0})".format(language)]
 
     # The passkey store sits at the profile root, outside --user-data-dir, so an
     # export or a cloud sync can carry it to another machine.

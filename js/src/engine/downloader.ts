@@ -330,6 +330,26 @@ export function kernelVersionAtLeast(version: string | undefined, min: string): 
  * produces a profile whose UA says Android while its client hints say desktop -
  * worse than no Android at all.
  */
+/** First kernel that reads the macOS application locale out of fp-config. */
+export const APP_LOCALE_MIN_KERNEL_VERSION = '151.0.7922.72'
+export const APP_LOCALE_MIN_KERNEL_BUILD = '2026-08-10'
+
+/**
+ * Whether the kernel takes the macOS application locale from fp-config, which
+ * decides whether the launcher still has to pass `-AppleLanguages`. Same two
+ * halves as the Android gate, and getting it wrong is worse than the stray tab
+ * the pair causes: dropping the argv on a kernel that still needs it leaves
+ * navigator.language spoofed while Intl reports the host locale, which is a
+ * contradiction any script can read.
+ */
+export function kernelReadsAppLocaleFromConfig(version: string | undefined, build: string | undefined): boolean {
+  if (!kernelVersionAtLeast(version, APP_LOCALE_MIN_KERNEL_VERSION)) return false
+  if (!build || build.length < 10) return false
+  const date = build.slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false
+  return date >= APP_LOCALE_MIN_KERNEL_BUILD
+}
+
 export function kernelSupportsAndroid(version: string | undefined, build: string | undefined): boolean {
   if (!kernelVersionAtLeast(version, ANDROID_MIN_KERNEL_VERSION)) return false
   if (!build || build.length < 10) return false

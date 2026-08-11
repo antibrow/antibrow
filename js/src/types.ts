@@ -45,6 +45,13 @@ export interface LaunchOptions {
   color?: string
   /** Headless mode, default false */
   headless?: boolean
+  /**
+   * Whether the new window takes focus. Default true. `false` opens it behind
+   * whatever is in front, so a launch does not interrupt what you are doing -
+   * the window is still there, just not focused. Needs a kernel build that
+   * carries the switch; older ones focus the window either way.
+   */
+  focusWindow?: boolean
   /** User data directory for this local profile */
   userDataDir?: string
   /** Enable live view streaming to the dashboard */

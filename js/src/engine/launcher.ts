@@ -24,6 +24,8 @@ export interface KernelLaunchOptions extends Omit<FpConfigSettings, 'apiLogPath'
   /** Window/address label. Defaults to the profile directory basename. */
   label?: string
   headless?: boolean
+  focusWindow?: boolean
+  localeFromConfig?: boolean
   /**
    * Whether newly registered passkeys go into this profile's portable store.
    * Absent/true = capture. false lets Chrome's own "where to save" dialog
@@ -327,6 +329,11 @@ export interface BuildLaunchArgsOptions {
   cdpPort: number
   language: string
   headless?: boolean
+  /** Whether the new window takes focus. Default true. */
+  focusWindow?: boolean
+  /** True when the kernel reads the macOS app locale from fp-config, which
+   *  retires the -AppleLanguages pair and the stray tab it opens. */
+  localeFromConfig?: boolean
   profileDir: string
   webauthnCapture?: boolean
   /** Reopen the tabs of the previous session. Default true. */
@@ -383,6 +390,10 @@ export function buildLaunchArgs(opts: BuildLaunchArgsOptions): string[] {
     // window shrinks the viewport with it (a desktop fp-config does not spoof
     // outerWidth), which breaks page layout and contradicts the spoofed screen.
     ...(isWin && opts.headless ? ['--window-position=-10000,-10000'] : []),
+    // Explicit false only: an unset option must not change how a launch has
+    // always behaved. Kernel builds without the switch ignore it, so this stays
+    // safe on an older install.
+    ...(opts.focusWindow === false ? ['--fp-no-activate'] : []),
     // Android keeps its window sized to the persona screen even when hidden:
     // innerWidth === screen.width is part of the phone's identity, and being
     // off-screen does not change what the page measures.
@@ -404,7 +415,9 @@ export function buildLaunchArgs(opts: BuildLaunchArgsOptions): string[] {
     // every existing profile opens with two windows. Not worth trading for a
     // flash. Kernels carrying the mac-locale patch read the locale from fp-config
     // and retire the pair entirely.
-    ...(opts.platform === 'darwin' ? ['-AppleLanguages', `(${opts.language})`] : []),
+    ...(opts.platform === 'darwin' && !opts.localeFromConfig
+      ? ['-AppleLanguages', `(${opts.language})`]
+      : []),
   ]
 
   args.push(`--fp-webauthn-store=${path.join(opts.profileDir, PASSKEYS_FILE)}`)
@@ -535,6 +548,8 @@ export async function launchKernel(opts: KernelLaunchOptions): Promise<KernelSes
     cdpPort,
     language: persona.languages[0] ?? 'en-US',
     headless: opts.headless,
+    focusWindow: opts.focusWindow,
+    localeFromConfig: opts.localeFromConfig,
     profileDir,
     webauthnCapture: opts.webauthnCapture,
     restoreTabs: opts.restoreTabs,
@@ -626,8 +641,11 @@ export async function launchKernel(opts: KernelLaunchOptions): Promise<KernelSes
 
   if (process.platform === 'darwin') {
     // Order matters: close first (in case a startup window did appear), then make
-    // sure exactly one page is left for the caller.
-    await closeStrayLocaleTab(context, persona.languages[0] ?? 'en-US').catch(() => {})
+    // sure exactly one page is left for the caller. With no -AppleLanguages pair
+    // there is no tab to wait for, and the poll costs up to 3s of every launch.
+    if (!opts.localeFromConfig) {
+      await closeStrayLocaleTab(context, persona.languages[0] ?? 'en-US').catch(() => {})
+    }
     await ensureStartupPage(context)
   }
 

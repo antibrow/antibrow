@@ -4,6 +4,36 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.7.0] - 2026-08-10
+
+### Added
+
+- `launch({ focusWindow: false })` opens the browser behind whatever has focus
+  instead of in front of it, so starting a session does not interrupt what you
+  are doing. The window is still there and normally sized - this is not
+  headless, it just does not come to the front. Default is `true`. Also exposed
+  on the MCP `launch_browser` tool.
+
+  It needs a kernel that carries the switch: Chrome 151 (`151.0.7922.72`) build
+  `2026-08-10c` or newer, macOS only for now. Every other build ignores the
+  option and focuses the window as before.
+
+### Changed
+
+- `checkClientVersion()` reads the version policy from a static manifest on the
+  CDN instead of calling the API. The `server` option is accepted but ignored;
+  pass `manifestUrl` to point at a different manifest. It still fails open to
+  `ok` when the manifest cannot be read.
+
+### Fixed
+
+- macOS: the stray `http://(en-us)/` tab is gone on kernels that read the
+  application locale from the profile config (Chrome 151, build `2026-08-10c` or
+  newer). The launcher stops passing the `-AppleLanguages` pair to those builds,
+  so the tab is never opened and the wait that watched for it is skipped. Older
+  kernels still get the pair, because dropping it there would leave `Intl`
+  reporting the host locale while `navigator.language` says otherwise.
+
 ## [2.6.0] - 2026-08-10
 
 ### Added

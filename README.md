@@ -3,6 +3,8 @@
   <em>The antidetect browser your AI agent can drive.</em>
 </p>
 
+**English** | [Русский](README.ru.md)
+
 <p align="center">
   <a href="https://pypi.org/project/antibrow/"><img src="https://img.shields.io/pypi/v/antibrow" alt="PyPI"></a>
   <a href="https://www.npmjs.com/package/anti-detect-browser"><img src="https://img.shields.io/npm/v/anti-detect-browser" alt="npm"></a>

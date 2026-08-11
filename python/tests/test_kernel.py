@@ -438,3 +438,14 @@ def test_cache_busting_keeps_the_url_intact():
     assert busted.startswith("https://example.com/a.zip?_cb=")
     assert "&_cb=" in K._cache_bust("https://example.com/a.zip?x=1")
     assert K._cache_bust("https://e/a") != K._cache_bust("https://e/a")
+
+
+def test_kernel_reads_app_locale_from_config_needs_version_and_build():
+    from antibrow.kernel import kernel_reads_app_locale_from_config as reads
+
+    # 150 was rebuilt the same day without the patch, so the date alone is not
+    # enough; 151's earlier builds predate it, so the version alone is not either.
+    assert reads("151.0.7922.72", "2026-08-10c") is True
+    assert reads("151.0.7922.72", "2026-08-08 16:23") is False
+    assert reads("150.0.7871.182", "2026-08-10") is False
+    assert reads("151.0.7922.72", None) is False
