@@ -5,6 +5,7 @@ from antibrow.kernel import (
     ANDROID_MIN_KERNEL_VERSION,
     APP_LOCALE_MIN_KERNEL_VERSION,
     KERNEL_VERSIONS,
+    all_kernel_versions,
     find_kernel_version,
     find_kernel_version_strict,
     kernel_dir,
@@ -12,7 +13,6 @@ from antibrow.kernel import (
     normalize_kernel_version,
     parse_kernel_manifest,
     register_kernel_versions,
-    all_kernel_versions,
 )
 
 

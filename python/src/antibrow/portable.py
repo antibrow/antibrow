@@ -15,7 +15,8 @@ import io
 import json
 import re
 import zipfile
-from dataclasses import dataclass, fields as _dataclass_fields
+from dataclasses import dataclass
+from dataclasses import fields as _dataclass_fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
