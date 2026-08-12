@@ -102,7 +102,7 @@ Three real phones ship **inside the package**, so a free-plan profile can be And
 Two things to know:
 
 - **The device type is fixed at creation.** It lives in the profile's persona, so passing `deviceType` to an existing profile does nothing. Make a new profile to switch.
-- **Android needs kernel `151.0.7922.72`** (build `2026-08-07` or newer), which carries the mobile support. The SDK pins that version for Android profiles, installs or refreshes it for you, and fails with an explicit message rather than launching a desktop kernel behind a phone's fingerprint. Check an install yourself with `kernelSupportsAndroid(version, build)`.
+- **Android needs kernel `151` or newer**, the first one carrying the mobile support. The SDK picks the newest qualifying kernel for a new Android profile, installs it for you, and fails with an explicit message rather than launching a desktop kernel behind a phone's fingerprint. Check a version yourself with `kernelSupportsAndroid(version)`, or list what qualifies with `androidCapableKernels()`.
 
 Want the identity drawn from the fingerprint library on the server instead of the bundled table - a different real machine each time, Android or Windows?
 
@@ -120,7 +120,7 @@ The fingerprint browser kernel ships new builds over time (fresh Chrome majors, 
 // Any installed kernel have a newer build published?
 if (await ab.hasKernelUpdate()) {
   const updated = await ab.updateKernel()   // pull the newer build(s)
-  console.log('updated kernels:', updated)  // → ['150.0.7871.182']
+  console.log('updated kernels:', updated)  // → ['150']
 }
 
 // Or inspect per-version detail
@@ -128,7 +128,7 @@ const status = await ab.checkKernelUpdates()
 // [{ version, label, installed, installedBuild, availableBuild, updateAvailable }]
 
 // Update just one version, with progress
-await ab.updateKernel('150.0.7871.182', msg => console.log(msg))
+await ab.updateKernel('150', msg => console.log(msg))
 ```
 
 Even without that, `launch()` quietly checks (once per process, in the background) and prints a one-line notice if a newer kernel build exists — so you'll know, without it ever updating behind your back or slowing the launch:
@@ -216,11 +216,8 @@ await ab.launch({ profile: 'task-01', focusWindow: false })
 The window is still there and still normally sized - this is not headless, so
 nothing about the fingerprint changes; it just does not come to the front.
 
-It needs a kernel that carries the switch: today that is **Chrome 151
-(`151.0.7922.72`), build `2026-08-10c` or newer, macOS only**. Anything else
-ignores the option and focuses the window as before, so check the profile's
-kernel before relying on it - a profile created by `launch()` is on the default
-kernel, which does not have the switch yet.
+Window stacking is decided in the kernel rather than in the SDK, so install the
+latest kernel for the profile before relying on it.
 
 ### Cloud sync
 

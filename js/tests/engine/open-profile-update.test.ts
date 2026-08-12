@@ -13,7 +13,7 @@ const refreshSpy = vi.fn(async () => undefined)
 const kernelUpdateStatusSpy = vi.fn((): Record<string, unknown> | null => null)
 
 vi.mock('../../src/engine/downloader', () => ({
-  DEFAULT_KERNEL_VERSION: { version: '150.0.7871.182', label: 'Chrome 150', platforms: {} },
+  DEFAULT_KERNEL_VERSION: { version: '150.0.0.0', label: 'Chrome 150', platforms: {} },
   KERNEL_VERSIONS: [],
   findKernelVersion: (v: string) => ({ version: v, label: `Chrome ${v}`, platforms: {} }),
   ensureKernel: (...a: unknown[]) => ensureKernelSpy(...(a as [])),
@@ -24,7 +24,7 @@ vi.mock('../../src/engine/downloader', () => ({
 }))
 
 vi.mock('../../src/engine/persona', () => ({
-  loadOrGeneratePersona: () => ({ kernelVersion: '150.0.7871.182', chromeMajor: 150, timezone: 'UTC', languages: ['en-US'] }),
+  loadOrGeneratePersona: () => ({ kernelVersion: '150.0.0.0', chromeMajor: 150, timezone: 'UTC', languages: ['en-US'] }),
 }))
 
 const launchKernelSpy = vi.fn(async () => ({
@@ -69,7 +69,7 @@ describe('openProfile kernel catalogue', () => {
   })
 
   it('force-updates before launching when the flag is on and an update exists', async () => {
-    kernelUpdateStatusSpy.mockReturnValue({ version: '150.0.7871.182', updateAvailable: true })
+    kernelUpdateStatusSpy.mockReturnValue({ version: '150.0.0.0', updateAvailable: true })
     const opts = base()
     await openProfile({ ...opts, updateKernelBeforeLaunch: true })
     // Acting on the published build must not read a stale cached manifest.
@@ -82,7 +82,7 @@ describe('openProfile kernel catalogue', () => {
   })
 
   it('checks but does not force-update when the flag is on and no update exists', async () => {
-    kernelUpdateStatusSpy.mockReturnValue({ version: '150.0.7871.182', updateAvailable: false })
+    kernelUpdateStatusSpy.mockReturnValue({ version: '150.0.0.0', updateAvailable: false })
     await openProfile({ ...base(), updateKernelBeforeLaunch: true })
     expect(refreshSpy).toHaveBeenCalledTimes(1)
     expect(ensureKernelSpy).toHaveBeenCalledTimes(1) // only the normal ensure

@@ -27,12 +27,24 @@ export interface KernelVersion {
 }
 
 /**
+ * A kernel is identified by its Chrome major. The remote manifest is mirrored
+ * verbatim from upstream and still carries full version strings, and every
+ * profile created before this change has one persisted in persona.json, so
+ * every version string entering the catalogue passes through here.
+ */
+export function normalizeKernelVersion(version: string | undefined): string {
+  const raw = (version ?? '').trim()
+  const head = raw.split('.')[0]
+  return /^\d+$/.test(head) ? head : raw
+}
+
+/**
  * The one version compiled in: what new profiles get. Every other kernel comes
  * from the manifest at runtime, so the default moves only with a release.
  */
 export const KERNEL_VERSIONS: KernelVersion[] = [
   {
-    version: '150.0.7871.182',
+    version: '150',
     label: 'Chrome 150',
     platforms: {
       win32: {
@@ -147,8 +159,9 @@ export function allKernelVersions(): KernelVersion[] {
 export function registerKernelVersions(versions: KernelVersion[]): void {
   for (const v of versions) {
     if (!v?.version || !v.platforms) continue
-    const existing = registeredKernelVersions.find((k) => k.version === v.version)
-    if (!existing) registeredKernelVersions.push({ version: v.version, label: v.label, platforms: copyPlatforms(v.platforms) })
+    const version = normalizeKernelVersion(v.version)
+    const existing = registeredKernelVersions.find((k) => k.version === version)
+    if (!existing) registeredKernelVersions.push({ version, label: v.label, platforms: copyPlatforms(v.platforms) })
     else mergePlatformsInto(existing, v.platforms)
   }
 }
@@ -163,15 +176,19 @@ export async function fetchRemoteKernelVersions(manifestUrl: string = KERNEL_MAN
   const text = await res.text()
   const json = JSON.parse(text.replace(/^﻿/, '')) as { versions?: RemoteKernelEntry[] }
   const rows = Array.isArray(json.versions) ? json.versions : []
+  // Newest full version first, so the first-writer-wins asset pick below lands
+  // on the newest build when upstream ships two full versions of one major.
+  const sorted = [...rows].sort((a, b) => compareVersionsDesc(a?.version ?? '', b?.version ?? ''))
   const byVersion = new Map<string, KernelVersion>()
-  for (const r of rows) {
+  for (const r of sorted) {
     const plat = MANIFEST_PLATFORM[r.platform]
-    if (!plat || !r.version || !r.download_url) continue
+    const version = normalizeKernelVersion(r.version)
+    if (!plat || !version || !r.download_url) continue
     const downloadUrl = /^https?:\/\//i.test(r.download_url) ? r.download_url : new URL(r.download_url, manifestUrl).toString()
-    let kv = byVersion.get(r.version)
+    let kv = byVersion.get(version)
     if (!kv) {
-      kv = { version: r.version, label: r.label ?? r.version, platforms: {} }
-      byVersion.set(r.version, kv)
+      kv = { version, label: r.label ?? `Chrome ${version}`, platforms: {} }
+      byVersion.set(version, kv)
     }
     if (!kv.platforms[plat]) {
       kv.platforms[plat] = { downloadUrl, exeRelPath: r.exe_rel_path ?? defaultExeRelPath(plat), build: r.build }
@@ -180,8 +197,13 @@ export async function fetchRemoteKernelVersions(manifestUrl: string = KERNEL_MAN
   return [...byVersion.values()]
 }
 
-/** Bare `KernelVersion[]`, shared with other clients in the same cache dir. */
-export const KERNEL_VERSION_CACHE_FILE = 'kernel-versions-cache.json'
+/**
+ * Bare `KernelVersion[]`, shared with other clients in the same cache dir.
+ * The name changed when versions became major-only: an older client reading
+ * normalized entries out of the old file would treat "151" as an unknown
+ * version and refuse to launch anything pinned to it. It keeps its own file.
+ */
+export const KERNEL_VERSION_CACHE_FILE = 'kernel-catalog-cache.json'
 
 export const KERNEL_MANIFEST_TTL_MS = 60 * 60 * 1000
 
@@ -224,6 +246,7 @@ export async function refreshKernelVersions(
   cacheDir: string,
   opts?: { force?: boolean; ttlMs?: number; manifestUrl?: string },
 ): Promise<void> {
+  migrateLegacyKernelDirs(cacheDir)
   const cached = loadCachedKernelVersions(cacheDir)
   if (cached.length) registerKernelVersions(cached)
 
@@ -241,7 +264,8 @@ export async function refreshKernelVersions(
 
 /** Look up a version string, falling back to DEFAULT_KERNEL_VERSION. */
 export function findKernelVersion(version: string): KernelVersion {
-  return allKernelVersions().find((kv) => kv.version === version) ?? DEFAULT_KERNEL_VERSION
+  const want = normalizeKernelVersion(version)
+  return allKernelVersions().find((kv) => kv.version === want) ?? DEFAULT_KERNEL_VERSION
 }
 
 /**
@@ -251,10 +275,11 @@ export function findKernelVersion(version: string): KernelVersion {
  * anything pinned to a specific kernel.
  */
 export function findKernelVersionStrict(version: string): KernelVersion {
-  const kv = allKernelVersions().find((k) => k.version === version)
+  const want = normalizeKernelVersion(version)
+  const kv = allKernelVersions().find((k) => k.version === want)
   if (kv) return kv
   throw new Error(
-    `Kernel ${version} is not in the catalogue. Refresh the kernel list with an internet ` +
+    `Kernel ${want} is not in the catalogue. Refresh the kernel list with an internet ` +
       'connection and retry; falling back to another version would change this profile\'s identity.',
   )
 }
@@ -286,7 +311,56 @@ export function kernelsForPlatform(platform?: SupportedPlatform): KernelVersion[
 }
 
 export function kernelDir(cacheDir: string, version: string): string {
-  return path.join(cacheDir, 'kernels', version)
+  return path.join(cacheDir, 'kernels', normalizeKernelVersion(version))
+}
+
+const LEGACY_KERNEL_DIR_RE = /^\d+\.\d+\.\d+\.\d+$/
+
+/**
+ * Kernels used to live under their full version string. Renaming beats
+ * re-downloading: the payload is 190-320MB and the binaries are identical.
+ * Best-effort throughout - the worst outcome is one extra download.
+ */
+export function migrateLegacyKernelDirs(cacheDir: string): void {
+  const root = path.join(cacheDir, 'kernels')
+  let entries: string[]
+  try {
+    entries = fs.readdirSync(root)
+  } catch {
+    return
+  }
+
+  const byMajor = new Map<string, string[]>()
+  for (const name of entries) {
+    if (!LEGACY_KERNEL_DIR_RE.test(name)) continue
+    const major = name.split('.')[0]
+    const list = byMajor.get(major)
+    if (list) list.push(name)
+    else byMajor.set(major, [name])
+  }
+
+  for (const [major, legacy] of byMajor) {
+    legacy.sort(compareVersionsDesc)
+    let renamed: string | undefined
+    if (!fs.existsSync(path.join(root, major))) {
+      try {
+        fs.renameSync(path.join(root, legacy[0]), path.join(root, major))
+        renamed = legacy[0]
+      } catch {
+        // Rename failed (locked by antivirus, cross-device): leave every dir
+        // alone so the next launch can retry instead of forcing a re-download.
+        continue
+      }
+    }
+    for (const name of legacy) {
+      if (name === renamed) continue
+      try {
+        fs.rmSync(path.join(root, name), { recursive: true, force: true })
+      } catch {
+        /* best-effort */
+      }
+    }
+  }
 }
 
 const KERNEL_BUILD_MARKER = '.fp-build'
@@ -310,35 +384,31 @@ export function writeInstalledKernelBuild(cacheDir: string, version: string, bui
   }
 }
 
-export const ANDROID_MIN_KERNEL_VERSION = '151.0.7922.72'
-/** Build stamp of the first kernel carrying the mobile device patches. */
-export const ANDROID_MIN_KERNEL_BUILD = '2026-08-07 05:17'
+/**
+ * Oldest kernel carrying the mobile device patches - a floor, not a pin. Any
+ * newer kernel qualifies too, and the catalogue decides which ones exist.
+ */
+export const ANDROID_MIN_KERNEL_VERSION = '151'
 
 /** True when `version` is at or above `min`, comparing numerically per segment. */
 export function kernelVersionAtLeast(version: string | undefined, min: string): boolean {
   if (!version) return false
   // compareVersionsDesc sorts newest first, so <= 0 means version >= min.
-  return compareVersionsDesc(version, min) <= 0
+  return compareVersionsDesc(normalizeKernelVersion(version), normalizeKernelVersion(min)) <= 0
 }
 
-/**
- * Both halves are load-bearing. The version alone cannot answer it: the same
- * version shipped twice, once before the mobile patches and once after. The
- * build date alone cannot either: every kernel version gets rebuilt on the same
- * day when the whole set is republished, so a date-only rule lets a kernel with
- * none of the mobile patches through. An older binary handed an Android config
- * produces a profile whose UA says Android while its client hints say desktop -
- * worse than no Android at all.
- */
 /** First kernel that reads the macOS application locale out of fp-config. */
-export const APP_LOCALE_MIN_KERNEL_VERSION = '151.0.7922.72'
+export const APP_LOCALE_MIN_KERNEL_VERSION = '151'
 export const APP_LOCALE_MIN_KERNEL_BUILD = '2026-08-10'
 
 /**
  * Whether the kernel takes the macOS application locale from fp-config, which
- * decides whether the launcher still has to pass `-AppleLanguages`. Same two
- * halves as the Android gate, and getting it wrong is worse than the stray tab
- * the pair causes: dropping the argv on a kernel that still needs it leaves
+ * decides whether the launcher still has to pass `-AppleLanguages`. Both halves
+ * are load-bearing here: the same version shipped twice, once before the patch
+ * and once after, so the version alone cannot answer it, and every version gets
+ * rebuilt on the same day when the set is republished, so the date alone lets an
+ * unpatched kernel through. Getting it wrong is worse than the stray tab the
+ * argv pair causes: dropping it on a kernel that still needs it leaves
  * navigator.language spoofed while Intl reports the host locale, which is a
  * contradiction any script can read.
  */
@@ -350,12 +420,37 @@ export function kernelReadsAppLocaleFromConfig(version: string | undefined, buil
   return date >= APP_LOCALE_MIN_KERNEL_BUILD
 }
 
-export function kernelSupportsAndroid(version: string | undefined, build: string | undefined): boolean {
-  if (!kernelVersionAtLeast(version, ANDROID_MIN_KERNEL_VERSION)) return false
-  if (!build || build.length < 10) return false
-  const date = build.slice(0, 10)
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false
-  return date >= ANDROID_MIN_KERNEL_BUILD.slice(0, 10)
+/**
+ * Whether a kernel can run an Android profile: the version floor alone decides
+ * it. `_build` is accepted so callers written against the older two-argument
+ * form keep working, and is ignored.
+ */
+export function kernelSupportsAndroid(version: string | undefined, _build?: string | undefined): boolean {
+  return kernelVersionAtLeast(version, ANDROID_MIN_KERNEL_VERSION)
+}
+
+/**
+ * Catalogue entries whose published build for this platform carries the mobile
+ * patches, newest first. Judged per platform because the same version is built
+ * per platform on its own schedule.
+ */
+export function androidCapableKernels(platform?: SupportedPlatform): KernelVersion[] {
+  const plat = platform ?? currentPlatform()
+  return kernelsForPlatform(plat).filter((kv) => kernelSupportsAndroid(kv.version, kv.platforms[plat]?.build))
+}
+
+/**
+ * Which kernel an Android profile is created against: the requested one when it
+ * qualifies, else the newest that does. The last resort is a strict lookup of
+ * the floor - strict because a lenient one answers with the compiled-in desktop
+ * default, freezing a kernel with no mobile patches into a profile claiming to
+ * be a phone.
+ */
+export function resolveAndroidKernel(requested?: string, platform?: SupportedPlatform): KernelVersion {
+  const capable = androidCapableKernels(platform)
+  const want = requested ? normalizeKernelVersion(requested) : undefined
+  const hit = want ? capable.find((kv) => kv.version === want) : undefined
+  return hit ?? capable[0] ?? findKernelVersionStrict(ANDROID_MIN_KERNEL_VERSION)
 }
 
 export function kernelExePath(cacheDir: string, kv: KernelVersion, platform?: SupportedPlatform): string {

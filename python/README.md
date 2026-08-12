@@ -140,7 +140,7 @@ Starts the kernel and returns a handle that is ready to drive. Blocking (sync) A
 | Option | Type | Default | What it does |
 |---|---|---|---|
 | `profile` | `str` | `"default"` | Profile name. Same name → same identity, cookies, storage. Unlimited, free, local. |
-| `focus_window` | `bool` | `True` | Whether the new window takes focus. `False` opens it behind whatever is in front, so a launch does not interrupt you - the window is still there, just not focused. Not headless. Needs Chrome 151 build `2026-08-10c`+ on macOS; every other kernel ignores it and focuses the window. |
+| `focus_window` | `bool` | `True` | Whether the new window takes focus. `False` opens it behind whatever is in front, so a launch does not interrupt you - the window is still there, just not focused. Not headless. Decided in the kernel, so install the latest kernel for the profile before relying on it. |
 | `headless` | `bool` | `False` | Hide the window. On Windows the window is moved off-screen instead of `--headless=new`, because headless Chromium has its own detectable fingerprint. On Linux use Xvfb (see [Docker](#docker)); on macOS it has no effect yet. |
 | `proxy` | `str \| dict` | `None` | `"http://user:pass@host:port"`, `"socks5://…"`, `"https://…"`, or Playwright's `{"server": …, "username": …, "password": …}`. |
 | `geoip` | `bool` | `True` | Resolve the proxy's exit IP through the proxy and make timezone + WebRTC match it. No-op without a proxy. |
@@ -291,7 +291,7 @@ print(browser.persona.android_model, browser.persona.android_os_major)
 Two constraints:
 
 - **The device type is frozen at creation**, inside `persona.json`. Passing `device_type` to an existing profile does nothing; create a new profile to switch.
-- **Android needs kernel `151.0.7922.72`**, build `2026-08-07` or newer. That version is pinned automatically for Android profiles and installed (or refreshed) for you; if the install still lacks mobile support the launch raises rather than starting a desktop kernel behind a phone's fingerprint. `antibrow.kernel_supports_android(version, build)` answers the same question directly.
+- **Android needs kernel `151` or newer** - the first one carrying the mobile support. The newest qualifying kernel is chosen automatically for a new Android profile and installed for you; a profile pinned to an older kernel raises rather than starting a desktop kernel behind a phone's fingerprint. `antibrow.kernel_supports_android(version)` answers the same question directly, and `antibrow.android_capable_kernels()` lists what qualifies.
 
 For a different real machine each time instead of the three bundled rows, add `real_fingerprint=True` (paid plans; it works for `device_type="desktop"` too, drawing a Windows machine). A free key is rejected by the server rather than quietly downgraded to a generated persona.
 
@@ -519,7 +519,7 @@ Mounting the cache volume keeps the kernel (and your profiles) between runs. The
 ## CLI
 
 ```bash
-python -m antibrow install [--version 150.0.7871.182] [--force]   # get the kernel
+python -m antibrow install [--version 151] [--force]              # get the kernel
 python -m antibrow info                                           # kernels, profiles, license
 python -m antibrow login [--key ab_live_…]                        # store an API key
 python -m antibrow clear-temp [--older-than 7] [--dry-run]        # delete temporary profiles

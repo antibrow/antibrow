@@ -37,7 +37,10 @@ const installedKernelUpdatesSpy = vi.fn((): Array<Record<string, unknown>> => []
 const ensureKernelSpy = vi.fn(async () => 'C:/kernels/chrome.exe')
 const refreshKernelVersionsSpy = vi.fn(async () => undefined)
 
-vi.mock('../src/engine', () => ({
+vi.mock('../src/engine', async () => ({
+  // The real one, not a stand-in: it is what decides whether a caller's legacy
+  // full version reaches the majors-only catalogue.
+  normalizeKernelVersion: (await vi.importActual<typeof import('../src/engine/downloader')>('../src/engine/downloader')).normalizeKernelVersion,
   openProfile: openProfileSpy,
   getLicenseToken: (...args: unknown[]) => licenseSpy(...(args as [])),
   ensureKernel: (...args: unknown[]) => ensureKernelSpy(...(args as [])),
@@ -165,7 +168,7 @@ describe('AntiDetectBrowser.launch (engine)', () => {
 
   it('prints a notice (once per process) when an installed kernel has an update and the flag is off', async () => {
     installedKernelUpdatesSpy.mockReturnValue([
-      { version: '150.0.7871.182', label: 'Chrome 150', installed: true, updateAvailable: true },
+      { version: '150', label: 'Chrome 150', installed: true, updateAvailable: true },
     ])
     const notify = vi.fn()
     const ab = new AntiDetectBrowser({ key: 'k', notify })
@@ -183,7 +186,7 @@ describe('AntiDetectBrowser.launch (engine)', () => {
 
   it('stays silent when no installed kernel has an update', async () => {
     installedKernelUpdatesSpy.mockReturnValue([
-      { version: '150.0.7871.182', label: 'Chrome 150', installed: true, updateAvailable: false },
+      { version: '150', label: 'Chrome 150', installed: true, updateAvailable: false },
     ])
     const notify = vi.fn()
     const ab = new AntiDetectBrowser({ key: 'k', notify })
@@ -194,7 +197,7 @@ describe('AntiDetectBrowser.launch (engine)', () => {
 
   it('does not print the advisory notice when updateKernelBeforeLaunch is set (it updates instead)', async () => {
     installedKernelUpdatesSpy.mockReturnValue([
-      { version: '150.0.7871.182', label: 'Chrome 150', installed: true, updateAvailable: true },
+      { version: '150', label: 'Chrome 150', installed: true, updateAvailable: true },
     ])
     const notify = vi.fn()
     const ab = new AntiDetectBrowser({ key: 'k', notify })
@@ -208,31 +211,43 @@ describe('AntiDetectBrowser.launch (engine)', () => {
 
   it('updateKernel() force-downloads only the installed versions that have an update', async () => {
     installedKernelUpdatesSpy.mockReturnValue([
-      { version: '150.0.7871.182', label: 'Chrome 150', installed: true, updateAvailable: true },
-      { version: '149.0.7827.201', label: 'Chrome 149', installed: true, updateAvailable: false },
+      { version: '150', label: 'Chrome 150', installed: true, updateAvailable: true },
+      { version: '149', label: 'Chrome 149', installed: true, updateAvailable: false },
     ])
     const ab = new AntiDetectBrowser({ key: 'k' })
     const updated = await ab.updateKernel()
-    expect(updated).toEqual(['150.0.7871.182'])
+    expect(updated).toEqual(['150'])
     expect(ensureKernelSpy).toHaveBeenCalledTimes(1)
     expect(ensureKernelSpy.mock.calls[0][3]).toEqual({ force: true })
   })
 
   it('updateKernel(version) updates just that version, and is a no-op when it has no update', async () => {
     installedKernelUpdatesSpy.mockReturnValue([
-      { version: '150.0.7871.182', label: 'Chrome 150', installed: true, updateAvailable: true },
-      { version: '149.0.7827.201', label: 'Chrome 149', installed: true, updateAvailable: false },
+      { version: '150', label: 'Chrome 150', installed: true, updateAvailable: true },
+      { version: '149', label: 'Chrome 149', installed: true, updateAvailable: false },
     ])
     const ab = new AntiDetectBrowser({ key: 'k' })
-    expect(await ab.updateKernel('150.0.7871.182')).toEqual(['150.0.7871.182'])
-    expect(await ab.updateKernel('149.0.7827.201')).toEqual([]) // no update → nothing re-downloaded
+    expect(await ab.updateKernel('150')).toEqual(['150'])
+    expect(await ab.updateKernel('149')).toEqual([]) // no update → nothing re-downloaded
+    expect(ensureKernelSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('updateKernel(version) accepts the full version older releases documented', async () => {
+    installedKernelUpdatesSpy.mockReturnValue([
+      { version: '150', label: 'Chrome 150', installed: true, updateAvailable: true },
+      { version: '149', label: 'Chrome 149', installed: true, updateAvailable: false },
+    ])
+    const ab = new AntiDetectBrowser({ key: 'k' })
+    // Scripts written against the published 2.7.0 README pass a full version;
+    // matching it raw against the majors-only catalogue is a silent no-op.
+    expect(await ab.updateKernel('150.7.7.7')).toEqual(['150'])
     expect(ensureKernelSpy).toHaveBeenCalledTimes(1)
   })
 
   it('hasKernelUpdate reflects whether any installed kernel is stale', async () => {
-    installedKernelUpdatesSpy.mockReturnValue([{ version: '150.0.7871.182', installed: true, updateAvailable: true }])
+    installedKernelUpdatesSpy.mockReturnValue([{ version: '150', installed: true, updateAvailable: true }])
     expect(await new AntiDetectBrowser({ key: 'k' }).hasKernelUpdate()).toBe(true)
-    installedKernelUpdatesSpy.mockReturnValue([{ version: '150.0.7871.182', installed: true, updateAvailable: false }])
+    installedKernelUpdatesSpy.mockReturnValue([{ version: '150', installed: true, updateAvailable: false }])
     expect(await new AntiDetectBrowser({ key: 'k' }).hasKernelUpdate()).toBe(false)
   })
 

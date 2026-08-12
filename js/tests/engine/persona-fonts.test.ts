@@ -63,7 +63,7 @@ const EXPECTED_FONT_GENERIC = {
 }
 
 function configFor(): Record<string, unknown> {
-  const persona = generatePersona(150, '150.0.7871.182')
+  const persona = generatePersona(150, '150.0.0.0')
   return personaToFpConfig(persona, { label: 'profile-1', timezone: 'America/Los_Angeles' })
 }
 

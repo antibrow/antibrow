@@ -4,6 +4,29 @@ All notable changes to the `antibrow` Python SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- Android capability is decided by the kernel's Chrome major alone. The build
+  stamp is no longer consulted, so a qualifying kernel is no longer refused when
+  its manifest row omits `build` or carries an older date - the compiled-in
+  baseline has no build stamp at all, which made every Android launch depend on
+  a successful manifest fetch. `kernel_supports_android(version)` now takes one
+  argument; the second is still accepted and ignored so existing calls keep
+  working. `ANDROID_MIN_KERNEL_BUILD` is removed: nothing gates on it any more.
+
+### Changed
+
+- An Android profile is created against the newest kernel that carries the
+  mobile device support, not a fixed one. Any kernel at or above the documented
+  minimum qualifies, so newly published ones become available through the kernel
+  manifest without an SDK release. `launch(device_type="android",
+  kernel_version=...)` honours an explicit version when it qualifies and falls
+  back to the newest that does otherwise; existing profiles keep the kernel
+  frozen into their identity. New: `android_capable_kernels()` and
+  `resolve_android_kernel()`.
+
 ## [0.8.0] - 2026-08-10
 
 ### Added
@@ -13,9 +36,8 @@ All notable changes to the `antibrow` Python SDK. Format follows
   are doing. The window is still there and normally sized - this is not
   headless, it just does not come to the front. Default is ``True``.
 
-  It needs a kernel that carries the switch: Chrome 151 (`151.0.7922.72`) build
-  `2026-08-10c` or newer, macOS only for now. Every other build ignores the
-  option and focuses the window as before.
+  Window stacking is decided in the kernel rather than in the SDK, so install
+  the latest kernel for the profile before relying on it.
 
 ### Fixed
 

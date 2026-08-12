@@ -1,7 +1,7 @@
 import AdmZip from 'adm-zip'
 import fs from 'node:fs'
 import path from 'node:path'
-import { DEFAULT_KERNEL_VERSION, kernelsForPlatform } from './downloader'
+import { DEFAULT_KERNEL_VERSION, kernelsForPlatform, normalizeKernelVersion } from './downloader'
 import { generatePersona, readPersona, type ApiLogMode, type CapturedFacts, type DeviceType, type Persona } from './persona'
 
 // Browser state items stored under <profileDir>/user-data/
@@ -384,7 +384,7 @@ export function exportProfileArchive(profileDir: string, meta: PortableProfileMe
       id: meta.id ?? path.basename(profileDir),
       name: meta.name,
       proxy: { raw: meta.proxyUrl ?? '' },
-      kernel_version: meta.kernelVersion ?? persona.kernelVersion,
+      kernel_version: normalizeKernelVersion(meta.kernelVersion ?? persona.kernelVersion),
       persona: personaToLauncher(persona),
       api_log: meta.apiLog ?? 'off',
       canvas_noise: meta.canvasNoise ?? true,
@@ -449,7 +449,7 @@ export function importProfileArchive(buf: Buffer, profileDir: string): ImportedP
   return {
     source: 'legacy',
     name: typeof name === 'string' ? name : '',
-    kernelVersion: typeof kernelVersion === 'string' ? kernelVersion : undefined,
+    kernelVersion: typeof kernelVersion === 'string' ? normalizeKernelVersion(kernelVersion) : undefined,
     extra: rest as Record<string, unknown>,
   }
 }
@@ -515,8 +515,8 @@ function parseLauncherManifest(raw: Buffer): LauncherManifest {
 }
 
 /**
- * The kernel an imported profile can actually launch here: the exact version,
- * else the newest known build of the same Chrome major, else the default.
+ * The kernel an imported profile can actually launch here: the exact version
+ * (after normalizing to a Chrome major), else the default.
  *
  * An Android profile gets none of that latitude. Its version is a pin, not a
  * preference, and rewriting it to a kernel without the mobile patches would turn
@@ -529,15 +529,17 @@ function resolveImportedKernelVersion(wanted: string, android = false): string {
   } catch {
     known = []
   }
-  if (known.includes(wanted)) return wanted
+  // Catalogue entries are majors, so normalizing `wanted` also does the "same
+  // Chrome major" match that used to need a separate fallback.
+  const want = normalizeKernelVersion(wanted)
+  if (known.includes(want)) return want
   if (android) {
     throw new Error(
-      `This Android profile needs kernel ${wanted}, which is not in the catalogue here. ` +
+      `This Android profile needs kernel ${want}, which is not in the catalogue here. ` +
         'Refresh the kernel list with an internet connection and import again.',
     )
   }
-  const major = wanted.split('.')[0]
-  return known.find((v) => v.split('.')[0] === major) ?? DEFAULT_KERNEL_VERSION.version
+  return DEFAULT_KERNEL_VERSION.version
 }
 
 /** Keep every seed and hardware fact so the import renders the same

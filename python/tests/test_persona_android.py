@@ -18,7 +18,7 @@ def test_bundled_devices_are_whole_rows():
 
 
 def test_android_persona_replays_one_device():
-    persona = generate_persona(151, "151.0.7922.72", device_type="android")
+    persona = generate_persona(151, "151.0.0.0", device_type="android")
     assert persona.device_type == "android"
     source = next(d for d in ANDROID_FALLBACK_DEVICES if d["model"] == persona.android_model)
     assert persona.screen_w == source["screen"]["width"]
@@ -30,18 +30,18 @@ def test_android_persona_replays_one_device():
 
 
 def test_android_os_major_varies_in_range():
-    seen = {generate_persona(151, "151.0.7922.72", device_type="android").android_os_major for _ in range(200)}
+    seen = {generate_persona(151, "151.0.0.0", device_type="android").android_os_major for _ in range(200)}
     assert sorted(seen) == [13, 14, 15, 16]
 
 
 def test_desktop_generation_is_untouched():
-    persona = generate_persona(150, "150.0.7871.182")
+    persona = generate_persona(150, "150.0.0.0")
     assert persona.device_type is None
     assert persona.captured is None
 
 
 def test_android_fp_config():
-    persona = generate_persona(151, "151.0.7922.72", device_type="android")
+    persona = generate_persona(151, "151.0.0.0", device_type="android")
     config = persona_to_fp_config(persona, label="demo", timezone="America/Los_Angeles")
     assert config["device"] == {
         "type": "android",
@@ -67,7 +67,7 @@ def test_android_fp_config():
 
 def test_desktop_fp_config_has_no_device_key():
     config = persona_to_fp_config(
-        generate_persona(150, "150.0.7871.182"), label="demo", timezone="UTC"
+        generate_persona(150, "150.0.0.0"), label="demo", timezone="UTC"
     )
     assert "device" not in config
 

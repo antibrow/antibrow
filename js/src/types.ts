@@ -48,8 +48,8 @@ export interface LaunchOptions {
   /**
    * Whether the new window takes focus. Default true. `false` opens it behind
    * whatever is in front, so a launch does not interrupt what you are doing -
-   * the window is still there, just not focused. Needs a kernel build that
-   * carries the switch; older ones focus the window either way.
+   * the window is still there, just not focused. Decided in the kernel, so
+   * install the latest kernel for the profile before relying on it.
    */
   focusWindow?: boolean
   /** User data directory for this local profile */

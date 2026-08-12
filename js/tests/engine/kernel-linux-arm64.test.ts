@@ -17,7 +17,7 @@ describe('linux arm64 kernel catalogue', () => {
   })
 
   it('keeps the arm64 asset distinct from the x86_64 one', () => {
-    const v150 = KERNEL_VERSIONS.find((kv) => kv.version === '150.0.7871.182')!
+    const v150 = KERNEL_VERSIONS.find((kv) => kv.version === '150')!
     expect(kernelAsset(v150, 'linux-arm64').downloadUrl).toBe(
       'https://download.antibrow.com/fp-chromium-150-linuxarm64.zip',
     )
@@ -29,19 +29,19 @@ describe('linux arm64 kernel catalogue', () => {
     // Normalised: kernelExePath joins with the host separator, and this suite
     // also runs on Windows.
     expect(kernelExePath('/cache', v150, 'linux-arm64').replace(/\\/g, '/'))
-      .toBe('/cache/kernels/150.0.7871.182/chrome')
+      .toBe('/cache/kernels/150/chrome')
   })
 
   it('lists arm64-capable versions for linux-arm64', () => {
     const versions = kernelsForPlatform('linux-arm64').map((kv) => kv.version)
-    expect(versions).toContain('150.0.7871.182')
+    expect(versions).toContain('150')
   })
 
   it('maps the linuxarm64 manifest token onto linux-arm64', () => {
     // registerKernelVersions is the same path fetchRemoteKernelVersions feeds.
     registerKernelVersions([
       {
-        version: '151.0.0.2',
+        version: '151',
         label: 'Chrome 151',
         platforms: {
           'linux-arm64': {
@@ -52,7 +52,7 @@ describe('linux arm64 kernel catalogue', () => {
         },
       },
     ])
-    const discovered = kernelsForPlatform('linux-arm64').find((kv) => kv.version === '151.0.0.2')
+    const discovered = kernelsForPlatform('linux-arm64').find((kv) => kv.version === '151')
     expect(discovered).toBeDefined()
     expect(kernelAsset(discovered!, 'linux-arm64').build).toBe('test')
     // arm64-only kernel: it must not offer itself to x86_64 linux.

@@ -99,7 +99,7 @@ describe('deriveConnection', () => {
 
 describe('personaToFpConfig connection', () => {
   it('uses the measured rtt when one was passed', () => {
-    const persona = generatePersona(150, '150.0.7871.182')
+    const persona = generatePersona(150, '150.0.0.0')
     const cfg = personaToFpConfig(persona, { label: 'p', timezone: 'UTC', rttMs: 640 }) as
       { connection: { effectiveType: string; rtt: number; downlink: number } }
     expect(cfg.connection).toEqual(deriveConnection(persona.seed, 640))
@@ -107,8 +107,8 @@ describe('personaToFpConfig connection', () => {
   })
 
   it('no longer emits the old hardcoded trio for every profile', () => {
-    const a = generatePersona(150, '150.0.7871.182')
-    const b = generatePersona(150, '150.0.7871.182')
+    const a = generatePersona(150, '150.0.0.0')
+    const b = generatePersona(150, '150.0.0.0')
     const cfg = (p: typeof a) => (personaToFpConfig(p, { label: 'p', timezone: 'UTC' }) as
       { connection: unknown }).connection
     expect(cfg(a)).not.toEqual({ effectiveType: '4g', rtt: 100, downlink: 10 })

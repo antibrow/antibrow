@@ -16,7 +16,7 @@ from . import config as _config
 from . import kernel as _kernel
 from . import license as _license
 from .errors import AntibrowError
-from .persona import PERSONA_FILE, Persona
+from .persona import read_persona
 
 
 def _human_size(num_bytes: int) -> str:
@@ -57,8 +57,10 @@ def cmd_install(args: argparse.Namespace) -> int:
     # Forced so `--version` can name a freshly published build; also seeds the
     # on-disk catalogue cache that later (possibly offline) launches read.
     _kernel.refresh_kernel_versions(cache_dir, force=True)
+    # A pinned version may still be a full one copied from an older release's help text.
+    wanted = _kernel.normalize_kernel_version(args.version) if args.version else None
     kv = _kernel.find_kernel_version(args.version) if args.version else _kernel.default_kernel_version()
-    if args.version and kv.version != args.version:
+    if wanted and kv.version != wanted:
         print(
             "error: unknown kernel version {0!r}. Available: {1}".format(
                 args.version, ", ".join(k.version for k in _kernel.kernels_for_platform(platform))
@@ -130,14 +132,10 @@ def cmd_info(args: argparse.Namespace) -> int:
     print("\nProfiles ({0}):".format(len(profiles)))
     for name in profiles[:40]:
         directory = _config.profiles_dir(cache_dir) / name
-        version = "-"
-        try:
-            import json
-
-            data = json.loads((directory / PERSONA_FILE).read_text(encoding="utf-8"))
-            version = Persona.from_dict(data).kernel_version or "-"
-        except Exception:
-            pass
+        # read_persona, not a raw file read: it normalizes, so this listing
+        # agrees with the catalogue above and with what `install --version` takes.
+        persona = read_persona(directory)
+        version = (persona.kernel_version if persona else None) or "-"
         print("  {0:<32} kernel {1}".format(name, version))
     if len(profiles) > 40:
         print("  ... and {0} more".format(len(profiles) - 40))
@@ -242,7 +240,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
 
     install = sub.add_parser("install", help="download and extract the browser kernel")
-    install.add_argument("--version", help="kernel version, e.g. 150.0.7871.182")
+    install.add_argument("--version", help="kernel version, e.g. 151")
     install.add_argument("--force", action="store_true", help="re-download even if installed")
     install.add_argument("--cache-dir", help="override the cache directory")
     install.set_defaults(func=cmd_install)

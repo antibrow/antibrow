@@ -102,6 +102,6 @@ def _plan():
         persona=None,
         timezone="UTC",
         label="p",
-        kernel_version="150.0.7871.182",
+        kernel_version="150.0.0.0",
         license=None,
     )

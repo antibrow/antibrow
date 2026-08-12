@@ -62,16 +62,16 @@ describe('resolvePersonaInit', () => {
 })
 
 describe('assertAndroidKernel', () => {
-  it('passes a qualifying version and build through', () => {
-    expect(() => assertAndroidKernel(ANDROID_MIN_KERNEL_VERSION, '2026-08-07 05:17')).not.toThrow()
+  it('passes the floor and anything above it through', () => {
+    expect(() => assertAndroidKernel(ANDROID_MIN_KERNEL_VERSION)).not.toThrow()
+    expect(() => assertAndroidKernel('152')).not.toThrow()
+    // A legacy full version resolves to its major first.
+    expect(() => assertAndroidKernel('151.7.7.7')).not.toThrow()
   })
 
-  it('refuses to launch on an unqualified build', () => {
-    expect(() => assertAndroidKernel(ANDROID_MIN_KERNEL_VERSION, '2026-08-02')).toThrow(/Android profiles need/)
-    expect(() => assertAndroidKernel(ANDROID_MIN_KERNEL_VERSION, undefined)).toThrow(/Android profiles need/)
-  })
-
-  it('refuses a kernel below the minimum version however fresh its build', () => {
-    expect(() => assertAndroidKernel('150.0.7871.182', '2026-08-08 16:22')).toThrow(/Android profiles need/)
+  it('refuses a kernel below the minimum version', () => {
+    expect(() => assertAndroidKernel('150')).toThrow(/Android profiles need/)
+    expect(() => assertAndroidKernel('150.7.7.7')).toThrow(/Android profiles need/)
+    expect(() => assertAndroidKernel(undefined)).toThrow(/Android profiles need/)
   })
 })

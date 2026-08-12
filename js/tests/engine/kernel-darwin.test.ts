@@ -19,7 +19,7 @@ describe('darwin kernel catalogue', () => {
   })
 
   it('points at the universal zip and the executable inside the app bundle', () => {
-    const v150 = KERNEL_VERSIONS.find((kv) => kv.version === '150.0.7871.182')!
+    const v150 = KERNEL_VERSIONS.find((kv) => kv.version === '150')!
     const asset = kernelAsset(v150, 'darwin')
     expect(asset.downloadUrl).toBe(
       'https://download.antibrow.com/fp-chromium-150-mac-universal.zip',
@@ -28,25 +28,25 @@ describe('darwin kernel catalogue', () => {
   })
 
   it('resolves the exe path inside the extracted bundle', () => {
-    const v150 = KERNEL_VERSIONS.find((kv) => kv.version === '150.0.7871.182')!
+    const v150 = KERNEL_VERSIONS.find((kv) => kv.version === '150')!
     // Normalised: kernelExePath joins with the host separator, and this suite
     // also runs on Windows.
     const p = kernelExePath('/cache', v150, 'darwin').replace(/\\/g, '/')
     expect(p).toBe(
-      '/cache/kernels/150.0.7871.182/Chromium.app/Contents/MacOS/Chromium',
+      '/cache/kernels/150/Chromium.app/Contents/MacOS/Chromium',
     )
   })
 
   it('lists mac-capable versions for darwin', () => {
     const versions = kernelsForPlatform('darwin').map((kv) => kv.version)
-    expect(versions).toContain('150.0.7871.182')
+    expect(versions).toContain('150')
   })
 
   it('maps the mac-universal manifest token onto darwin', () => {
     // registerKernelVersions is the same path fetchRemoteKernelVersions feeds.
     registerKernelVersions([
       {
-        version: '151.0.0.1',
+        version: '151',
         label: 'Chrome 151',
         platforms: {
           darwin: {
@@ -57,7 +57,7 @@ describe('darwin kernel catalogue', () => {
         },
       },
     ])
-    const discovered = kernelsForPlatform('darwin').find((kv) => kv.version === '151.0.0.1')
+    const discovered = kernelsForPlatform('darwin').find((kv) => kv.version === '151')
     expect(discovered).toBeDefined()
     expect(kernelAsset(discovered!, 'darwin').build).toBe('test')
   })

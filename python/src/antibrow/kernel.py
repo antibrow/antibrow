@@ -12,6 +12,7 @@ import json
 import os
 import platform as _platform
 import random
+import re
 import shutil
 import stat
 import subprocess
@@ -108,11 +109,24 @@ class KernelVersion:
         return plat in self.platforms
 
 
+def normalize_kernel_version(version: Optional[str]) -> str:
+    """A kernel is identified by its Chrome major.
+
+    The remote manifest is mirrored verbatim from upstream and still carries
+    full version strings, and every profile created before this change has one
+    persisted in persona.json, so every version string entering the catalogue
+    passes through here.
+    """
+    raw = (version or "").strip()
+    head = raw.split(".")[0]
+    return head if head.isdigit() else raw
+
+
 #: The one version compiled in: what new profiles get. Every other kernel comes
 #: from the manifest at runtime, so the default moves only with a release.
 KERNEL_VERSIONS: List[KernelVersion] = [
     KernelVersion(
-        version="150.0.7871.182",
+        version="150",
         label="Chrome 150",
         platforms={
             "win32": KernelAsset(
@@ -152,7 +166,7 @@ def current_platform() -> str:
 
 
 def version_sort_key(version: str) -> tuple:
-    """Numeric tuple for comparing dotted versions ("150.0.7871.182")."""
+    """Numeric tuple for comparing dotted versions ("150.0.7871")."""
     parts = []
     for chunk in version.split("."):
         try:
@@ -199,9 +213,10 @@ def register_kernel_versions(versions: List[KernelVersion]) -> None:
     for kv in versions:
         if not kv.version or not kv.platforms:
             continue
-        existing = next((k for k in _registered if k.version == kv.version), None)
+        version = normalize_kernel_version(kv.version)
+        existing = next((k for k in _registered if k.version == version), None)
         if existing is None:
-            _registered.append(_copy_version(kv))
+            _registered.append(_copy_version(KernelVersion(version, kv.label, kv.platforms)))
         else:
             _merge_platforms(existing, kv.platforms)
 
@@ -218,11 +233,14 @@ def parse_kernel_manifest(text: str, manifest_url: str = KERNEL_MANIFEST_URL) ->
         return []
 
     by_version: Dict[str, KernelVersion] = {}
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
+    ordered = sorted(
+        (row for row in rows if isinstance(row, dict)),
+        key=lambda row: version_sort_key(str(row.get("version", ""))),
+        reverse=True,
+    )
+    for row in ordered:
         plat = _MANIFEST_PLATFORM.get(str(row.get("platform", "")))
-        version = row.get("version")
+        version = normalize_kernel_version(row.get("version"))
         url = row.get("download_url")
         if not plat or not version or not url:
             continue
@@ -230,7 +248,11 @@ def parse_kernel_manifest(text: str, manifest_url: str = KERNEL_MANIFEST_URL) ->
             url = urllib.parse.urljoin(manifest_url, str(url))
         kv = by_version.get(version)
         if kv is None:
-            kv = KernelVersion(version=version, label=row.get("label") or version, platforms={})
+            kv = KernelVersion(
+                version=version,
+                label=row.get("label") or "Chrome {0}".format(version),
+                platforms={},
+            )
             by_version[version] = kv
         if plat not in kv.platforms:
             kv.platforms[plat] = KernelAsset(
@@ -267,7 +289,10 @@ def refresh_kernel_catalogue(manifest_url: str = KERNEL_MANIFEST_URL) -> bool:
 
 
 #: Bare list in the Node SDK's shape (camelCase keys): one shared cache dir.
-KERNEL_VERSION_CACHE_FILE = "kernel-versions-cache.json"
+#: The name changed when versions became major-only - an older client reading
+#: normalized entries out of the old file would treat "151" as an unknown
+#: version and refuse to launch anything pinned to it. It keeps its own file.
+KERNEL_VERSION_CACHE_FILE = "kernel-catalog-cache.json"
 
 KERNEL_MANIFEST_TTL_SECONDS = 60 * 60
 
@@ -356,6 +381,7 @@ def refresh_kernel_versions(
     """Register the cached catalogue, then re-fetch once it is older than
     ``ttl_seconds``. Never raises; True only when a fetch actually happened.
     """
+    migrate_legacy_kernel_dirs(cache_dir)
     cached = load_cached_kernel_versions(cache_dir)
     if cached:
         register_kernel_versions(cached)
@@ -387,9 +413,10 @@ def default_kernel_version() -> KernelVersion:
 
 def find_kernel_version(version: Optional[str]) -> KernelVersion:
     """Look a version up in the catalogue, falling back to the default."""
-    if version:
+    want = normalize_kernel_version(version)
+    if want:
         for kv in all_kernel_versions():
-            if kv.version == version:
+            if kv.version == want:
                 return kv
     return default_kernel_version()
 
@@ -401,13 +428,14 @@ def find_kernel_version_strict(version: str) -> KernelVersion:
     offline or stale catalogue would otherwise hand back the compiled-in
     default - a silent downgrade for anything pinned to a specific kernel.
     """
+    want = normalize_kernel_version(version)
     for kv in all_kernel_versions():
-        if kv.version == version:
+        if kv.version == want:
             return kv
     raise KernelDownloadError(
         "Kernel {0} is not in the catalogue. Refresh the kernel list with an internet "
         "connection and retry; falling back to another version would change this "
-        "profile's identity.".format(version)
+        "profile's identity.".format(want)
     )
 
 
@@ -419,7 +447,45 @@ def kernels_for_platform(platform: Optional[str] = None) -> List[KernelVersion]:
 
 
 def kernel_dir(cache_dir: Path | str, version: str) -> Path:
-    return Path(cache_dir) / "kernels" / version
+    return Path(cache_dir) / "kernels" / normalize_kernel_version(version)
+
+
+_LEGACY_KERNEL_DIR_RE = re.compile(r"^\d+\.\d+\.\d+\.\d+$")
+
+
+def migrate_legacy_kernel_dirs(cache_dir: Path | str) -> None:
+    """Move kernels off their old full-version directory names.
+
+    Renaming beats re-downloading: the payload is 190-320MB and the binaries are
+    identical. Best-effort throughout - the worst outcome is one extra download.
+    """
+    root = Path(cache_dir) / "kernels"
+    try:
+        entries = [p.name for p in root.iterdir() if p.is_dir()]
+    except OSError:
+        return
+
+    by_major: Dict[str, List[str]] = {}
+    for name in entries:
+        if not _LEGACY_KERNEL_DIR_RE.match(name):
+            continue
+        by_major.setdefault(name.split(".")[0], []).append(name)
+
+    for major, legacy in by_major.items():
+        legacy.sort(key=version_sort_key, reverse=True)
+        renamed = None
+        if not (root / major).exists():
+            try:
+                (root / legacy[0]).rename(root / major)
+                renamed = legacy[0]
+            except OSError:
+                # Locked or cross-device: leave every dir alone so the next
+                # launch can retry instead of forcing a re-download.
+                continue
+        for name in legacy:
+            if name == renamed:
+                continue
+            shutil.rmtree(root / name, ignore_errors=True)
 
 
 def kernel_exe_path(cache_dir: Path | str, kv: KernelVersion, platform: Optional[str] = None) -> Path:
@@ -480,9 +546,7 @@ def write_installed_kernel_build(cache_dir: Path | str, version: str, build: str
 
 
 #: First kernel version built with the mobile device patches.
-ANDROID_MIN_KERNEL_VERSION = "151.0.7922.72"
-#: Build stamp of the first kernel carrying the mobile device patches.
-ANDROID_MIN_KERNEL_BUILD = "2026-08-07 05:17"
+ANDROID_MIN_KERNEL_VERSION = "151"
 
 
 def _version_tuple(version: str) -> tuple:
@@ -499,8 +563,8 @@ def kernel_version_at_least(version: Optional[str], minimum: str) -> bool:
     """True when ``version`` is at or above ``minimum``, segment by segment."""
     if not version:
         return False
-    a = _version_tuple(version)
-    b = _version_tuple(minimum)
+    a = _version_tuple(normalize_kernel_version(version))
+    b = _version_tuple(normalize_kernel_version(minimum))
     length = max(len(a), len(b))
     a = a + (0,) * (length - len(a))
     b = b + (0,) * (length - len(b))
@@ -508,7 +572,7 @@ def kernel_version_at_least(version: Optional[str], minimum: str) -> bool:
 
 
 #: First kernel that reads the macOS application locale out of fp-config.
-APP_LOCALE_MIN_KERNEL_VERSION = "151.0.7922.72"
+APP_LOCALE_MIN_KERNEL_VERSION = "151"
 APP_LOCALE_MIN_KERNEL_BUILD = "2026-08-10"
 
 
@@ -532,27 +596,48 @@ def kernel_reads_app_locale_from_config(version: Optional[str], build: Optional[
     return date >= APP_LOCALE_MIN_KERNEL_BUILD
 
 
-def kernel_supports_android(version: Optional[str], build: Optional[str]) -> bool:
-    """Both halves are load-bearing.
+def kernel_supports_android(version: Optional[str], build: Optional[str] = None) -> bool:
+    """Whether a kernel can run an Android profile: the version floor decides it.
 
-    The version alone cannot answer it: the same version shipped twice, once
-    before the mobile patches and once after. The build date alone cannot
-    either: every kernel version gets rebuilt on the same day when the whole
-    set is republished, so a date-only rule lets a kernel with none of the
-    mobile patches through. An older binary handed an Android config produces a
-    profile whose UA says Android while its client hints say desktop - worse
-    than no Android at all.
+    ``build`` is accepted so callers written against the older two-argument form
+    keep working, and is ignored.
     """
-    if not kernel_version_at_least(version, ANDROID_MIN_KERNEL_VERSION):
-        return False
-    if not build or len(build) < 10:
-        return False
-    date = build[:10]
-    if len(date) != 10 or date[4] != "-" or date[7] != "-":
-        return False
-    if not (date[:4].isdigit() and date[5:7].isdigit() and date[8:10].isdigit()):
-        return False
-    return date >= ANDROID_MIN_KERNEL_BUILD[:10]
+    del build
+    return kernel_version_at_least(version, ANDROID_MIN_KERNEL_VERSION)
+
+
+def android_capable_kernels(platform: Optional[str] = None) -> List[KernelVersion]:
+    """Catalogue entries whose published build for this platform carries the
+    mobile patches, newest first. Judged per platform because the same version
+    is built per platform on its own schedule.
+    """
+    plat = platform or current_platform()
+    out = []
+    for kv in kernels_for_platform(plat):
+        asset = kv.platforms.get(plat)
+        if kernel_supports_android(kv.version, asset.build if asset else None):
+            out.append(kv)
+    return out
+
+
+def resolve_android_kernel(
+    requested: Optional[str] = None, platform: Optional[str] = None
+) -> KernelVersion:
+    """Which kernel an Android profile is created against: the requested one
+    when it qualifies, else the newest that does. The last resort is a strict
+    lookup of the floor - strict because a lenient one answers with the
+    compiled-in desktop default, freezing a kernel with no mobile patches into
+    a profile claiming to be a phone.
+    """
+    capable = android_capable_kernels(platform)
+    if requested:
+        want = normalize_kernel_version(requested)
+        for kv in capable:
+            if kv.version == want:
+                return kv
+    if capable:
+        return capable[0]
+    return find_kernel_version_strict(ANDROID_MIN_KERNEL_VERSION)
 
 
 @dataclass

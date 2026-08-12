@@ -33,7 +33,7 @@ MANIFEST = json.dumps(
                 "build": "2026-08-01 10:00",
             },
             {
-                "version": "150.0.7871.182",
+                "version": "150.0.0.0",
                 "label": "Chrome 150",
                 "platform": "linux64",
                 "download_url": "fp-chromium-150-linux64.zip",
@@ -41,14 +41,14 @@ MANIFEST = json.dumps(
                 "build": "2026-07-24 07:09",
             },
             {
-                "version": "150.0.7871.182",
+                "version": "150.0.0.0",
                 "label": "Chrome 150",
                 "platform": "win64",
                 "download_url": "https://mirror.example.com/fp-chromium-150-win64.zip",
                 "build": "0116-passkey 2026-07-22 22:37",
             },
             {
-                "version": "150.0.7871.182",
+                "version": "150.0.0.0",
                 "label": "Chrome 150",
                 "platform": "mac-universal",
                 "download_url": "fp-chromium-150-mac-universal.zip",
@@ -76,7 +76,7 @@ def test_baseline_versions_have_expected_platforms():
     # tested against. Every other kernel, older majors included, comes from the
     # manifest. Its platform set is asserted exactly, not derived from ordering.
     expected_platforms = {
-        "150.0.7871.182": {"win32", "linux", "linux-arm64", "darwin"},
+        "150": {"win32", "linux", "linux-arm64", "darwin"},
     }
     assert {kv.version for kv in K.KERNEL_VERSIONS} == set(expected_platforms)
     for kv in K.KERNEL_VERSIONS:
@@ -93,22 +93,22 @@ def test_baseline_versions_have_expected_platforms():
 
 
 def test_versions_sort_newest_first_numerically():
-    # String sorting would put "149" after "150.0.7871.182"; numeric must not.
-    assert K.version_sort_key("150.0.7871.182") > K.version_sort_key("149.0.7827.201")
-    assert K.version_sort_key("150.0.7871.182") > K.version_sort_key("150.0.7871.9")
+    # String sorting would put "150.0.0.9" after "150.0.0.10"; numeric must not.
+    assert K.version_sort_key("150.0.0.10") > K.version_sort_key("149.0.0.0")
+    assert K.version_sort_key("150.0.0.10") > K.version_sort_key("150.0.0.9")
     ordered = [kv.version for kv in K.all_kernel_versions()]
     assert ordered == sorted(ordered, key=K.version_sort_key, reverse=True)
 
 
 def test_default_kernel_is_the_newest_baseline_build_for_this_platform():
     default = K.default_kernel_version()
-    assert default.version == "150.0.7871.182"
+    assert default.version == "150"
     assert default.available_on(K.current_platform())
 
 
 def test_find_kernel_version_falls_back_to_the_default():
     # Not in the baseline and not registered: an unknown version resolves to the default.
-    assert K.find_kernel_version("149.0.7827.201").version == K.default_kernel_version().version
+    assert K.find_kernel_version("149.0.0.0").version == K.default_kernel_version().version
     assert K.find_kernel_version("999.0.0.0").version == K.default_kernel_version().version
     assert K.find_kernel_version(None).version == K.default_kernel_version().version
 
@@ -118,17 +118,17 @@ def test_find_kernel_version_falls_back_to_the_default():
 
 def test_manifest_rows_collapse_into_one_version_per_entry():
     versions = {kv.version: kv for kv in K.parse_kernel_manifest(MANIFEST)}
-    assert set(versions) == {"151.0.1.2", "150.0.7871.182"}  # the bogus macos row is dropped
-    assert set(versions["150.0.7871.182"].platforms) == {"win32", "linux", "darwin"}
-    assert versions["151.0.1.2"].label == "Chrome 151"
+    assert set(versions) == {"151", "150"}  # the bogus macos row is dropped
+    assert set(versions["150"].platforms) == {"win32", "linux", "darwin"}
+    assert versions["151"].label == "Chrome 151"
 
 
 def test_relative_download_urls_resolve_against_the_manifest_origin():
     versions = {kv.version: kv for kv in K.parse_kernel_manifest(MANIFEST)}
-    win = versions["151.0.1.2"].platforms["win32"]
+    win = versions["151"].platforms["win32"]
     assert win.download_url == "https://download.antibrow.com/fp-chromium-151-win64.zip"
     # ... while an absolute URL in the manifest is left alone.
-    assert versions["150.0.7871.182"].platforms["win32"].download_url.startswith(
+    assert versions["150"].platforms["win32"].download_url.startswith(
         "https://mirror.example.com/"
     )
 
@@ -138,28 +138,45 @@ def test_manifest_url_override_changes_the_resolution_base():
         kv.version: kv
         for kv in K.parse_kernel_manifest(MANIFEST, "https://cdn.example.org/dir/versions.json")
     }
-    assert versions["151.0.1.2"].platforms["win32"].download_url == (
+    assert versions["151"].platforms["win32"].download_url == (
         "https://cdn.example.org/dir/fp-chromium-151-win64.zip"
     )
 
 
 def test_missing_exe_rel_path_defaults_per_platform():
     versions = {kv.version: kv for kv in K.parse_kernel_manifest(MANIFEST)}
-    assert versions["150.0.7871.182"].platforms["win32"].exe_rel_path == "chrome.exe"
+    assert versions["150"].platforms["win32"].exe_rel_path == "chrome.exe"
+
+
+def test_two_full_versions_of_one_major_collapse_to_the_newest_build():
+    # Upstream republishing a major puts two full versions of it on the same
+    # platform. The parser keeps the first asset per platform, so row order
+    # decides which build every client downloads for that major - and "150.0.0.9"
+    # sorts above "150.0.0.10" as text, which is the wrong one.
+    manifest = (
+        '{"versions":[{"version":"150.0.0.9","platform":"win64",'
+        '"download_url":"old.zip","build":"2026-07-01 10:00"},'
+        '{"version":"150.0.0.10","platform":"win64",'
+        '"download_url":"new.zip","build":"2026-08-01 10:00"}]}'
+    )
+    parsed = K.parse_kernel_manifest(manifest)
+    assert [kv.version for kv in parsed] == ["150"]
+    assert parsed[0].platforms["win32"].download_url.endswith("/new.zip")
+    assert parsed[0].platforms["win32"].build == "2026-08-01 10:00"
 
 
 #: The manifest exactly as served by download.antibrow.com on 2026-07-27.
 LIVE_MANIFEST = (
-    '{"versions":[{"version":"150.0.7871.182","label":"Chrome 150","platform":"win64",'
+    '{"versions":[{"version":"150.0.0.0","label":"Chrome 150","platform":"win64",'
     '"download_url":"fp-chromium-150-win64.zip","exe_rel_path":"chrome.exe",'
     '"build":"0116-passkey 2026-07-22 22:37"},'
-    '{"version":"150.0.7871.182","label":"Chrome 150","platform":"linux64",'
+    '{"version":"150.0.0.0","label":"Chrome 150","platform":"linux64",'
     '"download_url":"fp-chromium-150-linux64.zip","exe_rel_path":"chrome",'
     '"build":"2026-07-24 07:09"},'
-    '{"version":"149.0.7827.201","label":"Chrome 149","platform":"linux64",'
+    '{"version":"149.0.0.0","label":"Chrome 149","platform":"linux64",'
     '"download_url":"fp-chromium-149-linux64.zip","exe_rel_path":"chrome",'
     '"build":"2026-07-24 10:56"},'
-    '{"version":"149.0.7827.201","label":"Chrome 149","platform":"win64",'
+    '{"version":"149.0.0.0","label":"Chrome 149","platform":"win64",'
     '"download_url":"fp-chromium-149-win64.zip","exe_rel_path":"chrome.exe",'
     '"build":"0116-passkey 2026-07-23 04:35"}]}'
 )
@@ -167,13 +184,13 @@ LIVE_MANIFEST = (
 
 def test_the_live_production_manifest_parses():
     parsed = {kv.version: kv for kv in K.parse_kernel_manifest(LIVE_MANIFEST)}
-    assert set(parsed) == {"150.0.7871.182", "149.0.7827.201"}
+    assert set(parsed) == {"150", "149"}
     for kv in parsed.values():
         assert set(kv.platforms) == {"win32", "linux"}
         assert kv.platforms["win32"].exe_rel_path == "chrome.exe"
         assert kv.platforms["linux"].exe_rel_path == "chrome"
         assert kv.platforms["win32"].build and kv.platforms["linux"].build
-    assert parsed["150.0.7871.182"].platforms["linux"].download_url == (
+    assert parsed["150"].platforms["linux"].download_url == (
         "https://download.antibrow.com/fp-chromium-150-linux64.zip"
     )
     # The published rows must agree with what this SDK compiles in as baseline.
@@ -182,31 +199,32 @@ def test_the_live_production_manifest_parses():
 
 def test_manifest_survives_a_utf8_bom_and_junk_rows():
     parsed = K.parse_kernel_manifest("﻿" + MANIFEST)
-    assert {kv.version for kv in parsed} == {"151.0.1.2", "150.0.7871.182"}
+    assert {kv.version for kv in parsed} == {"151", "150"}
     assert K.parse_kernel_manifest('{"versions": "nope"}') == []
 
 
 def test_registering_remote_versions_augments_but_never_overrides():
-    baseline_url = K.find_kernel_version("150.0.7871.182").platforms["win32"].download_url
+    # Feeding a full version string still has to hit the major-only entry.
+    baseline_url = K.find_kernel_version("150.0.0.0").platforms["win32"].download_url
     K.register_kernel_versions(K.parse_kernel_manifest(MANIFEST))
 
     catalogue = {kv.version: kv for kv in K.all_kernel_versions()}
-    assert "151.0.1.2" in catalogue  # new version appears without an SDK release
-    merged = catalogue["150.0.7871.182"].platforms["win32"]
+    assert "151" in catalogue  # new version appears without an SDK release
+    merged = catalogue["150"].platforms["win32"]
     assert merged.download_url == baseline_url  # built-in URL wins
     assert merged.build == "0116-passkey 2026-07-22 22:37"  # but the build is adopted
-    assert K.all_kernel_versions()[0].version == "151.0.1.2"
+    assert K.all_kernel_versions()[0].version == "151"
 
 
 def test_registration_is_idempotent():
     K.register_kernel_versions(K.parse_kernel_manifest(MANIFEST))
     K.register_kernel_versions(K.parse_kernel_manifest(MANIFEST))
-    assert len([kv for kv in K.all_kernel_versions() if kv.version == "151.0.1.2"]) == 1
+    assert len([kv for kv in K.all_kernel_versions() if kv.version == "151"]) == 1
 
 
 def test_registered_versions_never_change_the_default():
     K.register_kernel_versions(K.parse_kernel_manifest(MANIFEST))
-    assert K.default_kernel_version().version == "150.0.7871.182"
+    assert K.default_kernel_version().version == "150"
 
 
 # -- install / update status ---------------------------------------------
@@ -227,7 +245,7 @@ def install_fake_kernel(cache_dir, version, platform):
 
 def test_installed_detection_and_size(tmp_path):
     plat = K.current_platform()
-    kv = K.find_kernel_version("150.0.7871.182")
+    kv = K.find_kernel_version("150.0.0.0")
     assert not K.is_kernel_installed(tmp_path, kv, plat)
     assert K.kernel_dir_size(tmp_path, kv.version) == 0
 
@@ -253,7 +271,7 @@ def test_a_version_without_a_build_for_this_platform_is_never_installed(tmp_path
 
 def test_update_status_flags_a_rebuilt_same_version_kernel(tmp_path):
     plat = K.current_platform()
-    version = "150.0.7871.182"
+    version = "150.0.0.0"
     install_fake_kernel(tmp_path, version, plat)
 
     # Not installed by us -> no marker -> "unknown", which must not nag.
@@ -272,11 +290,13 @@ def test_update_status_flags_a_rebuilt_same_version_kernel(tmp_path):
     assert status is not None and status.update_available is True
     assert status.installed_build == adopted and status.available_build == "NEWER"
 
-    assert [s.version for s in K.installed_kernel_updates(tmp_path, plat)] == [version]
+    assert [s.version for s in K.installed_kernel_updates(tmp_path, plat)] == [
+        K.normalize_kernel_version(version)
+    ]
 
 
 def test_update_status_is_none_for_a_kernel_that_is_not_installed(tmp_path):
-    assert K.kernel_update_status(tmp_path, "150.0.7871.182", K.current_platform()) is None
+    assert K.kernel_update_status(tmp_path, "150.0.0.0", K.current_platform()) is None
     assert K.installed_kernel_updates(tmp_path, K.current_platform()) == []
 
 
@@ -445,7 +465,7 @@ def test_kernel_reads_app_locale_from_config_needs_version_and_build():
 
     # 150 was rebuilt the same day without the patch, so the date alone is not
     # enough; 151's earlier builds predate it, so the version alone is not either.
-    assert reads("151.0.7922.72", "2026-08-10c") is True
-    assert reads("151.0.7922.72", "2026-08-08 16:23") is False
-    assert reads("150.0.7871.182", "2026-08-10") is False
-    assert reads("151.0.7922.72", None) is False
+    assert reads("151.0.0.0", "2026-08-10c") is True
+    assert reads("151.0.0.0", "2026-08-08 16:23") is False
+    assert reads("150.0.0.0", "2026-08-10") is False
+    assert reads("151.0.0.0", None) is False

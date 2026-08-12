@@ -4,7 +4,7 @@ import { ANDROID_FALLBACK_DEVICES } from '../../src/engine/android-devices'
 
 describe('android persona generation', () => {
   it('replays a whole bundled device', () => {
-    const persona = generatePersona(151, '151.0.7922.72', { deviceType: 'android' })
+    const persona = generatePersona(151, '151.0.0.0', { deviceType: 'android' })
     expect(persona.deviceType).toBe('android')
     expect(ANDROID_FALLBACK_DEVICES.map((d) => d.model)).toContain(persona.androidModel)
     expect(persona.ua).toContain('Chrome/151.0.0.0 Mobile Safari')
@@ -17,7 +17,7 @@ describe('android persona generation', () => {
 
   it('keeps the screen, cores and GPU bound to the one device it picked', () => {
     for (let i = 0; i < 20; i += 1) {
-      const persona = generatePersona(151, '151.0.7922.72', { deviceType: 'android' })
+      const persona = generatePersona(151, '151.0.0.0', { deviceType: 'android' })
       const source = ANDROID_FALLBACK_DEVICES.find((d) => d.model === persona.androidModel)
       expect(source).toBeDefined()
       expect(persona.screenW).toBe(source?.screen.width)
@@ -32,13 +32,13 @@ describe('android persona generation', () => {
   it('varies the Android major within the plausible range', () => {
     const seen = new Set<number>()
     for (let i = 0; i < 200; i += 1) {
-      seen.add(generatePersona(151, '151.0.7922.72', { deviceType: 'android' }).androidOsMajor ?? 0)
+      seen.add(generatePersona(151, '151.0.0.0', { deviceType: 'android' }).androidOsMajor ?? 0)
     }
     expect([...seen].sort()).toEqual([13, 14, 15, 16])
   })
 
   it('leaves desktop generation untouched', () => {
-    const persona = generatePersona(150, '150.0.7871.182')
+    const persona = generatePersona(150, '150.0.0.0')
     expect(persona.deviceType).toBeUndefined()
     expect(persona.captured).toBeUndefined()
     expect(persona.androidModel).toBeUndefined()
@@ -46,7 +46,7 @@ describe('android persona generation', () => {
 })
 
 describe('android fp-config', () => {
-  const persona = { ...generatePersona(151, '151.0.7922.72', { deviceType: 'android' }), seed: '0123456789abcdef' }
+  const persona = { ...generatePersona(151, '151.0.0.0', { deviceType: 'android' }), seed: '0123456789abcdef' }
   const config = personaToFpConfig(persona, { label: 'demo', timezone: 'America/Los_Angeles' })
   const nav = config.navigator as Record<string, unknown>
   const uaData = nav.uaData as Record<string, unknown>

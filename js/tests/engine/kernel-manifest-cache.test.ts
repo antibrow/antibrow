@@ -41,19 +41,19 @@ describe('refreshKernelVersions', () => {
     await refreshKernelVersions(dir, { manifestUrl: MANIFEST_URL })
 
     expect(fetchSpy).toHaveBeenCalledTimes(1)
-    const discovered = kernelsForPlatform('win32').find((kv) => kv.version === '900.0.0.1')
+    const discovered = kernelsForPlatform('win32').find((kv) => kv.version === '900')
     expect(discovered).toBeDefined()
     expect(kernelAsset(discovered!, 'win32').build).toBe('b1')
 
     const raw = JSON.parse(fs.readFileSync(path.join(dir, KERNEL_VERSION_CACHE_FILE), 'utf8'))
     expect(Array.isArray(raw)).toBe(true) // desktop's loadCache() requires an array
-    expect(loadCachedKernelVersions(dir).map((kv) => kv.version)).toContain('900.0.0.1')
+    expect(loadCachedKernelVersions(dir).map((kv) => kv.version)).toContain('900')
   })
 
   it('resolves relative download_url against the manifest origin', async () => {
     const dir = tmp()
     await refreshKernelVersions(dir, { manifestUrl: MANIFEST_URL })
-    const kv = kernelsForPlatform('win32').find((v) => v.version === '900.0.0.1')!
+    const kv = kernelsForPlatform('win32').find((v) => v.version === '900')!
     expect(kernelAsset(kv, 'win32').downloadUrl).toBe(
       'https://download.antibrow.com/fp-chromium-900.0.0.1-win64.zip',
     )
@@ -89,7 +89,7 @@ describe('refreshKernelVersions', () => {
 
     await expect(refreshKernelVersions(dir, { manifestUrl: MANIFEST_URL, force: true })).resolves.toBeUndefined()
     // The cache survived the failed refresh rather than being cleared.
-    expect(loadCachedKernelVersions(dir).map((kv) => kv.version)).toContain('900.0.0.1')
+    expect(loadCachedKernelVersions(dir).map((kv) => kv.version)).toContain('900')
   })
 
   it('tolerates an unreadable cache and a non-200 manifest', async () => {

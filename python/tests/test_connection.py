@@ -69,14 +69,14 @@ def test_stable_per_seed_and_varies_across_seeds():
 
 
 def test_fp_config_no_longer_emits_the_old_constant():
-    persona = generate_persona(150, "150.0.7871.182")
+    persona = generate_persona(150, "150.0.0.0")
     cfg = persona_to_fp_config(persona, label="p", timezone="UTC")
     assert cfg["connection"] != {"effectiveType": "4g", "rtt": 100, "downlink": 10}
     assert cfg["connection"] == derive_connection(persona.seed)
 
 
 def test_fp_config_uses_the_measured_rtt():
-    persona = generate_persona(150, "150.0.7871.182")
+    persona = generate_persona(150, "150.0.0.0")
     cfg = persona_to_fp_config(persona, label="p", timezone="UTC", rtt_ms=640)
     assert cfg["connection"] == derive_connection(persona.seed, 640)
     assert cfg["connection"]["effectiveType"] == "3g"

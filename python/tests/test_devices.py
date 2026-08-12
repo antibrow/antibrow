@@ -127,25 +127,35 @@ def test_fetch_real_device_refuses_a_malformed_row(monkeypatch):
 _MIN = kernel.ANDROID_MIN_KERNEL_VERSION
 
 
-def test_kernel_supports_android():
-    assert kernel.kernel_supports_android(_MIN, None) is False
-    assert kernel.kernel_supports_android(_MIN, "2026-08-02") is False
-    assert kernel.kernel_supports_android(_MIN, "2026-08-04 19:04") is False
-    assert kernel.kernel_supports_android(_MIN, "2026-08-07 05:17") is True
-    assert kernel.kernel_supports_android(_MIN, "2026-09-01 00:00") is True
-    assert kernel.kernel_supports_android(_MIN, "proxyauth-fix+utf8label 2026-07-28") is False
+def test_kernel_supports_android_accepts_the_floor_and_above():
+    assert kernel.kernel_supports_android(_MIN) is True
+    assert kernel.kernel_supports_android("152") is True
+    assert kernel.kernel_supports_android("200") is True
 
 
-def test_kernel_supports_android_rejects_older_versions_with_fresh_builds():
-    # The whole kernel set gets republished on one day, so 149 and 150 carry
-    # build stamps at or after the Android minimum while having none of the
-    # mobile patches. These are the exact stamps live in the manifest.
-    assert kernel.kernel_supports_android("150.0.7871.182", "2026-08-08 16:22") is False
-    assert kernel.kernel_supports_android("149.0.7827.201", "2026-08-08 16:23") is False
-    assert kernel.kernel_supports_android(None, "2026-08-08 16:23") is False
-    assert kernel.kernel_supports_android(_MIN, "2026-08-08 16:23") is True
-    assert kernel.kernel_supports_android("152.0.0.0", "2026-09-01 00:00") is True
-    assert kernel.kernel_supports_android("151.0.7922.71", "2026-09-01 00:00") is False
+def test_kernel_supports_android_rejects_below_the_floor():
+    assert kernel.kernel_supports_android("150") is False
+    assert kernel.kernel_supports_android("149") is False
+    assert kernel.kernel_supports_android(None) is False
+    assert kernel.kernel_supports_android("") is False
+
+
+def test_kernel_supports_android_normalizes_a_legacy_full_version():
+    # An Android profile created before kernels went major-only pins one of these.
+    assert kernel.kernel_supports_android("151.7.7.7") is True
+    assert kernel.kernel_supports_android("150.7.7.7") is False
+
+
+def test_kernel_supports_android_ignores_the_build_stamp():
+    # A missing or stale stamp used to reject a perfectly capable kernel: the
+    # compiled-in baseline carries no build at all, and a manifest row may omit
+    # it. The second argument is kept only so older callers keep working.
+    assert kernel.kernel_supports_android(_MIN, None) is True
+    assert kernel.kernel_supports_android(_MIN, "2026-08-02") is True
+    assert kernel.kernel_supports_android("152", None) is True
+    assert kernel.kernel_supports_android(_MIN, "proxyauth-fix+utf8label 2026-07-28") is True
+    # ...but it never rescues a version below the floor.
+    assert kernel.kernel_supports_android("150", "2026-09-01 00:00") is False
 
 
 def test_find_kernel_version_strict_refuses_to_substitute():

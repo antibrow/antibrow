@@ -72,6 +72,33 @@ def test_install_rejects_an_unknown_version(capsys):
     assert "unknown kernel version" in capsys.readouterr().err
 
 
+def test_install_accepts_the_full_version_older_releases_documented(capsys, monkeypatch):
+    # The shipped CLI help advertised a full version, and CI pipelines pinned it.
+    major = K.default_kernel_version().version
+    monkeypatch.setattr(K, "ensure_kernel", lambda *a, **k: "/kernels/chrome")
+    monkeypatch.setattr(K, "kernel_dir_size", lambda *a, **k: 0)
+    assert main(["install", "--version", "{0}.7.7.7".format(major)]) == 0
+    assert "({0})".format(major) in capsys.readouterr().out
+
+
+def test_info_prints_the_normalized_kernel_of_a_legacy_profile(tmp_path, capsys):
+    import json
+
+    from antibrow.persona import generate_persona
+
+    profile = tmp_path / "cache" / "profiles" / "legacy-01"
+    profile.mkdir(parents=True)
+    persona = generate_persona(150, "150").to_dict()
+    persona["kernelVersion"] = "150.7.7.7"
+    (profile / "persona.json").write_text(json.dumps(persona), encoding="utf-8")
+    assert main(["info"]) == 0
+    out = capsys.readouterr().out
+    # What `info` prints must be a version `install --version` accepts.
+    assert "legacy-01" in out
+    assert "kernel 150\n" in out
+    assert "150.7.7.7" not in out
+
+
 def test_login_without_a_key_or_a_tty_fails_cleanly(capsys, monkeypatch):
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     assert main(["login"]) == 2

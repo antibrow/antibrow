@@ -6,7 +6,7 @@ from antibrow import kernel as _kernel
 from antibrow.launcher import build_launch_args
 
 ARM_ZIP = "https://download.antibrow.com/fp-chromium-150-linuxarm64.zip"
-BASELINE = "150.0.7871.182"
+BASELINE = "150"
 
 
 def _baseline():
@@ -40,7 +40,7 @@ def test_manifest_token_linuxarm64_maps_to_linux_arm64():
         '"exe_rel_path":"chrome","build":"test"}]}'
     )
     parsed = {kv.version: kv for kv in _kernel.parse_kernel_manifest(rows)}
-    kv = parsed["151.0.0.2"]
+    kv = parsed["151"]
     assert set(kv.platforms) == {"linux-arm64"}
     assert kv.asset("linux-arm64").build == "test"
     # arm64-only kernel: it must not offer itself to x86_64 linux.

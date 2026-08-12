@@ -12,47 +12,40 @@ import { buildLaunchArgs } from '../../src/engine/launcher'
 const MIN = ANDROID_MIN_KERNEL_VERSION
 
 describe('kernelSupportsAndroid', () => {
-  it('rejects an unmarked install', () => {
-    expect(kernelSupportsAndroid(MIN, undefined)).toBe(false)
-    expect(kernelSupportsAndroid(MIN, '')).toBe(false)
+  it('accepts the floor and everything above it', () => {
+    expect(kernelSupportsAndroid(MIN)).toBe(true)
+    expect(kernelSupportsAndroid('152')).toBe(true)
+    expect(kernelSupportsAndroid('200')).toBe(true)
   })
 
-  it('rejects an older build of the same version', () => {
-    // 151 shipped twice: this one predates the mobile patches and would produce
-    // an Android UA beside desktop client hints.
-    expect(kernelSupportsAndroid(MIN, '2026-08-02')).toBe(false)
-    expect(kernelSupportsAndroid(MIN, '2026-08-04 19:04')).toBe(false)
+  it('rejects anything below the floor', () => {
+    expect(kernelSupportsAndroid('150')).toBe(false)
+    expect(kernelSupportsAndroid('149')).toBe(false)
+    expect(kernelSupportsAndroid(undefined)).toBe(false)
+    expect(kernelSupportsAndroid('')).toBe(false)
   })
 
-  it('accepts the build that carries the mobile patches and anything later', () => {
-    expect(kernelSupportsAndroid(MIN, '2026-08-07 05:17')).toBe(true)
-    expect(kernelSupportsAndroid(MIN, '2026-08-07 14:59')).toBe(true)
-    expect(kernelSupportsAndroid(MIN, '2026-09-01 00:00')).toBe(true)
+  it('normalizes a legacy full version', () => {
+    // An Android profile created before kernels went major-only pins one of these.
+    expect(kernelSupportsAndroid('151.7.7.7')).toBe(true)
+    expect(kernelSupportsAndroid('150.7.7.7')).toBe(false)
   })
 
-  it('rejects a label that is not a date', () => {
-    expect(kernelSupportsAndroid(MIN, 'proxyauth-fix+utf8label 2026-07-28')).toBe(false)
-  })
-
-  it('rejects an older version no matter how new its build is', () => {
-    // The whole kernel set gets republished on one day, so 149 and 150 carry
-    // build stamps at or after the Android minimum while having none of the
-    // mobile patches. These are the exact stamps live in the manifest.
-    expect(kernelSupportsAndroid('150.0.7871.182', '2026-08-08 16:22')).toBe(false)
-    expect(kernelSupportsAndroid('149.0.7827.201', '2026-08-08 16:23')).toBe(false)
-    expect(kernelSupportsAndroid(undefined, '2026-08-08 16:23')).toBe(false)
-    // The same date on the pinned version is fine - the date was never the problem.
-    expect(kernelSupportsAndroid(MIN, '2026-08-08 16:23')).toBe(true)
-  })
-
-  it('accepts a version above the minimum', () => {
-    expect(kernelSupportsAndroid('152.0.0.0', '2026-09-01 00:00')).toBe(true)
-    expect(kernelSupportsAndroid('151.0.7922.73', '2026-09-01 00:00')).toBe(true)
-    expect(kernelSupportsAndroid('151.0.7922.71', '2026-09-01 00:00')).toBe(false)
+  it('ignores the build stamp, however it is shaped', () => {
+    // A missing or stale stamp used to reject a perfectly capable kernel: the
+    // compiled-in baseline carries no build at all, and a manifest row may omit
+    // it. The second argument is kept only so older callers still compile.
+    expect(kernelSupportsAndroid(MIN, undefined)).toBe(true)
+    expect(kernelSupportsAndroid(MIN, '')).toBe(true)
+    expect(kernelSupportsAndroid(MIN, '2026-08-02')).toBe(true)
+    expect(kernelSupportsAndroid('152', undefined)).toBe(true)
+    expect(kernelSupportsAndroid(MIN, 'proxyauth-fix+utf8label 2026-07-28')).toBe(true)
+    // ...but it never rescues a version below the floor.
+    expect(kernelSupportsAndroid('150', '2026-09-01 00:00')).toBe(false)
   })
 
   it('pins the minimum version', () => {
-    expect(ANDROID_MIN_KERNEL_VERSION).toBe('151.0.7922.72')
+    expect(ANDROID_MIN_KERNEL_VERSION).toBe('151')
   })
 })
 
@@ -102,9 +95,9 @@ describe('kernelReadsAppLocaleFromConfig', () => {
   it('needs both the version and a build from the day the patch shipped', () => {
     // 150 was rebuilt the same day without the patch, so the date alone is not
     // enough; 151's earlier builds predate it, so the version alone is not either.
-    expect(kernelReadsAppLocaleFromConfig('151.0.7922.72', '2026-08-10c')).toBe(true)
-    expect(kernelReadsAppLocaleFromConfig('151.0.7922.72', '2026-08-08 16:23')).toBe(false)
-    expect(kernelReadsAppLocaleFromConfig('150.0.7871.182', '2026-08-10')).toBe(false)
-    expect(kernelReadsAppLocaleFromConfig('151.0.7922.72', undefined)).toBe(false)
+    expect(kernelReadsAppLocaleFromConfig('151.0.0.0', '2026-08-10c')).toBe(true)
+    expect(kernelReadsAppLocaleFromConfig('151.0.0.0', '2026-08-08 16:23')).toBe(false)
+    expect(kernelReadsAppLocaleFromConfig('150.0.0.0', '2026-08-10')).toBe(false)
+    expect(kernelReadsAppLocaleFromConfig('151.0.0.0', undefined)).toBe(false)
   })
 })

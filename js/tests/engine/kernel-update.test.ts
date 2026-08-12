@@ -53,7 +53,7 @@ describe('kernel update detection', () => {
     writeInstalledKernelBuild(cache, TEST_VERSION, '2026-07-24 10:00')
 
     const s = kernelUpdateStatus(cache, TEST_VERSION)
-    expect(s).toMatchObject({ version: TEST_VERSION, installed: true, updateAvailable: false })
+    expect(s).toMatchObject({ version: '199', installed: true, updateAvailable: false })
     expect(installedKernelUpdates(cache).some((u) => u.updateAvailable)).toBe(false)
   })
 
@@ -64,12 +64,12 @@ describe('kernel update detection', () => {
 
     const s = kernelUpdateStatus(cache, TEST_VERSION)
     expect(s).toMatchObject({
-      version: TEST_VERSION,
+      version: '199',
       installedBuild: '2026-07-20 08:00',
       availableBuild: '2026-07-24 10:00',
       updateAvailable: true,
     })
-    expect(installedKernelUpdates(cache).find((u) => u.version === TEST_VERSION)?.updateAvailable).toBe(true)
+    expect(installedKernelUpdates(cache).find((u) => u.version === '199')?.updateAvailable).toBe(true)
   })
 
   it('adopts the current build (no nag) for a legacy install with no build marker', () => {

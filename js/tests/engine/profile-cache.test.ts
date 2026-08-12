@@ -5,25 +5,24 @@ import os from 'node:os'
 import path from 'node:path'
 import { packProfileCache, unpackProfileCache, exportProfileArchive, importProfileArchive } from '../../src/engine/profile-cache'
 import { generatePersona, personaToFpConfig, type Persona } from '../../src/engine/persona'
-import { DEFAULT_KERNEL_VERSION, kernelsForPlatform } from '../../src/engine/downloader'
+import { DEFAULT_KERNEL_VERSION, kernelsForPlatform, normalizeKernelVersion } from '../../src/engine/downloader'
 
 function tmp(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix))
 }
 
 /**
- * Mirrors the (unexported) fallback rule in profile-cache.ts's
- * `resolveImportedKernelVersion`: exact match on this platform, else the
- * newest known build with the same Chrome major, else the default. Computed
- * from the same public building blocks the implementation uses, so this
- * states the real cross-platform rule instead of one platform's answer —
- * e.g. 149 has no darwin build, so on darwin this resolves to the default.
+ * Mirrors the (unexported) rule in profile-cache.ts's
+ * `resolveImportedKernelVersion`: normalize `wanted` to a Chrome major, exact
+ * match on this platform's catalogue, else the default. Computed from the
+ * same public building blocks the implementation uses, so this states the
+ * real cross-platform rule instead of one platform's answer — e.g. 149 has
+ * no darwin build, so on darwin this resolves to the default.
  */
 function expectedResolvedKernelVersion(wanted: string): string {
   const known = kernelsForPlatform().map((kv) => kv.version)
-  if (known.includes(wanted)) return wanted
-  const major = wanted.split('.')[0]
-  return known.find((v) => v.split('.')[0] === major) ?? DEFAULT_KERNEL_VERSION.version
+  const want = normalizeKernelVersion(wanted)
+  return known.includes(want) ? want : DEFAULT_KERNEL_VERSION.version
 }
 
 /** A persona as the launcher serializes it (snake_case). */
@@ -55,7 +54,7 @@ function launcherArchive(overrides: Record<string, unknown> = {}, files: Record<
       id: 'a1b2c3d4e5f60718',
       name: 'Berlin-01',
       proxy: { raw: 'socks5://user:pa%40ss@1.2.3.4:1080' },
-      kernel_version: '149.0.7827.201',
+      kernel_version: '149.0.0.0',
       persona: LAUNCHER_PERSONA,
       api_log: 'off',
       canvas_noise: true,
@@ -262,7 +261,7 @@ describe('profile-cache', () => {
   it('still imports the legacy AntiBrow .zip export (profile.json entry)', () => {
     const legacy = new AdmZip()
     legacy.addFile('profile.json', Buffer.from(JSON.stringify({
-      name: 'Amazon US', group: 'Ecom', tags: ['a', 'b'], kernelVersion: '149.0.7827.201',
+      name: 'Amazon US', group: 'Ecom', tags: ['a', 'b'], kernelVersion: '149.0.0.0',
     })))
     legacy.addFile('persona.json', Buffer.from('{"ua":"UA"}'))
     legacy.addFile('user-data/Local State', Buffer.from('ls'))
@@ -272,7 +271,7 @@ describe('profile-cache', () => {
 
     expect(got.source).toBe('legacy')
     expect(got.name).toBe('Amazon US')
-    expect(got.kernelVersion).toBe('149.0.7827.201')
+    expect(got.kernelVersion).toBe('149')
     expect(got.extra).toEqual({ group: 'Ecom', tags: ['a', 'b'] })
     expect(fs.readFileSync(path.join(dst, 'persona.json'), 'utf8')).toBe('{"ua":"UA"}')
     expect(fs.readFileSync(path.join(dst, 'user-data', 'Local State'), 'utf8')).toBe('ls')
@@ -289,7 +288,7 @@ describe('profile-cache', () => {
     fs.writeFileSync(path.join(dst, 'profile.json'), record, 'utf8')
 
     const legacy = new AdmZip()
-    legacy.addFile('profile.json', Buffer.from(JSON.stringify({ name: 'Amazon US', kernelVersion: '149.0.7827.201' })))
+    legacy.addFile('profile.json', Buffer.from(JSON.stringify({ name: 'Amazon US', kernelVersion: '149.0.0.0' })))
     legacy.addFile('persona.json', Buffer.from('{"ua":"UA"}'))
     const got = importProfileArchive(legacy.toBuffer(), dst)
 
@@ -301,11 +300,11 @@ describe('profile-cache', () => {
     const dir = tmp('pc-meta-')
     fs.writeFileSync(path.join(dir, 'profile.json'), JSON.stringify({ id: 'uuid-a', name: 'gmail', origin: 'server' }), 'utf8')
     // Export no longer creates an identity, so this profile has to have one.
-    fs.writeFileSync(path.join(dir, 'persona.json'), JSON.stringify(generatePersona(150, '150.0.7871.182')), 'utf8')
+    fs.writeFileSync(path.join(dir, 'persona.json'), JSON.stringify(generatePersona(150, '150.0.0.0')), 'utf8')
     const zip = packProfileCache(dir)
     const names = new AdmZip(zip).getEntries().map((e) => e.entryName)
     expect(names).not.toContain('profile.json')
-    const portable = exportProfileArchive(dir, { id: 'uuid-a', name: 'gmail', kernelVersion: '150.0.7871.182' })
+    const portable = exportProfileArchive(dir, { id: 'uuid-a', name: 'gmail', kernelVersion: '150.0.0.0' })
     expect(new AdmZip(portable).getEntries().map((e) => e.entryName)).not.toContain('profile.json')
   })
 })
@@ -324,7 +323,7 @@ describe('exportProfileArchive — the portable .fpprofile format', () => {
     fs.writeFileSync(path.join(src, 'persona.json'), JSON.stringify({
       seed: LAUNCHER_PERSONA.seed, canvasSeed: LAUNCHER_PERSONA.canvas_seed,
       audioSeed: LAUNCHER_PERSONA.audio_seed, domrectSeed: LAUNCHER_PERSONA.domrect_seed,
-      chromeMajor: 149, kernelVersion: '149.0.7827.201', ua: LAUNCHER_PERSONA.ua,
+      chromeMajor: 149, kernelVersion: '149.0.0.0', ua: LAUNCHER_PERSONA.ua,
       hardwareConcurrency: 12, deviceMemory: 16, screenW: 1536, screenH: 864,
       devicePixelRatio: 1.25, gpuVendor: LAUNCHER_PERSONA.gpu_vendor,
       gpuRenderer: LAUNCHER_PERSONA.gpu_renderer, languages: ['de-DE', 'de', 'en'],
@@ -345,7 +344,7 @@ describe('exportProfileArchive — the portable .fpprofile format', () => {
   const META = {
     id: 'a1b2c3d4e5f60718',
     name: 'Berlin-01',
-    kernelVersion: '149.0.7827.201',
+    kernelVersion: '149.0.0.0',
     proxyUrl: 'socks5://user:pass@1.2.3.4:1080',
     apiLog: 'curated' as const,
     canvasNoise: false,
@@ -365,7 +364,7 @@ describe('exportProfileArchive — the portable .fpprofile format', () => {
       id: META.id,
       name: 'Berlin-01',
       proxy: { raw: META.proxyUrl },
-      kernel_version: '149.0.7827.201',
+      kernel_version: '149',
       api_log: 'curated',
       canvas_noise: false,
       webauthn_capture: false,
@@ -418,7 +417,7 @@ describe('exportProfileArchive — the portable .fpprofile format', () => {
       source: 'launcher',
       id: META.id,
       name: 'Berlin-01',
-      kernelVersion: expectedResolvedKernelVersion('149.0.7827.201'),
+      kernelVersion: expectedResolvedKernelVersion('149.0.0.0'),
       proxyUrl: META.proxyUrl,
       apiLog: 'curated',
       canvasNoise: false,
@@ -434,7 +433,7 @@ describe('exportProfileArchive — the portable .fpprofile format', () => {
     const srcPersona = JSON.parse(fs.readFileSync(path.join(src, 'persona.json'), 'utf8')) as Persona
     const dstPersona = JSON.parse(fs.readFileSync(path.join(dst, 'persona.json'), 'utf8')) as Persona
     const resolvedKernelVersion = expectedResolvedKernelVersion(META.kernelVersion)
-    const resolvedChromeMajor = parseInt(resolvedKernelVersion.split('.')[0] ?? '', 10)
+    const resolvedChromeMajor = parseInt(resolvedKernelVersion, 10)
     expect(dstPersona).toEqual({
       ...srcPersona,
       chromeMajor: resolvedChromeMajor,
@@ -447,7 +446,7 @@ describe('exportProfileArchive — the portable .fpprofile format', () => {
   })
 
   it('defaults the kernel switches when the profile never set them', () => {
-    const zip = new AdmZip(exportProfileArchive(seedProfile(), { name: 'Plain', kernelVersion: '149.0.7827.201' }))
+    const zip = new AdmZip(exportProfileArchive(seedProfile(), { name: 'Plain', kernelVersion: '149.0.0.0' }))
     const manifest = JSON.parse(zip.getEntry('manifest.json')!.getData().toString('utf8')) as { profile: Record<string, unknown> }
     expect(manifest.profile).toMatchObject({ api_log: 'off', canvas_noise: true, webauthn_capture: true, proxy: { raw: '' } })
   })
@@ -467,7 +466,7 @@ describe('importProfileArchive - launcher format (.fpprofile)', () => {
     expect(meta).toMatchObject({
       source: 'launcher',
       name: 'Berlin-01',
-      kernelVersion: expectedResolvedKernelVersion('149.0.7827.201'),
+      kernelVersion: expectedResolvedKernelVersion('149.0.0.0'),
       proxyUrl: 'socks5://user:pa%40ss@1.2.3.4:1080',
     })
 
@@ -478,8 +477,8 @@ describe('importProfileArchive - launcher format (.fpprofile)', () => {
     // `launcherPersonaToPersona`'s "UA major must match the kernel actually
     // launched"). Derive the expected values the same way, so the assertion
     // states the real cross-platform rule rather than one platform's answer.
-    const resolvedKernelVersion = expectedResolvedKernelVersion('149.0.7827.201')
-    const resolvedChromeMajor = parseInt(resolvedKernelVersion.split('.')[0] ?? '', 10)
+    const resolvedKernelVersion = expectedResolvedKernelVersion('149.0.0.0')
+    const resolvedChromeMajor = parseInt(resolvedKernelVersion, 10)
     const persona = JSON.parse(fs.readFileSync(path.join(dst, 'persona.json'), 'utf8')) as Persona
     expect(persona).toMatchObject({
       seed: '0123456789abcdef',
@@ -567,7 +566,7 @@ describe('importProfileArchive - launcher format (.fpprofile)', () => {
   })
 
   it('supplies the full UA-CH metadata group so nothing falls back to the real host', () => {
-    const persona = generatePersona(150, '150.0.7871.182')
+    const persona = generatePersona(150, '150.0.0.0')
     const cfg = personaToFpConfig(persona, { label: 'x', timezone: 'UTC' })
     // Any key missing here means the kernel falls back to the real host value
     // for that key - exactly the leak this test guards against.
@@ -606,7 +605,7 @@ describe('importProfileArchive - launcher format (.fpprofile)', () => {
     // Every GPU we can generate must resolve to a spoofed identity, or a persona
     // of ours would ship the mismatch this field exists to prevent.
     for (let i = 0; i < 40; i++) {
-      expect(personaToFpConfig(generatePersona(150, '150.0.7871.182'), { label: 'x', timezone: 'UTC' }).webgpu)
+      expect(personaToFpConfig(generatePersona(150, '150.0.0.0'), { label: 'x', timezone: 'UTC' }).webgpu)
         .not.toEqual({})
     }
   })
@@ -643,7 +642,7 @@ describe('importProfileArchive - launcher format (.fpprofile)', () => {
     const zip = new AdmZip()
     zip.addFile('manifest.json', Buffer.from(JSON.stringify({
       format: 'fp-launcher-profile', version: 1,
-      profile: { name: 'Evil', kernel_version: '149.0.7827.201', persona: LAUNCHER_PERSONA },
+      profile: { name: 'Evil', kernel_version: '149.0.0.0', persona: LAUNCHER_PERSONA },
     })))
     zip.addFile('user-data/../../pwned.txt', Buffer.from('nope'))
     const parent = tmp('fpp-slip-')

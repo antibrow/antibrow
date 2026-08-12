@@ -558,9 +558,11 @@ export async function launchKernel(opts: KernelLaunchOptions): Promise<KernelSes
       persona.deviceType === 'android' ? { width: persona.screenW, height: persona.screenH } : undefined,
   })
 
-  // Per-profile window icon (Windows only), seeded from the label so the window
-  // is recognizable. On failure the switch is omitted.
-  if (isWin) {
+  // Per-profile icon seeded from the label, so the profile is recognizable in the
+  // taskbar (Windows/Linux) or the Dock and app switcher (macOS - it has no
+  // per-window icons). On failure the switch is omitted; a kernel that does not
+  // know the switch ignores it and keeps its default icon.
+  {
     const iconPath = writeWindowIcon(profileDir, displayLabel)
     if (iconPath) args.push(`--fp-window-icon=${iconPath}`)
   }

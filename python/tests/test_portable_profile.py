@@ -171,20 +171,37 @@ def test_an_unavailable_kernel_falls_back_and_drags_the_ua_along(tmp_path):
     assert "Chrome/{0}.0.0.0".format(major) in persona["ua"]
 
 
-def test_the_same_chrome_major_is_preferred_over_the_default(tmp_path, monkeypatch):
+def test_a_legacy_full_version_manifest_normalizes_on_import(tmp_path, monkeypatch):
+    # A .fpprofile written before kernels went major-only (or by another tool
+    # that still emits one) carries a full version string in the manifest;
+    # import must resolve it against the major the catalogue indexes by
+    # rather than treating it as an unknown build and falling back.
     known = K.KernelVersion(
-        "149.0.7827.201",
-        "Chrome 149",
+        "151",
+        "Chrome 151",
         {K.current_platform(): K.KernelAsset("https://download.antibrow.com/x.zip", "chrome")},
     )
     monkeypatch.setattr(K, "_registered", [known])
-    data = P.export_profile_archive(
-        make_profile(tmp_path / "p1"), P.PortableProfileMeta(name="p1", kernel_version="149.0.1.1")
-    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(
+            "manifest.json",
+            json.dumps(
+                {
+                    "format": "fp-launcher-profile",
+                    "version": 1,
+                    "profile": {
+                        "name": "p1",
+                        "kernel_version": "151.0.0.0",
+                        "persona": {},
+                    },
+                }
+            ),
+        )
 
-    meta = P.import_profile_archive(data, tmp_path / "restored")
+    meta = P.import_profile_archive(buf.getvalue(), tmp_path / "restored")
 
-    assert meta.kernel_version == "149.0.7827.201"
+    assert meta.kernel_version == "151"
 
 
 def test_an_unknown_format_is_refused(tmp_path):
@@ -223,7 +240,7 @@ def test_the_legacy_zip_export_still_imports(tmp_path):
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr(
             "profile.json",
-            json.dumps({"name": "old-one", "kernelVersion": "150.0.7871.182", "group": "ads"}),
+            json.dumps({"name": "old-one", "kernelVersion": "150.0.0.0", "group": "ads"}),
         )
         zf.writestr("user-data/Default/Cookies", "cookie-db")
     dest = tmp_path / "restored"
@@ -232,7 +249,7 @@ def test_the_legacy_zip_export_still_imports(tmp_path):
 
     assert meta.source == "legacy"
     assert meta.name == "old-one"
-    assert meta.kernel_version == "150.0.7871.182"
+    assert meta.kernel_version == "150"
     assert meta.extra == {"group": "ads"}
     assert (dest / "user-data" / "Default" / "Cookies").exists()
     assert not (dest / "profile.json").exists()

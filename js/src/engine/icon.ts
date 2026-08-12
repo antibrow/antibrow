@@ -1,9 +1,12 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import zlib from 'node:zlib'
 
 /**
- * Per-profile window icon: concentric rings hashed from the profile name, written
- * as a Windows `.ico`. Windows only; on failure the default icon stays.
+ * Per-profile window icon: concentric rings hashed from the profile name. The
+ * kernel loads it through a different decoder on each platform, so the file has
+ * to match: Windows takes an `.ico`, macOS and Linux a `.png`. A format the
+ * decoder cannot read is not an error there - the icon silently stays default.
  */
 
 // The same name always yields the same rings.
@@ -24,6 +27,10 @@ const SS = 4
 
 // Sizes embedded in the .ico; the OS picks the closest match.
 const ICON_SIZES = [16, 24, 32, 48, 64]
+
+// PNG carries a single size. The macOS Dock draws it at 128pt, so 256px covers
+// a Retina display without asking for a slower render than that.
+const PNG_SIZE = 256
 
 function clamp255(v: number): number {
   return v < 0 ? 0 : v > 255 ? 255 : Math.round(v)
@@ -232,11 +239,72 @@ export function buildIco(seedName: string, sizes: number[] = ICON_SIZES): Buffer
   return Buffer.concat([dir, ...images])
 }
 
-/** Writes `<profileDir>/fp-window-icon.ico`; null on any failure. */
-export function writeWindowIcon(profileDir: string, seedName: string): string | null {
+/** CRC-32 over `type + payload`, the checksum every PNG chunk ends with. */
+const crc32: (data: Buffer) => number =
+  typeof zlib.crc32 === 'function'
+    ? (data) => zlib.crc32(data)
+    : (() => {
+        const table = new Uint32Array(256)
+        for (let n = 0; n < 256; n++) {
+          let c = n
+          for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+          table[n] = c >>> 0
+        }
+        return (data: Buffer) => {
+          let c = 0xffffffff
+          for (let i = 0; i < data.length; i++) c = table[(c ^ data[i]) & 0xff] ^ (c >>> 8)
+          return (c ^ 0xffffffff) >>> 0
+        }
+      })()
+
+function pngChunk(type: string, payload: Buffer): Buffer {
+  const head = Buffer.alloc(8)
+  head.writeUInt32BE(payload.length, 0)
+  head.write(type, 4, 'ascii')
+  const crc = Buffer.alloc(4)
+  crc.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), payload])), 0)
+  return Buffer.concat([head, payload, crc])
+}
+
+/** Build a single-size 8-bit RGBA PNG from the profile name. */
+export function buildPng(seedName: string, size: number = PNG_SIZE): Buffer {
+  const rgba = renderRGBA(size, seed(seedName))
+  // One "filter type 0 (None)" byte per scanline. Predictors would compress
+  // better, but this image is a few KB either way.
+  const raw = Buffer.alloc(size * (1 + size * 4))
+  for (let y = 0; y < size; y++) {
+    const dst = y * (1 + size * 4)
+    raw[dst] = 0
+    Buffer.from(rgba.buffer, rgba.byteOffset + y * size * 4, size * 4).copy(raw, dst + 1)
+  }
+
+  const ihdr = Buffer.alloc(13)
+  ihdr.writeUInt32BE(size, 0)
+  ihdr.writeUInt32BE(size, 4)
+  ihdr.writeUInt8(8, 8) // bit depth
+  ihdr.writeUInt8(6, 9) // colour type: truecolour with alpha
+  ihdr.writeUInt8(0, 10) // compression: deflate
+  ihdr.writeUInt8(0, 11) // filter method 0
+  ihdr.writeUInt8(0, 12) // no interlacing
+
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', zlib.deflateSync(raw, { level: 9 })),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ])
+}
+
+/** Writes the icon this platform's kernel can decode; null on any failure. */
+export function writeWindowIcon(
+  profileDir: string,
+  seedName: string,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
   try {
-    const iconPath = path.join(profileDir, 'fp-window-icon.ico')
-    fs.writeFileSync(iconPath, buildIco(seedName))
+    const win = platform === 'win32'
+    const iconPath = path.join(profileDir, win ? 'fp-window-icon.ico' : 'fp-window-icon.png')
+    fs.writeFileSync(iconPath, win ? buildIco(seedName) : buildPng(seedName))
     return iconPath
   } catch {
     return null

@@ -13,7 +13,7 @@ from antibrow.persona import (
 
 
 def config_for(persona=None, **kwargs):
-    persona = persona or generate_persona(150, "150.0.7871.182")
+    persona = persona or generate_persona(150, "150.0.0.0")
     options = {"label": "profile-1", "timezone": "America/Los_Angeles"}
     options.update(kwargs)
     return persona, persona_to_fp_config(persona, **options)
@@ -94,7 +94,7 @@ def test_webgpu_identity_matches_the_webgl_gpu():
         # Unknown vendor: say nothing rather than guess.
         "SwiftShader": {},
     }
-    persona = generate_persona(150, "150.0.7871.182")
+    persona = generate_persona(150, "150.0.0.0")
     for renderer, expected in cases.items():
         persona.gpu_renderer = renderer
         _, config = config_for(persona)
@@ -103,7 +103,7 @@ def test_webgpu_identity_matches_the_webgl_gpu():
     # Every GPU we can roll must resolve, or our own personas would ship the
     # cross-API mismatch this field exists to prevent.
     for _ in range(40):
-        _, config = config_for(generate_persona(150, "150.0.7871.182"))
+        _, config = config_for(generate_persona(150, "150.0.0.0"))
         assert config["webgpu"] != {}
 
 
@@ -116,14 +116,14 @@ def test_webrtc_passes_the_proxy_ip_through_or_is_disabled():
 
 
 def test_timezone_comes_from_the_launch_not_the_persona():
-    persona = generate_persona(150, "150.0.7871.182")
+    persona = generate_persona(150, "150.0.0.0")
     _, config = config_for(persona, timezone="Europe/Berlin")
     assert config["timezone"] == "Europe/Berlin"
     assert persona.timezone == "America/Los_Angeles"  # persona untouched
 
 
 def test_color_scheme_is_deterministic_from_the_seed():
-    persona = generate_persona(150, "150.0.7871.182")
+    persona = generate_persona(150, "150.0.0.0")
     first = persona_to_fp_config(persona, label="a", timezone="UTC")["prefersColorScheme"]
     second = persona_to_fp_config(persona, label="b", timezone="UTC")["prefersColorScheme"]
     assert first == second
@@ -138,7 +138,7 @@ def test_color_scheme_is_deterministic_from_the_seed():
 def test_color_scheme_distribution_is_roughly_seventy_thirty():
     dark = 0
     for _ in range(400):
-        persona = generate_persona(150, "150.0.7871.182")
+        persona = generate_persona(150, "150.0.0.0")
         if persona_to_fp_config(persona, label="x", timezone="UTC")["prefersColorScheme"] == "dark":
             dark += 1
     assert 0.15 < dark / 400 < 0.45
@@ -235,7 +235,7 @@ def test_api_logging_is_off_by_default():
 
 
 def test_write_fp_config_is_valid_json_on_disk(tmp_path):
-    persona = load_or_generate_persona(tmp_path, "150.0.7871.182")
+    persona = load_or_generate_persona(tmp_path, "150.0.0.0")
     path = write_fp_config(tmp_path, persona, label="shopper-01", timezone="Asia/Tokyo")
     assert path.name == "fp-config.json"
     written = json.loads(path.read_text(encoding="utf-8"))
@@ -250,7 +250,7 @@ def test_write_fp_config_is_valid_json_on_disk(tmp_path):
 
 
 def test_a_captured_webgl_report_is_replayed_verbatim():
-    persona = generate_persona(150, "150.0.7871.182")
+    persona = generate_persona(150, "150.0.0.0")
     persona.captured_webgl = {
         "VERSION": "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
         "SHADING_LANGUAGE_VERSION": "WebGL GLSL ES 1.0",
@@ -275,10 +275,10 @@ def test_a_persona_without_a_capture_adds_no_webgl_replay_fields():
 
 
 def test_a_captured_report_survives_persona_json(tmp_path):
-    persona = generate_persona(150, "150.0.7871.182")
+    persona = generate_persona(150, "150.0.0.0")
     persona.captured_webgl = {"VERSION": "WebGL 1.0"}
     from antibrow.persona import write_persona
 
     write_persona(tmp_path, persona)
 
-    assert load_or_generate_persona(tmp_path, "150.0.7871.182").captured_webgl == {"VERSION": "WebGL 1.0"}
+    assert load_or_generate_persona(tmp_path, "150.0.0.0").captured_webgl == {"VERSION": "WebGL 1.0"}

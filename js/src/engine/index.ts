@@ -11,8 +11,8 @@ import {
   kernelUpdateStatus,
   kernelSupportsAndroid,
   kernelReadsAppLocaleFromConfig,
+  resolveAndroidKernel,
   ANDROID_MIN_KERNEL_VERSION,
-  ANDROID_MIN_KERNEL_BUILD,
   installedKernelBuild,
   type KernelVersion,
 } from './downloader'
@@ -30,7 +30,7 @@ import {
 } from './profile-cache'
 import { resolveProfileDir, readProfileMeta } from './profile-dir'
 
-export { KERNEL_VERSIONS, DEFAULT_KERNEL_VERSION, ensureKernel, isKernelInstalled, findKernelVersion, findKernelVersionStrict, listInstalledKernels, kernelDirSize, deleteKernel, kernelDir, kernelAvailableOnPlatform, kernelsForPlatform, allKernelVersions, registerKernelVersions, fetchRemoteKernelVersions, refreshKernelVersions, loadCachedKernelVersions, KERNEL_MANIFEST_URL, KERNEL_MANIFEST_TTL_MS, KERNEL_VERSION_CACHE_FILE, currentPlatform, installedKernelBuild, writeInstalledKernelBuild, kernelUpdateStatus, installedKernelUpdates, kernelSupportsAndroid, kernelReadsAppLocaleFromConfig, kernelVersionAtLeast, ANDROID_MIN_KERNEL_VERSION, ANDROID_MIN_KERNEL_BUILD, APP_LOCALE_MIN_KERNEL_VERSION, APP_LOCALE_MIN_KERNEL_BUILD } from './downloader'
+export { KERNEL_VERSIONS, DEFAULT_KERNEL_VERSION, ensureKernel, isKernelInstalled, findKernelVersion, findKernelVersionStrict, normalizeKernelVersion, migrateLegacyKernelDirs, listInstalledKernels, kernelDirSize, deleteKernel, kernelDir, kernelAvailableOnPlatform, kernelsForPlatform, allKernelVersions, registerKernelVersions, fetchRemoteKernelVersions, refreshKernelVersions, loadCachedKernelVersions, KERNEL_MANIFEST_URL, KERNEL_MANIFEST_TTL_MS, KERNEL_VERSION_CACHE_FILE, currentPlatform, installedKernelBuild, writeInstalledKernelBuild, kernelUpdateStatus, installedKernelUpdates, kernelSupportsAndroid, kernelReadsAppLocaleFromConfig, kernelVersionAtLeast, androidCapableKernels, resolveAndroidKernel, ANDROID_MIN_KERNEL_VERSION, APP_LOCALE_MIN_KERNEL_VERSION, APP_LOCALE_MIN_KERNEL_BUILD } from './downloader'
 export type { KernelVersion, KernelUpdateStatus } from './downloader'
 export type { KernelSession as EngineSession } from './launcher'
 export { downloadProfileCache, uploadProfileCache, packProfileCache, unpackProfileCache, exportProfileArchive, importProfileArchive, PROFILE_ARCHIVE_EXT, ARCHIVE_VERSION_FILE, readArchiveVersion, writeArchiveVersion, clearArchiveVersion, normalizeArchiveVersion } from './profile-cache'
@@ -135,12 +135,11 @@ export async function resolvePersonaInit(
 }
 
 /** An Android config on a pre-mobile kernel is worse than no Android at all. */
-export function assertAndroidKernel(version: string | undefined, build: string | undefined): void {
-  if (kernelSupportsAndroid(version, build)) return
+export function assertAndroidKernel(version: string | undefined): void {
+  if (kernelSupportsAndroid(version)) return
   throw new Error(
-    `Android profiles need kernel ${ANDROID_MIN_KERNEL_VERSION} built on or after ` +
-      `${ANDROID_MIN_KERNEL_BUILD.slice(0, 10)}; this install reports version "${version ?? 'unknown'}" ` +
-      `build "${build ?? 'unknown'}". Update the kernel and retry.`,
+    `Android profiles need kernel ${ANDROID_MIN_KERNEL_VERSION} or newer; this install reports ` +
+      `version "${version ?? 'unknown'}". Update the kernel and retry.`,
   )
 }
 
@@ -199,16 +198,15 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
 
   const personaInit = await resolvePersonaInit(profileDir, opts)
 
-  // An Android profile is pinned to the kernel that carries the mobile patches.
-  // That pin must never resolve to something else: the Android version lives
-  // only in the manifest, so a plain lookup would hand back the compiled-in
-  // default and freeze a desktop kernel into a profile claiming to be a phone.
+  // An Android profile can only be created against a kernel that carries the
+  // mobile patches, so the requested version is honoured only when it is one of
+  // them - a plain lookup would hand back the compiled-in desktop default and
+  // freeze it into a profile claiming to be a phone.
   const wantsAndroid = personaInit?.deviceType === 'android'
-  const requestedVersion = wantsAndroid ? ANDROID_MIN_KERNEL_VERSION : opts.kernelVersion
   const defaultKv = wantsAndroid
-    ? findKernelVersionStrict(ANDROID_MIN_KERNEL_VERSION)
-    : requestedVersion
-      ? findKernelVersion(requestedVersion)
+    ? resolveAndroidKernel(opts.kernelVersion)
+    : opts.kernelVersion
+      ? findKernelVersion(opts.kernelVersion)
       : DEFAULT_KERNEL_VERSION
 
   opts.onProgress?.('Loading persona')
@@ -229,17 +227,7 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
   opts.onProgress?.(`Ensuring kernel ${kv.label}`)
   const exePath = await ensureKernel(cacheDir, kv, opts.onProgress)
 
-  if (persona.deviceType === 'android') {
-    let build = installedKernelBuild(cacheDir, kv.version)
-    if (!kernelSupportsAndroid(kv.version, build)) {
-      // The marker can lag a rebuild of the same version, so force one refetch
-      // before giving up.
-      opts.onProgress?.('Updating kernel for Android device support')
-      await ensureKernel(cacheDir, kv, opts.onProgress, { force: true })
-      build = installedKernelBuild(cacheDir, kv.version)
-    }
-    assertAndroidKernel(kv.version, build)
-  }
+  if (persona.deviceType === 'android') assertAndroidKernel(kv.version)
 
   let timezone = persona.timezone
   let publicIp: string | undefined

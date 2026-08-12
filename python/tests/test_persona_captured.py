@@ -13,7 +13,7 @@ from antibrow.persona import CapturedFacts, Persona, generate_persona, persona_t
 
 
 def desktop_persona() -> Persona:
-    persona = generate_persona(150, "150.0.7871.182")
+    persona = generate_persona(150, "150.0.0.0")
     persona.seed = "0123456789abcdef"
     persona.screen_w = 1536
     persona.screen_h = 864

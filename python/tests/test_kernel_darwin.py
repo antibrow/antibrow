@@ -24,26 +24,26 @@ def test_darwin_is_a_supported_platform():
 
 
 def test_the_baseline_version_has_a_mac_build():
-    assert _version("150.0.7871.182").available_on("darwin") is True
+    assert _version("150").available_on("darwin") is True
 
 
 def test_mac_asset_points_at_the_universal_zip():
-    asset = _version("150.0.7871.182").asset("darwin")
+    asset = _version("150").asset("darwin")
     assert asset.download_url == MAC_ZIP
     assert asset.exe_rel_path == MAC_EXE
 
 
 def test_exe_path_resolves_inside_the_app_bundle():
-    kv = _version("150.0.7871.182")
+    kv = _version("150")
     path = _kernel.kernel_exe_path("/cache", kv, "darwin")
     # Compare as paths, not strings: this test also runs on Windows CI, where
     # the separator is a backslash and a POSIX-shaped suffix never matches.
-    assert path == Path("/cache") / "kernels" / "150.0.7871.182" / MAC_EXE
+    assert path == Path("/cache") / "kernels" / "150" / MAC_EXE
 
 
 def test_kernels_for_platform_lists_mac_capable_versions():
     versions = [kv.version for kv in _kernel.kernels_for_platform("darwin")]
-    assert "150.0.7871.182" in versions
+    assert "150" in versions
 
 
 def test_manifest_token_mac_universal_maps_to_darwin():

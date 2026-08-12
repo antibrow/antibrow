@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 
 from .android_devices import ANDROID_FALLBACK_DEVICES
+from .kernel import normalize_kernel_version
 
 PERSONA_FILE = "persona.json"
 FP_CONFIG_FILE = "fp-config.json"
@@ -415,7 +416,7 @@ def generate_persona(
 
 
 def chrome_major_of(kernel_version: str) -> int:
-    """``"150.0.7871.182"`` -> ``150``. Keeps the UA in step with the binary."""
+    """``"150"`` -> ``150``. Keeps the UA in step with the binary."""
     head = kernel_version.split(".")[0] if kernel_version else ""
     try:
         return int(head)
@@ -818,11 +819,17 @@ def read_persona(profile_dir: Path | str) -> Optional[Persona]:
     Never writes: callers that must not decide the identity use this.
     """
     try:
-        return Persona.from_dict(
+        persona = Persona.from_dict(
             json.loads((Path(profile_dir) / PERSONA_FILE).read_text(encoding="utf-8"))
         )
     except (ValueError, TypeError, OSError):
         return None
+    # Profiles created before kernels went major-only carry a full version
+    # string. Normalizing in memory only: the file rides the cloud archive, and
+    # an older client on another machine still needs to resolve what it wrote.
+    if persona.kernel_version:
+        persona.kernel_version = normalize_kernel_version(persona.kernel_version)
+    return persona
 
 
 def load_or_generate_persona(
@@ -841,20 +848,24 @@ def load_or_generate_persona(
     """
     directory = Path(profile_dir)
     path = directory / PERSONA_FILE
+    fallback = normalize_kernel_version(default_kernel_version) or "149"
     if path.exists():
         try:
             persona = Persona.from_dict(json.loads(path.read_text(encoding="utf-8")))
             if not persona.kernel_version:
                 # Backfill for profiles written before kernelVersion existed.
-                persona.kernel_version = default_kernel_version
+                persona.kernel_version = fallback
                 write_persona(directory, persona)
+            else:
+                # In memory only -- see read_persona.
+                persona.kernel_version = normalize_kernel_version(persona.kernel_version)
             return persona
         except (ValueError, TypeError, OSError):
             pass  # corrupted -> regenerate below
 
     persona = generate_persona(
-        chrome_major_of(default_kernel_version),
-        default_kernel_version,
+        chrome_major_of(fallback),
+        fallback,
         rng=rng,
         device_type=device_type,
         device=device,

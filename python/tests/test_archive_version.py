@@ -57,7 +57,7 @@ def test_marker_is_never_packed_into_a_cloud_archive(tmp_path):
 def test_marker_is_dropped_when_a_portable_archive_is_imported(tmp_path):
     src = make_profile(tmp_path / "src")
     # Export no longer creates an identity, so this profile has to have one.
-    write_persona(src, generate_persona(150, "150.0.7871.182"))
+    write_persona(src, generate_persona(150, "150.0.0.0"))
     data = export_profile_archive(src, PortableProfileMeta(name="Exported"))
     dest = tmp_path / "dest"
     P.write_archive_version(dest, "stale")

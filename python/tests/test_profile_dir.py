@@ -58,7 +58,7 @@ def test_reuses_recorded_directory(tmp_path: Path) -> None:
 
 def test_adopts_legacy_directory_and_renames_it(tmp_path: Path) -> None:
     d = _mk(tmp_path, "gmail")
-    (d / "persona.json").write_text('{"kernelVersion":"150.0.7871.182"}', encoding="utf8")
+    (d / "persona.json").write_text('{"kernelVersion":"150.0.0.0"}', encoding="utf8")
     r = resolve_profile_dir("gmail", tmp_path)
     assert r.dir.name == r.id != "gmail"
     assert (r.dir / "persona.json").is_file()

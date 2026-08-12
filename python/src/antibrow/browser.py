@@ -240,12 +240,11 @@ def prepare_launch(
 
     # A profile that already exists keeps the kernel version frozen into its
     # persona; `kernel_version` only decides what a brand-new profile gets. An
-    # Android profile is pinned to the kernel that carries the mobile patches,
-    # and that pin must never resolve to something else: the Android version
-    # lives only in the manifest, so a plain lookup would hand back the
-    # compiled-in default and freeze a desktop kernel into a phone profile.
+    # Android profile can only take a kernel carrying the mobile patches, so the
+    # request is honoured only when it is one of them: a plain lookup would hand
+    # back the compiled-in desktop default and freeze it into a phone profile.
     if init_device_type == "android":
-        default_kv = _kernel.find_kernel_version_strict(_kernel.ANDROID_MIN_KERNEL_VERSION)
+        default_kv = _kernel.resolve_android_kernel(kernel_version)
     elif kernel_version:
         default_kv = _kernel.find_kernel_version(kernel_version)
     else:
@@ -271,14 +270,7 @@ def prepare_launch(
     exe_path = _kernel.ensure_kernel(root, kv, on_progress)
 
     if persona.device_type == "android":
-        build = _kernel.installed_kernel_build(root, kv.version)
-        if not _kernel.kernel_supports_android(kv.version, build):
-            # The marker can lag a rebuild of the same version, so force one
-            # refetch before giving up.
-            notify("Updating kernel for Android device support")
-            _kernel.ensure_kernel(root, kv, on_progress, force=True)
-            build = _kernel.installed_kernel_build(root, kv.version)
-        _assert_android_kernel(kv.version, build)
+        _assert_android_kernel(kv.version)
 
     locale_from_config = _kernel.kernel_reads_app_locale_from_config(
         kv.version, _kernel.installed_kernel_build(root, kv.version)
@@ -376,17 +368,14 @@ def _resolve_persona_init(
     return device_type, device
 
 
-def _assert_android_kernel(version: Optional[str], build: Optional[str]) -> None:
+def _assert_android_kernel(version: Optional[str]) -> None:
     """An Android config on a pre-mobile kernel is worse than no Android at all."""
-    if _kernel.kernel_supports_android(version, build):
+    if _kernel.kernel_supports_android(version):
         return
     raise RuntimeError(
-        "Android profiles need kernel {0} built on or after {1}; this install reports "
-        "version {2!r} build {3!r}. Update the kernel and retry.".format(
-            _kernel.ANDROID_MIN_KERNEL_VERSION,
-            _kernel.ANDROID_MIN_KERNEL_BUILD[:10],
-            version or "unknown",
-            build or "unknown",
+        "Android profiles need kernel {0} or newer; this install reports version {1!r}. "
+        "Update the kernel and retry.".format(
+            _kernel.ANDROID_MIN_KERNEL_VERSION, version or "unknown"
         )
     )
 
@@ -1000,8 +989,8 @@ def launch(
             detectable fingerprint). On Linux, run under Xvfb.
         focus_window: Whether the new window takes focus. ``False`` opens it
             behind whatever is in front, so a launch does not interrupt what you
-            are doing - the window is still there, just not focused. Needs a
-            kernel build carrying the switch; older ones focus it either way.
+            are doing - the window is still there, just not focused. Decided in
+            the kernel, so install the latest kernel before relying on it.
         proxy: ``"http://user:pass@host:port"``, ``"socks5://..."``, or a
             Playwright-style ``{"server": ..., "username": ..., "password": ...}``.
         geoip: Look the proxy's exit IP up and make the browser's timezone follow
@@ -1016,7 +1005,7 @@ def launch(
             consults ``profile`` as the name (for the archive slot and the
             label) when the directory carries no ``profile.json`` record;
             a directory with a record keeps its recorded name instead.
-        kernel_version: Kernel for a *new* profile, e.g. ``"150.0.7871.182"``.
+        kernel_version: Kernel for a *new* profile, e.g. ``"151"``.
             Existing profiles keep the version frozen in their persona.
         label: Text shown in the kernel's address-bar tag. Defaults to the
             profile name - handy when several windows are open.

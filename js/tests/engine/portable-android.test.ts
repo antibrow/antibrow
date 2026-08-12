@@ -14,7 +14,7 @@ function profileWith(persona: unknown): string {
 }
 
 describe('portable android profiles', () => {
-  const android = generatePersona(151, '151.0.7922.72', { deviceType: 'android' })
+  const android = generatePersona(151, '151.0.0.0', { deviceType: 'android' })
 
   // The Android kernel exists only in the manifest, so an import has to be able
   // to see it. `import refuses an unknown android pin` below covers the opposite.
@@ -28,7 +28,7 @@ describe('portable android profiles', () => {
 
   it('stamps format version 2 so older readers refuse it', () => {
     const dir = profileWith(android)
-    const zip = new AdmZip(exportProfileArchive(dir, { name: 'a', kernelVersion: '151.0.7922.72' }))
+    const zip = new AdmZip(exportProfileArchive(dir, { name: 'a', kernelVersion: '151.0.0.0' }))
     const manifest = JSON.parse(zip.getEntry('manifest.json')!.getData().toString('utf8'))
     expect(manifest.version).toBe(2)
     expect(manifest.profile.persona.device_type).toBe('android')
@@ -41,8 +41,8 @@ describe('portable android profiles', () => {
   })
 
   it('keeps desktop profiles on format version 1', () => {
-    const dir = profileWith(generatePersona(150, '150.0.7871.182'))
-    const zip = new AdmZip(exportProfileArchive(dir, { name: 'd', kernelVersion: '150.0.7871.182' }))
+    const dir = profileWith(generatePersona(150, '150.0.0.0'))
+    const zip = new AdmZip(exportProfileArchive(dir, { name: 'd', kernelVersion: '150.0.0.0' }))
     const manifest = JSON.parse(zip.getEntry('manifest.json')!.getData().toString('utf8'))
     expect(manifest.version).toBe(1)
     expect(manifest.profile.persona.device_type).toBeUndefined()
@@ -51,7 +51,7 @@ describe('portable android profiles', () => {
 
   it('round-trips every captured fact', () => {
     const dir = profileWith(android)
-    const bytes = exportProfileArchive(dir, { name: 'a', kernelVersion: '151.0.7922.72' })
+    const bytes = exportProfileArchive(dir, { name: 'a', kernelVersion: '151.0.0.0' })
     const restoreDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adb-restore-'))
     importProfileArchive(bytes, restoreDir)
     const restored = JSON.parse(fs.readFileSync(path.join(restoreDir, 'persona.json'), 'utf8'))
@@ -66,11 +66,11 @@ describe('portable android profiles', () => {
     // Every bundled android row is mobile: true, so the presence guard on this
     // field was never exercised - and the paid desktop path (os=windows) sends
     // exactly `mobile: false`.
-    const desktopReal = generatePersona(150, '150.0.7871.182')
+    const desktopReal = generatePersona(150, '150.0.0.0')
     desktopReal.deviceType = 'desktop'
     desktopReal.captured = { uaMobile: false, uaArchitecture: '', uaBitness: '', platform: 'Win32' }
     const dir = profileWith(desktopReal)
-    const bytes = exportProfileArchive(dir, { name: 'w', kernelVersion: '150.0.7871.182' })
+    const bytes = exportProfileArchive(dir, { name: 'w', kernelVersion: '150.0.0.0' })
     const manifest = JSON.parse(new AdmZip(bytes).getEntry('manifest.json')!.getData().toString('utf8'))
     expect(manifest.profile.persona.captured.ua_mobile).toBe(false)
 
@@ -82,7 +82,7 @@ describe('portable android profiles', () => {
 
   it('carries the device type back to the importer instead of dropping it', () => {
     const dir = profileWith(android)
-    const bytes = exportProfileArchive(dir, { name: 'a', kernelVersion: '151.0.7922.72', realFingerprint: true })
+    const bytes = exportProfileArchive(dir, { name: 'a', kernelVersion: '151.0.0.0', realFingerprint: true })
     const restoreDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adb-meta-'))
     const meta = importProfileArchive(bytes, restoreDir)
     expect(meta.deviceType).toBe('android')
@@ -105,7 +105,7 @@ describe('portable android profiles', () => {
 
   it('still refuses a format from the future', () => {
     const dir = profileWith(android)
-    const zip = new AdmZip(exportProfileArchive(dir, { name: 'a', kernelVersion: '151.0.7922.72' }))
+    const zip = new AdmZip(exportProfileArchive(dir, { name: 'a', kernelVersion: '151.0.0.0' }))
     const manifest = JSON.parse(zip.getEntry('manifest.json')!.getData().toString('utf8'))
     manifest.version = 3
     zip.updateFile('manifest.json', Buffer.from(JSON.stringify(manifest)))

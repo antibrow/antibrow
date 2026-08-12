@@ -15,13 +15,13 @@ import io
 import json
 import re
 import zipfile
-from dataclasses import dataclass
-from dataclasses import fields as _dataclass_fields
+from dataclasses import dataclass, fields as _dataclass_fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from . import kernel as _kernel
 from .errors import ProfileCacheError
+from .kernel import normalize_kernel_version
 from .persona import (
     CapturedFacts,
     Persona,
@@ -226,7 +226,7 @@ def export_profile_archive(profile_dir: Path | str, meta: PortableProfileMeta) -
             "id": meta.id or root.name,
             "name": meta.name,
             "proxy": {"raw": meta.proxy_url or ""},
-            "kernel_version": meta.kernel_version or persona.kernel_version,
+            "kernel_version": normalize_kernel_version(meta.kernel_version or persona.kernel_version),
             "persona": _persona_to_manifest(persona),
             "api_log": meta.api_log,
             "canvas_noise": meta.canvas_noise,
@@ -355,7 +355,7 @@ def _import_legacy_archive(zf: zipfile.ZipFile, root: Path) -> ImportedProfileMe
     return ImportedProfileMeta(
         source="legacy",
         name=legacy.get("name") if isinstance(legacy.get("name"), str) else "",
-        kernel_version=version if isinstance(version, str) else None,
+        kernel_version=normalize_kernel_version(version) if isinstance(version, str) else None,
         extra=rest or None,
     )
 
@@ -399,29 +399,26 @@ def _as_api_log_mode(value: Any) -> str:
 def _resolve_kernel_version(wanted: str, android: bool = False) -> str:
     """The kernel an imported profile can actually launch here.
 
-    The exact version, else the newest known build of the same Chrome major, else
-    the default - an archive from another machine must not be unlaunchable.
+    The exact version, else the default - an archive from another machine must
+    not be unlaunchable.
 
     An Android profile gets none of that latitude. Its version is a pin, not a
     preference, and rewriting it to a kernel without the mobile patches would
     turn the import into a profile that claims to be a phone and cannot behave
     like one.
     """
+    want = normalize_kernel_version(wanted)
     try:
         known: List[str] = [kv.version for kv in _kernel.kernels_for_platform()]
     except Exception:
         known = []
-    if wanted in known:
-        return wanted
+    if want in known:
+        return want
     if android:
         raise ProfileCacheError(
             "This Android profile needs kernel {0}, which is not in the catalogue here. "
-            "Refresh the kernel list with an internet connection and import again.".format(wanted)
+            "Refresh the kernel list with an internet connection and import again.".format(want)
         )
-    major = wanted.split(".")[0]
-    for version in known:
-        if version.split(".")[0] == major:
-            return version
     return _default_version()
 
 

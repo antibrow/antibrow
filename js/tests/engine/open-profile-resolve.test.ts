@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 vi.mock('../../src/engine/downloader', () => ({
-  DEFAULT_KERNEL_VERSION: { version: '150.0.7871.182', label: 'Chrome 150', platforms: {} },
+  DEFAULT_KERNEL_VERSION: { version: '150.0.0.0', label: 'Chrome 150', platforms: {} },
   KERNEL_VERSIONS: [],
   findKernelVersion: (v: string) => ({ version: v, label: `Chrome ${v}`, platforms: {} }),
   ensureKernel: async () => 'C:/kernels/chrome.exe',
@@ -15,7 +15,7 @@ vi.mock('../../src/engine/downloader', () => ({
 }))
 
 vi.mock('../../src/engine/persona', () => ({
-  loadOrGeneratePersona: () => ({ kernelVersion: '150.0.7871.182', chromeMajor: 150, timezone: 'UTC', languages: ['en-US'] }),
+  loadOrGeneratePersona: () => ({ kernelVersion: '150.0.0.0', chromeMajor: 150, timezone: 'UTC', languages: ['en-US'] }),
 }))
 
 /** Capture what openProfile actually hands the kernel. */

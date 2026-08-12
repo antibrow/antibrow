@@ -56,12 +56,12 @@ from .errors import (
 )
 from .geoip import ProxyGeo, lookup_proxy_geo
 from .kernel import (
-    ANDROID_MIN_KERNEL_BUILD,
     ANDROID_MIN_KERNEL_VERSION,
     KERNEL_MANIFEST_URL,
     KERNEL_VERSIONS,
     KernelUpdateStatus,
     KernelVersion,
+    android_capable_kernels,
     current_platform,
     default_kernel_version,
     delete_kernel,
@@ -77,8 +77,11 @@ from .kernel import (
     kernels_for_platform,
     list_installed_kernels,
     load_cached_kernel_versions,
+    migrate_legacy_kernel_dirs,
+    normalize_kernel_version,
     refresh_kernel_catalogue,
     refresh_kernel_versions,
+    resolve_android_kernel,
 )
 from .license import LicenseInfo, fetch_license_token, get_license_token
 from .persona import (
@@ -148,13 +151,16 @@ __all__ = [
     "kernel_dir",
     "kernel_dir_size",
     "delete_kernel",
+    "normalize_kernel_version",
+    "migrate_legacy_kernel_dirs",
     # android device profiles
     "DeviceType",
     "fetch_real_device",
     "kernel_supports_android",
+    "android_capable_kernels",
+    "resolve_android_kernel",
     "kernel_version_at_least",
     "ANDROID_MIN_KERNEL_VERSION",
-    "ANDROID_MIN_KERNEL_BUILD",
     # profiles and identity
     "Persona",
     "generate_persona",

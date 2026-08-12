@@ -21,6 +21,7 @@ import {
   getLicenseToken,
   ensureKernel,
   findKernelVersion,
+  normalizeKernelVersion,
   refreshKernelVersions,
   installedKernelUpdates,
   readProfileMeta,
@@ -386,7 +387,9 @@ export class AntiDetectBrowser {
   /** Update installed kernels (or just `version`); returns what was updated. */
   async updateKernel(version?: string, onProgress?: (message: string) => void): Promise<string[]> {
     const updates = await this.checkKernelUpdates()
-    const targets = (version ? updates.filter((u) => u.version === version) : updates)
+    // Callers may still pass a full version from an older README; the catalogue is majors only.
+    const want = version ? normalizeKernelVersion(version) : undefined
+    const targets = (want ? updates.filter((u) => u.version === want) : updates)
       .filter((u) => u.updateAvailable)
     const updated: string[] = []
     for (const u of targets) {

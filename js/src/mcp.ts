@@ -13,7 +13,7 @@ import {
   DEFAULT_KERNEL_VERSION,
   readProfileMeta,
   resolvePersonaInit,
-  findKernelVersionStrict,
+  resolveAndroidKernel,
   refreshKernelVersions,
   ANDROID_MIN_KERNEL_VERSION,
 } from './engine'
@@ -344,9 +344,9 @@ export async function startMcpServer(): Promise<void> {
             return { content: [{ type: 'text' as const, text: 'Profile name is required' }], isError: true }
           }
           const profileDir = getProfileDir(name, cacheDir, mcpRootOptions(args))
-          // The Android kernel exists only in the manifest, and a fresh MCP
-          // process has an empty catalogue - without this the pin below would
-          // resolve to the compiled-in default every time.
+          // Android-capable kernels exist only in the manifest, and a fresh MCP
+          // process has an empty catalogue - without this the resolution below
+          // would fall back to the compiled-in default every time.
           await refreshKernelVersions(resolvedCacheDir)
           const personaInit = await resolvePersonaInit(profileDir, {
             deviceType: args?.deviceType as 'desktop' | 'android' | undefined,
@@ -354,10 +354,10 @@ export async function startMcpServer(): Promise<void> {
             key: apiKey,
             server,
           })
-          // An Android profile is pinned to the kernel that carries the mobile
-          // patches, same as the engine's own default resolution in openProfile.
+          // An Android profile takes a kernel carrying the mobile patches, same
+          // as the engine's own default resolution in openProfile.
           const defaultKv = personaInit?.deviceType === 'android'
-            ? findKernelVersionStrict(ANDROID_MIN_KERNEL_VERSION)
+            ? resolveAndroidKernel()
             : DEFAULT_KERNEL_VERSION
           const persona = loadOrGeneratePersona(profileDir, defaultKv.version, personaInit)
           return {

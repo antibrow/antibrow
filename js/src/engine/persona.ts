@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { ANDROID_FALLBACK_DEVICES } from './android-devices'
 import type { RealDevice } from './devices'
+import { normalizeKernelVersion } from './downloader'
 
 const GPUS = [
   ['Google Inc. (Intel)', 'ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11-27.20.100.9316)'],
@@ -75,7 +76,7 @@ export interface Persona {
   audioSeed: string
   domrectSeed: string
   chromeMajor: number
-  /** Full kernel version string, e.g. "149.0.7827.201". */
+  /** Chrome major only, e.g. "150" — see `normalizeKernelVersion`. */
   kernelVersion: string
   ua: string
   hardwareConcurrency: number
@@ -189,7 +190,7 @@ export interface PersonaInit {
   device?: RealDevice
 }
 
-export function generatePersona(chromeMajor = 149, kernelVersion = '149.0.7827.201', init?: PersonaInit): Persona {
+export function generatePersona(chromeMajor = 149, kernelVersion = '149', init?: PersonaInit): Persona {
   const wantsAndroid = init?.deviceType === 'android' || init?.device?.os === 'android'
   const device = init?.device ?? (wantsAndroid ? pick(ANDROID_FALLBACK_DEVICES) : undefined)
   if (device) {
@@ -575,7 +576,12 @@ const PERSONA_FILE = 'persona.json'
 export function readPersona(profileDir: string): Persona | undefined {
   try {
     const p = JSON.parse(fs.readFileSync(path.join(profileDir, PERSONA_FILE), 'utf8')) as Persona
-    return p && typeof p === 'object' ? p : undefined
+    if (!p || typeof p !== 'object') return undefined
+    // Profiles created before kernels went major-only carry a full version
+    // string. Normalizing in memory only: the file rides the cloud archive, and
+    // an older client on another machine still needs to resolve what it wrote.
+    if (p.kernelVersion) p.kernelVersion = normalizeKernelVersion(p.kernelVersion)
+    return p
   } catch {
     return undefined
   }
@@ -584,19 +590,21 @@ export function readPersona(profileDir: string): Persona | undefined {
 /** Load the persisted persona, or generate and persist a new one. */
 export function loadOrGeneratePersona(profileDir: string, defaultKernelVersion?: string, init?: PersonaInit): Persona {
   const file = path.join(profileDir, PERSONA_FILE)
+  const fallback = normalizeKernelVersion(defaultKernelVersion) || '149'
   if (fs.existsSync(file)) {
     try {
       const p = JSON.parse(fs.readFileSync(file, 'utf8')) as Persona
       if (!p.kernelVersion) {
-        p.kernelVersion = defaultKernelVersion ?? '149.0.7827.201'
+        p.kernelVersion = fallback
         fs.writeFileSync(file, JSON.stringify(p, null, 2))
+      } else {
+        p.kernelVersion = normalizeKernelVersion(p.kernelVersion)
       }
       return p
     } catch { /* corrupted: regenerate */ }
   }
-  const kv = defaultKernelVersion ?? '149.0.7827.201'
-  const chromeMajor = parseInt(kv.split('.')[0] ?? '149', 10)
-  const persona = generatePersona(chromeMajor, kv, init)
+  const chromeMajor = parseInt(fallback, 10) || 149
+  const persona = generatePersona(chromeMajor, fallback, init)
   fs.mkdirSync(profileDir, { recursive: true })
   fs.writeFileSync(file, JSON.stringify(persona, null, 2))
   return persona

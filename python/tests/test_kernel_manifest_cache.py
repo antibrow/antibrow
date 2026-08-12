@@ -56,8 +56,8 @@ def test_registers_manifest_versions_and_caches_them_as_a_bare_list(tmp_path, fe
     assert len(fetches) == 1
 
     discovered = {kv.version: kv for kv in K.kernels_for_platform("win32")}
-    assert "900.0.0.1" in discovered
-    assert discovered["900.0.0.1"].asset("win32").build == "b1"
+    assert "900" in discovered
+    assert discovered["900"].asset("win32").build == "b1"
 
     raw = json.loads((tmp_path / K.KERNEL_VERSION_CACHE_FILE).read_text(encoding="utf-8"))
     assert isinstance(raw, list)  # the Node SDK / desktop cache loader requires a list
@@ -66,8 +66,8 @@ def test_registers_manifest_versions_and_caches_them_as_a_bare_list(tmp_path, fe
     assert raw[0]["platforms"]["win32"]["exeRelPath"] == "chrome.exe"
 
     round_tripped = {kv.version: kv for kv in K.load_cached_kernel_versions(tmp_path)}
-    assert set(round_tripped["900.0.0.1"].platforms) == {"win32", "linux-arm64"}
-    assert round_tripped["900.0.0.1"].asset("linux-arm64").build == "b1"
+    assert set(round_tripped["900"].platforms) == {"win32", "linux-arm64"}
+    assert round_tripped["900"].asset("linux-arm64").build == "b1"
 
 
 def test_a_fresh_cache_is_served_without_a_fetch_and_force_overrides_it(tmp_path, fetches):
@@ -100,8 +100,8 @@ def test_a_failed_fetch_keeps_the_cache_and_never_raises(tmp_path, fetches, monk
     assert K.refresh_kernel_versions(tmp_path, force=True) is False
     # The cache survived the failed refresh rather than being cleared, and the
     # version it holds is still registered.
-    assert [kv.version for kv in K.load_cached_kernel_versions(tmp_path)] == ["900.0.0.1"]
-    assert any(kv.version == "900.0.0.1" for kv in K.all_kernel_versions())
+    assert [kv.version for kv in K.load_cached_kernel_versions(tmp_path)] == ["900"]
+    assert any(kv.version == "900" for kv in K.all_kernel_versions())
 
 
 def test_an_unreadable_or_foreign_cache_is_ignored(tmp_path):

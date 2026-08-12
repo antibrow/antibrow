@@ -166,13 +166,14 @@ def test_the_server_lookup_runs_on_an_env_only_key(tmp_path, fake_kernel, fake_l
 
 def test_kernel_version_pins_new_profiles_only(tmp_path, fake_kernel, fake_license, monkeypatch):
     # 149 is not compiled in any more: it reaches the catalogue the way the
-    # manifest delivers it, which is also what makes it pinnable.
-    monkeypatch.setattr(
-        K,
-        "_registered",
+    # manifest delivers it, which is also what makes it pinnable. Registering
+    # (rather than poking `_registered` directly) normalizes the entry the same
+    # way a real manifest fetch would.
+    monkeypatch.setattr(K, "_registered", [])
+    K.register_kernel_versions(
         [
             K.KernelVersion(
-                "149.0.7827.201",
+                "149.7.7.7",
                 "Chrome 149",
                 {
                     K.current_platform(): K.KernelAsset(
@@ -180,16 +181,19 @@ def test_kernel_version_pins_new_profiles_only(tmp_path, fake_kernel, fake_licen
                     )
                 },
             )
-        ],
+        ]
     )
-    old = plan_for(tmp_path, profile="pinned", kernel_version="149.0.7827.201")
-    assert old.kernel_version == "149.0.7827.201"
+    # Feeding a full version string still has to hit the major-only entry.
+    old = plan_for(tmp_path, profile="pinned", kernel_version="149.7.7.7")
+    assert old.kernel_version == "149"
     assert old.persona.chrome_major == 149
+    # A tail that differs from the UA's frozen ".0.0.0": the UA must carry the
+    # major, not whatever version string the caller happened to pin with.
     assert "Chrome/149.0.0.0" in old.persona.ua
 
     # The profile now owns that version; a later default must not move it.
     again = plan_for(tmp_path, profile="pinned")
-    assert again.kernel_version == "149.0.7827.201"
+    assert again.kernel_version == "149"
 
 
 def test_label_defaults_to_the_profile_name_and_can_be_overridden(tmp_path, fake_kernel, fake_license):

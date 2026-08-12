@@ -12,7 +12,7 @@ const uploadSpy = vi.fn(async (_dir: string, _url: string) => undefined as strin
 const downloadSpy = vi.fn(async (_url: string, _dir: string) => true)
 
 vi.mock('../../src/engine/downloader', () => ({
-  DEFAULT_KERNEL_VERSION: { version: '150.0.7871.182', label: 'Chrome 150', platforms: {} },
+  DEFAULT_KERNEL_VERSION: { version: '150.0.0.0', label: 'Chrome 150', platforms: {} },
   KERNEL_VERSIONS: [],
   findKernelVersion: (v: string) => ({ version: v, label: `Chrome ${v}`, platforms: {} }),
   ensureKernel: async () => 'C:/kernels/chrome.exe',
@@ -23,7 +23,7 @@ vi.mock('../../src/engine/downloader', () => ({
 }))
 
 vi.mock('../../src/engine/persona', () => ({
-  loadOrGeneratePersona: () => ({ kernelVersion: '150.0.7871.182', chromeMajor: 150, timezone: 'UTC', languages: ['en-US'] }),
+  loadOrGeneratePersona: () => ({ kernelVersion: '150.0.0.0', chromeMajor: 150, timezone: 'UTC', languages: ['en-US'] }),
 }))
 
 // Only the network-shaped functions are stubbed; readArchiveVersion / writeArchiveVersion /

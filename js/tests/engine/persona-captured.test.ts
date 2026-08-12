@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { personaToFpConfig, generatePersona, type Persona } from '../../src/engine/persona'
 
 function desktopPersona(): Persona {
-  const base = generatePersona(150, '150.0.7871.182')
+  const base = generatePersona(150, '150.0.0.0')
   return { ...base, seed: '0123456789abcdef', screenW: 1536, screenH: 864 }
 }
 
