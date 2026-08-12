@@ -607,8 +607,15 @@ export async function launchKernel(opts: KernelLaunchOptions): Promise<KernelSes
   }
 
   onProgress?.(`Spawning kernel ${path.basename(exePath)} cdp_port=${cdpPort}`)
+  // No windowsHide: true here. Node implements it via STARTUPINFO's
+  // wShowWindow=SW_HIDE, which on Windows overrides the *first* ShowWindow call a
+  // process makes. Chromium only calls ShowWindow once when --window-size or
+  // --window-position is on the command line (both android profiles and the
+  // Windows headless off-screen trick add one of these) - so windowsHide silently
+  // left the browser window created but never shown (WS_VISIBLE never set), CDP
+  // still connected fine. chrome.exe has no console window to hide in the first
+  // place, so this option never did anything useful here.
   const child = spawn(exePath, args, {
-    windowsHide: isWin,
     detached: !isWin,
     stdio: ['ignore', 'pipe', 'pipe'],
   }) as unknown as ChildProcessWithoutNullStreams

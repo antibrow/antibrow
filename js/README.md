@@ -40,8 +40,8 @@ Pass `http://`, `https://` or **`socks5://user:pass@host:port`** and the credent
 
 Real residential exit, `Proxy: No`, 90% disguise on whoer.net — and a clean run through CreepJS:
 
-![whoer.net result](https://antibrow.com/proof/whoer.png)
-![CreepJS result](https://antibrow.com/proof/creepjs.png)
+![whoer.net result](https://antibrow.com/proof/whoer.webp)
+![CreepJS result](https://antibrow.com/proof/creepjs.webp)
 
 ## Quick start
 

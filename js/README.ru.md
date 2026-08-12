@@ -40,8 +40,8 @@
 
 Настоящий выход через резидентский IP, `Proxy: No`, 90% маскировки на whoer.net - и чистый прогон через CreepJS:
 
-![whoer.net result](https://antibrow.com/proof/whoer.png)
-![CreepJS result](https://antibrow.com/proof/creepjs.png)
+![whoer.net result](https://antibrow.com/proof/whoer.webp)
+![CreepJS result](https://antibrow.com/proof/creepjs.webp)
 
 ## Быстрый старт
 
