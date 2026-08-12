@@ -4,9 +4,28 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [2.8.0] - 2026-08-12
 
 ### Changed
+
+- A kernel is identified by its Chrome major alone (`150`, `151`) instead of a
+  four-part Chromium version. Kernel directories, `persona.json`, the version
+  passed to `openProfile({ kernelVersion })` and everything reported back use
+  the major. Installed kernels are migrated by renaming their directory, so
+  nothing is downloaded again, and a version frozen into an existing
+  `persona.json` is normalized when read rather than rewritten on disk. New:
+  `normalizeKernelVersion()` and `migrateLegacyKernelDirs()`. The catalogue
+  cache is now `kernel-catalog-cache.json`; the old file is left in place for
+  clients that have not upgraded.
+
+- An Android profile is created against the newest kernel that carries the
+  mobile device support, not a fixed one. Any kernel at or above the documented
+  minimum qualifies, so newly published ones become available through the kernel
+  manifest without an SDK release. `openProfile({ deviceType: 'android',
+  kernelVersion })` honours an explicit version when it qualifies and falls back
+  to the newest that does otherwise; existing profiles keep the kernel frozen
+  into their identity. New: `androidCapableKernels()` and
+  `resolveAndroidKernel()`.
 
 - Android capability is decided by the kernel's Chrome major alone. The build
   stamp is no longer consulted, so a qualifying kernel is no longer refused when
@@ -23,17 +42,6 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
   back to the default kernel icon with no error. They get a `.png` instead, so a
   profile is recognizable in the Dock, the app switcher and the taskbar. A
   kernel that does not know the switch ignores it and keeps its own icon.
-
-### Changed
-
-- An Android profile is created against the newest kernel that carries the
-  mobile device support, not a fixed one. Any kernel at or above the documented
-  minimum qualifies, so newly published ones become available through the kernel
-  manifest without an SDK release. `openProfile({ deviceType: 'android',
-  kernelVersion })` honours an explicit version when it qualifies and falls back
-  to the newest that does otherwise; existing profiles keep the kernel frozen
-  into their identity. New: `androidCapableKernels()` and
-  `resolveAndroidKernel()`.
 
 ## [2.7.0] - 2026-08-10
 

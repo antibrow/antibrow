@@ -4,19 +4,19 @@ All notable changes to the `antibrow` Python SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.9.0] - 2026-08-12
 
 ### Changed
 
-- Android capability is decided by the kernel's Chrome major alone. The build
-  stamp is no longer consulted, so a qualifying kernel is no longer refused when
-  its manifest row omits `build` or carries an older date - the compiled-in
-  baseline has no build stamp at all, which made every Android launch depend on
-  a successful manifest fetch. `kernel_supports_android(version)` now takes one
-  argument; the second is still accepted and ignored so existing calls keep
-  working. `ANDROID_MIN_KERNEL_BUILD` is removed: nothing gates on it any more.
-
-### Changed
+- A kernel is identified by its Chrome major alone (`150`, `151`) instead of a
+  four-part Chromium version. Kernel directories, `persona.json`, the version
+  passed to `launch(kernel_version=...)` and everything reported back use the
+  major. Installed kernels are migrated by renaming their directory, so nothing
+  is downloaded again, and a version frozen into an existing `persona.json` is
+  normalized when read rather than rewritten on disk. New:
+  `normalize_kernel_version()` and `migrate_legacy_kernel_dirs()`. The catalogue
+  cache is now `kernel-catalog-cache.json`; the old file is left in place for
+  clients that have not upgraded.
 
 - An Android profile is created against the newest kernel that carries the
   mobile device support, not a fixed one. Any kernel at or above the documented
@@ -26,6 +26,14 @@ All notable changes to the `antibrow` Python SDK. Format follows
   back to the newest that does otherwise; existing profiles keep the kernel
   frozen into their identity. New: `android_capable_kernels()` and
   `resolve_android_kernel()`.
+
+- Android capability is decided by the kernel's Chrome major alone. The build
+  stamp is no longer consulted, so a qualifying kernel is no longer refused when
+  its manifest row omits `build` or carries an older date - the compiled-in
+  baseline has no build stamp at all, which made every Android launch depend on
+  a successful manifest fetch. `kernel_supports_android(version)` now takes one
+  argument; the second is still accepted and ignored so existing calls keep
+  working. `ANDROID_MIN_KERNEL_BUILD` is removed: nothing gates on it any more.
 
 ## [0.8.0] - 2026-08-10
 
