@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from antibrow.kernel import (
     ANDROID_MIN_KERNEL_VERSION,
@@ -37,7 +38,7 @@ def test_baseline_is_major_only():
 def test_lookups_accept_legacy_full_versions():
     assert find_kernel_version("150.0.0.0").version == "150"
     assert find_kernel_version_strict("150.0.0.0").version == "150"
-    assert str(kernel_dir("/cache", "150.0.0.0")).endswith("kernels/150")
+    assert kernel_dir("/cache", "150.0.0.0") == Path("/cache") / "kernels" / "150"
 
 
 def test_at_least_compares_majors_across_shapes():
