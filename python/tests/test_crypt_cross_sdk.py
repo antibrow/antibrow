@@ -58,7 +58,12 @@ class TestTheMarkerIsByteCompatible:
     # rather than derived, so a change to either serializer trips this test.
     def test_python_writes_exactly_what_the_js_sdk_writes(self, tmp_path):
         D.write_crypt_state(tmp_path, True)
-        assert (tmp_path / D.CRYPT_STATE_FILE).read_text() == '{\n  "encrypted": true\n}'
+        # Bytes, not text: read_text() would translate a CRLF back to \n and hide
+        # a platform that wrote one. The archive carries whatever is on disk, and
+        # the JS side always writes \n, so a CR here is a real divergence.
+        raw = (tmp_path / D.CRYPT_STATE_FILE).read_bytes()
+        assert b"\r" not in raw
+        assert raw.decode() == '{\n  "encrypted": true\n}'
 
         D.write_crypt_state(tmp_path, False)
         assert (tmp_path / D.CRYPT_STATE_FILE).read_text() == '{\n  "encrypted": false\n}'

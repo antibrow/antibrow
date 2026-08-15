@@ -31,7 +31,9 @@ def lock_read(monkeypatch):
         real = P.Path.read_bytes
 
         def fake(self):
-            if any(str(self).endswith(suffix) for suffix in suffixes):
+            # Windows renders Path with backslashes, so a "Default/Cookies"
+            # suffix would never match there and the file would stay readable.
+            if any(self.as_posix().endswith(suffix) for suffix in suffixes):
                 raise OSError(16, "Resource busy")
             return real(self)
 

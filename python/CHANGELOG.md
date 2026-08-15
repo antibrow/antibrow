@@ -4,6 +4,18 @@ All notable changes to the `antibrow` Python SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.14.1] - 2026-08-15
+
+### Fixed
+
+- The profile-directory JSON files are written as bytes, so their contents no
+  longer depend on the platform. On Windows, text-mode writes turned every
+  newline into a CRLF, which meant `crypt-state.json` travelled inside the
+  archive in a form the Node SDK never produces.
+- A test helper matched paths with a forward slash, so on Windows it silently
+  failed to make the named file unreadable and the case it was meant to cover
+  never ran.
+
 ## [0.14.0] - 2026-08-15
 
 Per-profile encryption reaches feature parity with the Node SDK. A profile

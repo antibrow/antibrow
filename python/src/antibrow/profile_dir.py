@@ -84,7 +84,7 @@ def write_profile_meta(directory: Path, meta: ProfileMeta) -> None:
         payload["serverCheckedAt"] = meta.server_checked_at
     if meta.encrypted:
         payload["encrypted"] = True
-    (directory / META_FILE).write_text(json.dumps(payload, indent=2), encoding="utf8")
+    (directory / META_FILE).write_bytes(json.dumps(payload, indent=2).encode("utf8"))
 
 
 def read_crypt_state(directory: Path | str) -> Optional[bool]:
@@ -99,7 +99,7 @@ def read_crypt_state(directory: Path | str) -> Optional[bool]:
 def write_crypt_state(directory: Path | str, encrypted: bool) -> None:
     root = Path(directory)
     root.mkdir(parents=True, exist_ok=True)
-    (root / CRYPT_STATE_FILE).write_text(json.dumps({"encrypted": encrypted}, indent=2), encoding="utf8")
+    (root / CRYPT_STATE_FILE).write_bytes(json.dumps({"encrypted": encrypted}, indent=2).encode("utf8"))
 
 
 def is_profile_encrypted(directory: Path | str) -> bool:
@@ -147,7 +147,7 @@ def mark_profile_encrypted(directory: Path | str) -> None:
     # its own keys in here (the guest marker among them) and losing them would
     # change what the directory is.
     raw["encrypted"] = True
-    (root / META_FILE).write_text(json.dumps(raw, indent=2), encoding="utf8")
+    (root / META_FILE).write_bytes(json.dumps(raw, indent=2).encode("utf8"))
 
 
 def unmark_profile_encrypted(directory: Path | str) -> None:
@@ -161,7 +161,7 @@ def unmark_profile_encrypted(directory: Path | str) -> None:
     if not isinstance(raw, dict) or "encrypted" not in raw:
         return
     del raw["encrypted"]
-    (root / META_FILE).write_text(json.dumps(raw, indent=2), encoding="utf8")
+    (root / META_FILE).write_bytes(json.dumps(raw, indent=2).encode("utf8"))
 
 
 def is_crypt_key_pending(directory: Path | str) -> bool:
@@ -172,7 +172,7 @@ def mark_crypt_key_pending(directory: Path | str) -> None:
     """Record that the next launch has a key to offer this directory."""
     root = Path(directory)
     root.mkdir(parents=True, exist_ok=True)
-    (root / CRYPT_PENDING_FILE).write_text("", encoding="utf8")
+    (root / CRYPT_PENDING_FILE).write_bytes(b"")
 
 
 def clear_crypt_key_pending(directory: Path | str) -> None:
