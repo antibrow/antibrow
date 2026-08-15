@@ -32,7 +32,22 @@ const ALWAYS_PRESENT_PREFIXES = [
   '--no-first-run',
   '--no-default-browser-check',
   '--lang',
+  '--fp-product-name',
 ]
+
+// Renames the browser in chrome://version and the About page only. Measured on
+// kernel 151 build 2026-08-13c: with and without the flag, navigator, the
+// high-entropy UA hints and the Sec-CH-UA headers are byte-identical, so the
+// brand never reaches a page. If a future kernel starts surfacing it to script,
+// this value has to go back to something a real Chrome would report.
+describe('product name', () => {
+  it('passes the brand and keeps it out of anything web-facing', () => {
+    const args = buildLaunchArgs(baseOptions('darwin'))
+    expect(args).toContain('--fp-product-name=antibrow')
+    const uaBearing = args.filter((a) => /^--user-agent|^--fp-config=|^--lang=/.test(a))
+    for (const a of uaBearing) expect(a).not.toContain('antibrow')
+  })
+})
 
 function baseOptions(platform: NodeJS.Platform, headless = false): BuildLaunchArgsOptions {
   return {

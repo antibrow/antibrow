@@ -45,6 +45,14 @@ def test_required_switches_are_always_present():
 
 
 @pytest.mark.parametrize("platform", ["win32", "linux", "darwin"])
+def test_product_name_is_always_passed(platform):
+    # Renames the browser in chrome://version and the About page only: measured
+    # byte-identical navigator, high-entropy UA hints and Sec-CH-UA headers with
+    # and without it. Kernels that predate the flag ignore it.
+    assert switch(args_for(platform=platform), "fp-product-name") == "antibrow"
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux", "darwin"])
 def test_device_bound_sessions_stay_off(platform):
     # A device-bound session's private key lives in the OS keystore and cannot
     # be exported, so a profile carrying one is refused on the next machine:

@@ -14,16 +14,22 @@ from __future__ import annotations
 import io
 import json
 import re
+import shutil
+import tempfile
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from dataclasses import fields as _dataclass_fields
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from . import kernel as _kernel
+from .crypt_key import CRYPT_KEY_PATTERN, fetch_profile_crypt_key
+from .crypt_rekey import NO_CRYPT_KEY, RekeyRunner, run_crypt_rekey
 from .errors import ProfileCacheError
 from .kernel import normalize_kernel_version
+from .license import get_license_token, resolve_api_key
 from .persona import (
+    PERSONA_FILE,
     CapturedFacts,
     Persona,
     chrome_major_of,
@@ -32,6 +38,12 @@ from .persona import (
     write_persona,
 )
 from .profile_cache import PASSKEYS_ENTRY, SKIP_DIRS, SKIP_FILES, clear_archive_version
+from .profile_dir import (
+    CRYPT_STATE_FILE,
+    is_profile_encrypted,
+    profile_crypt_marker,
+    write_crypt_state,
+)
 
 #: Recommended file extension for a portable profile archive.
 PROFILE_ARCHIVE_EXT = "fpprofile"
@@ -189,13 +201,220 @@ def _add_dir(zf: zipfile.ZipFile, abs_dir: Path, zip_base: str) -> None:
                 pass
 
 
-def export_profile_archive(profile_dir: Path | str, meta: PortableProfileMeta) -> bytes:
-    """Build a portable ``.fpprofile``.
+def copy_portable_profile_files(src_dir: Path | str, dst_dir: Path | str) -> None:
+    """Copy exactly the files a portable export reads.
+
+    A caller that has to transform the profile first (an encrypted one is
+    converted on a copy) then works on the same set that ships: anything left out
+    of the copy is also left out of the archive. ``crypt-state.json`` and
+    ``profile.json`` are not in it - the copy is on its way to being unencrypted,
+    and the identity record is machine-local.
+    """
+    src, dst = Path(src_dir), Path(dst_dir)
+    dst.mkdir(parents=True, exist_ok=True)
+    for name in (PERSONA_FILE, PASSKEYS_ENTRY):
+        _copy_file(src / name, dst / name)
+    src_user_data, dst_user_data = src / "user-data", dst / "user-data"
+    for rel in PORTABLE_USER_DATA:
+        source = src_user_data / rel
+        if source.is_dir():
+            _copy_dir(source, dst_user_data / rel)
+        elif source.is_file():
+            _copy_file(source, dst_user_data / rel)
+            for side in SQLITE_SIDES:
+                _copy_file(
+                    source.parent / (source.name + side), dst_user_data / (rel + side)
+                )
+
+
+def _copy_file(source: Path, dest: Path) -> None:
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, dest)
+    except OSError:
+        pass  # missing or locked: the pack skips it too
+
+
+def _copy_dir(source: Path, dest: Path) -> None:
+    """Mirrors :func:`_add_dir`'s whitelist, so the copy is what the pack packs."""
+    try:
+        names = sorted(p.name for p in source.iterdir())
+    except OSError:
+        return
+    dest.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        if name in SKIP_FILES:
+            continue
+        path = source / name
+        if path.is_dir():
+            if name in SKIP_DIRS:
+                continue
+            _copy_dir(path, dest / name)
+        elif path.is_file():
+            _copy_file(path, dest / name)
+
+
+def export_profile_archive(
+    profile_dir: Path | str,
+    meta: PortableProfileMeta,
+    *,
+    crypt_key: Optional[str] = None,
+    get_crypt_key: Optional[Callable[[], Optional[str]]] = None,
+    api_key: Optional[str] = None,
+    server: Optional[str] = None,
+    cache_dir: Optional[Path | str] = None,
+    exe_path: Optional[Path | str] = None,
+    license_token: Optional[str] = None,
+    tmp_dir: Optional[Path | str] = None,
+    timeout: Optional[float] = None,
+    rekey: Optional[RekeyRunner] = None,
+    on_progress: Optional[Callable[[str], None]] = None,
+) -> bytes:
+    """Build a portable ``.fpprofile`` from any profile, encrypted or not.
 
     Export with the browser closed: a live browser holds SQLite mid-write, and a
     torn copy loses cookies and tabs on import.
+
+    An encrypted profile's key never enters its directory, so packing the
+    directory would hand the recipient ciphertext and nothing to open it with.
+    Such a profile is copied to a temporary directory, converted there to the
+    kernel's built-in key, and packed from the copy - which needs its key, a
+    kernel and a licence, hence the keyword arguments above. The profile itself
+    is never touched, and the archive opens anywhere, which is what export means.
     """
     root = Path(profile_dir)
+    persona = _read_exportable_persona(root, meta)
+    if not is_profile_encrypted(root):
+        return _pack_profile_archive(root, meta)
+
+    # Refuse before copying anything. Both branches mean the directory's own
+    # records disagree with its data, and converting on a guess would either
+    # destroy the copy or produce an archive that only looks converted.
+    before = profile_crypt_marker(root / "user-data")
+    if before != "key-bound":
+        raise ProfileCacheError(
+            "This profile is recorded as encrypted, but its browser data carries no encryption "
+            "verifier ({0}). Open it once and export again; exporting now could produce an "
+            "unusable file.".format(before)
+        )
+
+    key = crypt_key or _resolve_export_crypt_key(meta, get_crypt_key, api_key, server)
+    if not key or not CRYPT_KEY_PATTERN.match(key):
+        raise ProfileCacheError(
+            "This profile is encrypted and its encryption key could not be obtained, so it "
+            "cannot be exported. Sign in to the account that owns it and try again."
+        )
+
+    convert = rekey or _default_rekey_runner(
+        persona.kernel_version or meta.kernel_version,
+        cache_dir=cache_dir,
+        exe_path=exe_path,
+        license_token=license_token,
+        api_key=api_key,
+        server=server,
+        timeout=timeout,
+        on_progress=on_progress,
+    )
+    staging = Path(tempfile.mkdtemp(prefix="antibrow-export-", dir=str(tmp_dir) if tmp_dir else None))
+    try:
+        copy = staging / "profile"
+        if on_progress:
+            on_progress("Preparing a decrypted copy for export")
+        copy_portable_profile_files(root, copy)
+        convert(copy / "user-data", key, NO_CRYPT_KEY)
+
+        # Chromium ignores switches it does not know, so a kernel without this
+        # feature starts, converts nothing and exits successfully. Verify the
+        # outcome rather than the kernel's version: the verifier below is written
+        # by the kernel when the key is bound and removed only by the conversion,
+        # so an untouched copy still carries it.
+        after = profile_crypt_marker(copy / "user-data")
+        if after != "plain":
+            raise ProfileCacheError(
+                "The kernel did not convert this profile (its data is still {0}). This kernel "
+                "build has no --fp-crypt-rekey support; update it and export again. No file "
+                "was written.".format("encrypted" if after == "key-bound" else "unreadable")
+            )
+        # The id defaults to the directory's own name, and the copy's name is not
+        # the profile's - pin it before packing from somewhere else.
+        pinned = replace(meta, id=meta.id or root.name)
+        return _pack_profile_archive(copy, pinned)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def _resolve_export_crypt_key(
+    meta: PortableProfileMeta,
+    get_crypt_key: Optional[Callable[[], Optional[str]]],
+    api_key: Optional[str],
+    server: Optional[str],
+) -> Optional[str]:
+    if get_crypt_key is not None:
+        return get_crypt_key()
+    key = resolve_api_key(api_key)
+    if not key:
+        return None
+    return fetch_profile_crypt_key(meta.name, key, server)
+
+
+def _default_rekey_runner(
+    kernel_version: Optional[str],
+    *,
+    cache_dir: Optional[Path | str],
+    exe_path: Optional[Path | str],
+    license_token: Optional[str],
+    api_key: Optional[str],
+    server: Optional[str],
+    timeout: Optional[float],
+    on_progress: Optional[Callable[[str], None]],
+) -> RekeyRunner:
+    """Resolves the kernel and the licence lazily, so a supplied runner needs neither."""
+
+    def run(user_data_dir: Path, from_key: str, to_key: str) -> None:
+        binary = exe_path or _resolve_kernel_exe(kernel_version, cache_dir, on_progress)
+        # The conversion mode verifies the licence before it parses anything else,
+        # and holds a concurrency slot while it runs, same as a launch.
+        token = license_token or get_license_token(api_key, server).token
+        run_crypt_rekey(
+            exe_path=binary,
+            user_data_dir=user_data_dir,
+            from_key=from_key,
+            to_key=to_key,
+            license_token=token,
+            platform=_kernel.current_platform(),
+            timeout=timeout,
+            on_progress=on_progress,
+        )
+
+    return run
+
+
+def _resolve_kernel_exe(
+    kernel_version: Optional[str],
+    cache_dir: Optional[Path | str],
+    on_progress: Optional[Callable[[str], None]],
+) -> Path:
+    if not cache_dir:
+        raise ProfileCacheError(
+            "Cannot locate the browser kernel for the export: pass cache_dir or exe_path."
+        )
+    # Versions published after this release exist only in the manifest, so the
+    # catalogue has to be refreshed before the lookup - exactly the reasoning
+    # behind the Android floor's strict resolution. A lenient lookup on a stale
+    # catalogue would silently convert on whatever kernel happens to be compiled
+    # in, rather than the one this profile is actually pinned to.
+    _kernel.refresh_kernel_versions(cache_dir)
+    kv = _kernel.find_kernel_version_strict(normalize_kernel_version(kernel_version))
+    return _kernel.ensure_kernel(cache_dir, kv, on_progress)
+
+
+def _read_exportable_persona(root: Path, meta: PortableProfileMeta) -> Persona:
+    """The identity an export will carry, or the refusal that stops it.
+
+    Separate from the packing itself so a caller that has to prepare the
+    directory first (an encrypted profile is converted on a copy) is refused
+    before doing the work.
+    """
     # Export must not create the identity it exports. An Android or
     # captured-machine profile deliberately has no persona until its first
     # launch, and generating one here would both freeze a plain desktop identity
@@ -213,6 +432,24 @@ def export_profile_archive(profile_dir: Path | str, meta: PortableProfileMeta) -
         raise ProfileCacheError(
             "This profile is recorded as {0!r} but its identity is {1!r}. Exporting would "
             "carry the mismatch forward.".format(meta.device_type, persona.device_type or "desktop")
+        )
+    return persona
+
+
+def _pack_profile_archive(profile_dir: Path | str, meta: PortableProfileMeta) -> bytes:
+    """Zip the directory as it stands.
+
+    The key never enters the profile directory, so this refuses an encrypted one:
+    packing it produces ciphertext nobody can open, the exporter included. The
+    converted copy :func:`export_profile_archive` builds carries no marker, which
+    is what lets it through here.
+    """
+    root = Path(profile_dir)
+    persona = _read_exportable_persona(root, meta)
+    if is_profile_encrypted(root):
+        raise ProfileCacheError(
+            "This profile is encrypted, so packing it as it stands would produce a file nobody "
+            "can open."
         )
     # `real_fingerprint` has no home in the interchange schema (the identity
     # itself travels as the persona's captured facts), so it rides in our own
@@ -279,6 +516,20 @@ def import_profile_archive(data: bytes, profile_dir: Path | str) -> ImportedProf
         return _import_legacy_archive(zf, root)
 
 
+def _settle_imported_crypt_state(root: Path, archive_said_so: bool) -> None:
+    """State the imported data's encryption for a directory that may have held a
+    different profile before.
+
+    A restore cannot go stale - a profile's encryption never changes and its own
+    archive always carries the answer - but an import replaces the data wholesale,
+    and a marker left from the previous occupant would put a key on data that was
+    never written under one. The question is what the ARCHIVE said, so it cannot
+    be answered by re-reading the directory: the stale file is still sitting there.
+    """
+    if not archive_said_so:
+        write_crypt_state(root, False)
+
+
 def _import_manifest_archive(
     zf: zipfile.ZipFile, manifest: Dict[str, Any], root: Path
 ) -> ImportedProfileMeta:
@@ -310,6 +561,9 @@ def _import_manifest_archive(
     # here; an imported archive's generation is unknowable, so the next launch
     # must restore rather than trust a stale marker.
     clear_archive_version(root)
+    # The portable format carries neither the marker nor a key, so what lands here
+    # is unencrypted as far as this machine can act on it.
+    _settle_imported_crypt_state(root, False)
 
     proxy = entry.get("proxy") or {}
     raw = proxy.get("raw") if isinstance(proxy, dict) else None
@@ -350,6 +604,7 @@ def _import_legacy_archive(zf: zipfile.ZipFile, root: Path) -> ImportedProfileMe
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(zf.read(info))
     clear_archive_version(root)
+    _settle_imported_crypt_state(root, CRYPT_STATE_FILE in zf.namelist())
 
     rest = {key: value for key, value in legacy.items() if key not in ("name", "kernelVersion")}
     version = legacy.get("kernelVersion")

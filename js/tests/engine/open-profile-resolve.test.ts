@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 vi.mock('../../src/engine/downloader', () => ({
-  DEFAULT_KERNEL_VERSION: { version: '150.0.0.0', label: 'Chrome 150', platforms: {} },
+  defaultKernelVersion: () => ({ version: '150.0.0.0', label: 'Chrome 150', platforms: {} }),
   KERNEL_VERSIONS: [],
   findKernelVersion: (v: string) => ({ version: v, label: `Chrome ${v}`, platforms: {} }),
   ensureKernel: async () => 'C:/kernels/chrome.exe',

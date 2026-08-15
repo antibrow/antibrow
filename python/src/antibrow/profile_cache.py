@@ -13,11 +13,13 @@ import os
 import urllib.error
 import urllib.request
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Set, Tuple
 
 from .config import USER_AGENT
 from .errors import ProfileCacheError
+from .profile_dir import CRYPT_STATE_FILE
 
 #: Browser state kept under ``<profile_dir>/user-data/``.
 USER_DATA_ITEMS: Tuple[str, ...] = ("Default", "GrShaderCache", "Local State", "Variations")
@@ -27,8 +29,12 @@ USER_DATA_ITEMS: Tuple[str, ...] = ("Default", "GrShaderCache", "Local State", "
 PASSKEYS_ENTRY = "passkeys.json"
 
 #: Items at the profile root. The passkey store belongs here or a passkey
-#: registered on one machine never reaches the next one.
-ROOT_ITEMS: Tuple[str, ...] = ("persona.json", PASSKEYS_ENTRY)
+#: registered on one machine never reaches the next one; crypt-state.json because
+#: whether the data is encrypted is a property OF that data - left behind, the
+#: machine that restores this archive launches without the key its cookies were
+#: written under. profile.json is deliberately NOT here: it carries the guest
+#: marker, which must never travel onto another machine's copy.
+ROOT_ITEMS: Tuple[str, ...] = ("persona.json", PASSKEYS_ENTRY, CRYPT_STATE_FILE)
 
 #: Which generation of the cloud archive this machine holds. Machine-local: not
 #: in ROOT_ITEMS so it is never packed, and an import clears it because the
@@ -101,11 +107,15 @@ SKIP_DIRS: Set[str] = {
 _REQUEST_TIMEOUT = 120.0
 
 
-def _add_dir(zf: zipfile.ZipFile, abs_dir: Path, zip_base: str) -> None:
-    """Add a directory tree, skipping caches and anything unreadable."""
+def _add_dir(zf: zipfile.ZipFile, abs_dir: Path, zip_base: str, skipped: "list[str]") -> None:
+    """Add a directory tree, skipping caches and anything unreadable.
+
+    Whatever could not be read is appended to ``skipped`` under its archive path.
+    """
     try:
         names = sorted(os.listdir(abs_dir))
     except OSError:
+        skipped.append(zip_base or str(abs_dir))
         return
     for name in names:
         if name in SKIP_FILES or name in DBSC_FILES:
@@ -115,17 +125,60 @@ def _add_dir(zf: zipfile.ZipFile, abs_dir: Path, zip_base: str) -> None:
         if abs_path.is_dir():
             if name in SKIP_DIRS:
                 continue
-            _add_dir(zf, abs_path, zip_path)
+            _add_dir(zf, abs_path, zip_path, skipped)
         elif abs_path.is_file():
             try:
                 zf.writestr(zip_path, abs_path.read_bytes())
             except OSError:
-                pass  # locked or unreadable: never fatal
+                skipped.append(zip_path)  # locked or unreadable: never fatal
 
 
-def pack_profile_cache(profile_dir: Path | str) -> bytes:
-    """Zip the profile's synced items. Locked files are skipped, never fatal."""
+@dataclass(frozen=True)
+class ProfilePackResult:
+    """An archive and what it had to leave out.
+
+    An empty ``skipped`` is the only proof the archive is complete: a successful
+    upload says the bytes arrived, not that they are all of the profile, so
+    anything that deletes the local copy afterwards has to read this first.
+    ``skipped`` holds archive paths of entries whose read failed (a live browser
+    holds some files open); deliberate exclusions - caches, locks, device-bound
+    sessions - are not in here.
+    """
+
+    archive: bytes
+    skipped: Tuple[str, ...]
+
+
+# The pack that matters most happens inside `upload_profile_cache`, out of reach
+# of the caller that then decides whether local data may go, so the last report
+# per directory stays readable here.
+_pack_reports: "dict[str, Tuple[str, ...]]" = {}
+
+
+def last_profile_pack_report(profile_dir: Path | str) -> Optional[Tuple[str, ...]]:
+    """What the most recent pack of this directory in this process left out.
+
+    ``None`` when this process never packed it, which is not the same as an
+    empty tuple.
+    """
+    return _pack_reports.get(_report_key(profile_dir))
+
+
+def _report_key(profile_dir: Path | str) -> str:
+    try:
+        return str(Path(profile_dir).resolve())
+    except OSError:
+        return str(Path(profile_dir))
+
+
+def pack_profile_cache_with_report(profile_dir: Path | str) -> ProfilePackResult:
+    """Zip the profile's synced items and say what could not be read.
+
+    Locked files are skipped, never fatal: a partial archive still beats no
+    archive. The report is what tells the caller it was partial.
+    """
     root = Path(profile_dir)
+    skipped: list[str] = []
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for item in ROOT_ITEMS:
@@ -134,21 +187,36 @@ def pack_profile_cache(profile_dir: Path | str) -> bytes:
                 if path.is_file():
                     zf.writestr(item, path.read_bytes())
             except OSError:
-                pass
+                skipped.append(item)
 
         user_data = root / "user-data"
         for item in USER_DATA_ITEMS:
             path = user_data / item
-            if not path.exists():
+            entry = "user-data/{0}".format(item)
+            try:
+                if not path.exists():
+                    continue
+                is_dir = path.is_dir()
+            except OSError:
+                skipped.append(entry)
                 continue
-            if path.is_dir():
-                _add_dir(zf, path, "user-data/{0}".format(item))
+            if is_dir:
+                _add_dir(zf, path, entry, skipped)
             else:
                 try:
-                    zf.writestr("user-data/{0}".format(item), path.read_bytes())
+                    zf.writestr(entry, path.read_bytes())
                 except OSError:
-                    pass
-    return buf.getvalue()
+                    skipped.append(entry)
+
+    report = tuple(skipped)
+    _pack_reports[_report_key(profile_dir)] = report
+    return ProfilePackResult(archive=buf.getvalue(), skipped=report)
+
+
+def pack_profile_cache(profile_dir: Path | str) -> bytes:
+    """Zip the profile's synced items. Locked files are skipped, never fatal;
+    use :func:`pack_profile_cache_with_report` when you need to know which."""
+    return pack_profile_cache_with_report(profile_dir).archive
 
 
 def _safe_join(root: Path, entry_name: str) -> "Path | None":
@@ -294,6 +362,8 @@ def upload_profile_cache(profile_dir: Path | str, put_url: str) -> Optional[str]
     Returns the new generation (the object's ETag), or None when R2 did not
     name one.
     """
+    # `last_profile_pack_report(profile_dir)` describes exactly this archive
+    # afterwards.
     payload = pack_profile_cache(profile_dir)
     request = urllib.request.Request(
         put_url,

@@ -10,7 +10,7 @@ import { LiveViewStream, registerLiveSession, unregisterLiveSession } from './li
 import { ensureCacheDir, listProfiles, getProfileDir } from './profile'
 import {
   loadOrGeneratePersona,
-  DEFAULT_KERNEL_VERSION,
+  defaultKernelVersion,
   readProfileMeta,
   resolvePersonaInit,
   resolveAndroidKernel,
@@ -358,7 +358,7 @@ export async function startMcpServer(): Promise<void> {
           // as the engine's own default resolution in openProfile.
           const defaultKv = personaInit?.deviceType === 'android'
             ? resolveAndroidKernel()
-            : DEFAULT_KERNEL_VERSION
+            : defaultKernelVersion()
           const persona = loadOrGeneratePersona(profileDir, defaultKv.version, personaInit)
           return {
             content: [{

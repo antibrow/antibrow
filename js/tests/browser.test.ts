@@ -365,6 +365,26 @@ describe('launch sync behaviour', () => {
     expect(getProfileArchiveUrlsSpy).toHaveBeenCalledTimes(1)
   })
 
+  it('writes group (and tags) into the config it creates the cloud row with', async () => {
+    const ab = new AntiDetectBrowser({ key: 'adb_test' })
+    await ab.launch({ profile: 'brand-new', sync: true, group: 'asia', tags: ['us'] })
+
+    expect(getOrCreateProfileSpy).toHaveBeenCalledWith(expect.objectContaining({
+      tags: ['us'], config: { group: 'asia' },
+    }))
+  })
+
+  // group is not a per-launch write: it only lands in config at the moment the
+  // cloud row is created. Pinned so nobody later "fixes" this into a silent
+  // per-launch update of an existing profile's config.
+  it('never writes group when launching an already-synced profile', async () => {
+    const ab = new AntiDetectBrowser({ key: 'adb_test' })
+    await ab.launch({ profile: 'amazon-us', group: 'asia' })
+
+    expect(getProfileSpy).toHaveBeenCalledTimes(1)
+    expect(getOrCreateProfileSpy).not.toHaveBeenCalled()
+  })
+
   it('degrades to local when the existence probe fails', async () => {
     getProfileSpy.mockRejectedValueOnce(new Error('fetch failed'))
     const ab = new AntiDetectBrowser({ key: 'adb_test' })

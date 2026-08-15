@@ -1,8 +1,9 @@
 import AdmZip from 'adm-zip'
 import fs from 'node:fs'
 import path from 'node:path'
-import { DEFAULT_KERNEL_VERSION, kernelsForPlatform, normalizeKernelVersion } from './downloader'
+import { defaultKernelVersion, kernelsForPlatform, normalizeKernelVersion } from './downloader'
 import { generatePersona, readPersona, type ApiLogMode, type CapturedFacts, type DeviceType, type Persona } from './persona'
+import { CRYPT_STATE_FILE, isProfileEncrypted, writeCryptState } from './profile-dir'
 
 // Browser state items stored under <profileDir>/user-data/
 const USER_DATA_ITEMS = ['Default', 'GrShaderCache', 'Local State', 'Variations'] as const
@@ -12,8 +13,13 @@ const USER_DATA_ITEMS = ['Default', 'GrShaderCache', 'Local State', 'Variations'
 const PASSKEYS_ENTRY = 'passkeys.json'
 
 // Root-level items (relative to profileDir). passkeys.json belongs here or a
-// passkey registered on one machine never reaches the next one.
-const ROOT_ITEMS = ['persona.json', PASSKEYS_ENTRY] as const
+// passkey registered on one machine never reaches the next one; crypt-state.json
+// because whether the data is encrypted is a property OF that data - left behind,
+// the machine that restores this archive launches without the key its cookies
+// were written under. profile.json is deliberately NOT here: it carries the
+// guest marker, which must never travel onto another machine's copy.
+const PERSONA_ENTRY = 'persona.json'
+const ROOT_ITEMS = [PERSONA_ENTRY, PASSKEYS_ENTRY, CRYPT_STATE_FILE] as const
 
 /**
  * Which generation of the cloud archive this machine holds. Machine-local: it is
@@ -63,12 +69,14 @@ const SKIP_DIRS = new Set([
   'extensions_crx_cache', 'Crashpad', 'segmentation_platform',
 ])
 
-/** Add a directory recursively, skipping cache dirs and unreadable files. */
-function addDirSafe(zip: AdmZip, absDir: string, zipBase: string): void {
+/** Add a directory recursively, skipping cache dirs and unreadable files. Read
+ *  failures are appended to `skipped` when one is supplied. */
+function addDirSafe(zip: AdmZip, absDir: string, zipBase: string, skipped?: string[]): void {
   let entries: fs.Dirent[]
   try {
     entries = fs.readdirSync(absDir, { withFileTypes: true })
   } catch {
+    skipped?.push(zipBase || absDir)
     return
   }
   for (const e of entries) {
@@ -77,11 +85,13 @@ function addDirSafe(zip: AdmZip, absDir: string, zipBase: string): void {
     const zipPath = zipBase ? `${zipBase}/${e.name}` : e.name
     if (e.isDirectory()) {
       if (SKIP_DIRS.has(e.name)) continue
-      addDirSafe(zip, abs, zipPath)
+      addDirSafe(zip, abs, zipPath, skipped)
     } else if (e.isFile()) {
       try {
         zip.addFile(zipPath, fs.readFileSync(abs))
-      } catch { /* locked or unreadable: skip */ }
+      } catch {
+        skipped?.push(zipPath)
+      }
     }
   }
 }
@@ -165,27 +175,69 @@ function clearPackedState(profileDir: string, entries: readonly { entryName: str
   }
 }
 
-/** Zip the profile's synced items. Locked files are skipped, never fatal. */
-export function packProfileCache(profileDir: string): Buffer {
+/**
+ * What a pack had to leave out. An empty `skipped` is the only proof the archive
+ * is complete: a successful upload says the bytes arrived, not that they are all
+ * of the profile, so anything that deletes the local copy afterwards has to read
+ * this first.
+ */
+export interface ProfilePackReport {
+  /** Archive paths of entries whose read failed (a live browser holds some
+   *  files open). Deliberate exclusions - caches, locks, device-bound sessions -
+   *  are not in here. */
+  skipped: string[]
+}
+
+export interface ProfilePackResult extends ProfilePackReport {
+  archive: Buffer
+}
+
+// The pack that matters most happens inside `uploadProfileCache`, out of reach
+// of the caller that then decides whether local data may go, so the last report
+// per directory stays readable here.
+const packReports = new Map<string, ProfilePackReport>()
+
+/** The report of the most recent pack of this directory in this process. */
+export function lastProfilePackReport(profileDir: string): ProfilePackReport | undefined {
+  return packReports.get(path.resolve(profileDir))
+}
+
+/** Zip the profile's synced items and say what could not be read. Locked files
+ *  are skipped, never fatal. */
+export function packProfileCacheWithReport(profileDir: string): ProfilePackResult {
   const zip = new AdmZip()
+  const skipped: string[] = []
 
   for (const item of ROOT_ITEMS) {
     const p = path.join(profileDir, item)
-    try { if (fs.existsSync(p)) zip.addFile(item, fs.readFileSync(p)) } catch { /* skip */ }
+    try {
+      if (fs.existsSync(p)) zip.addFile(item, fs.readFileSync(p))
+    } catch {
+      skipped.push(item)
+    }
   }
 
   const udDir = path.join(profileDir, 'user-data')
   for (const item of USER_DATA_ITEMS) {
     const p = path.join(udDir, item)
     if (!fs.existsSync(p)) continue
-    if (fs.statSync(p).isDirectory()) {
-      addDirSafe(zip, p, `user-data/${item}`)
+    let stat: fs.Stats
+    try { stat = fs.statSync(p) } catch { skipped.push(`user-data/${item}`); continue }
+    if (stat.isDirectory()) {
+      addDirSafe(zip, p, `user-data/${item}`, skipped)
     } else {
-      try { zip.addFile(`user-data/${item}`, fs.readFileSync(p)) } catch { /* skip */ }
+      try { zip.addFile(`user-data/${item}`, fs.readFileSync(p)) } catch { skipped.push(`user-data/${item}`) }
     }
   }
 
-  return zip.toBuffer()
+  packReports.set(path.resolve(profileDir), { skipped: [...skipped] })
+  return { archive: zip.toBuffer(), skipped }
+}
+
+/** Zip the profile's synced items. Locked files are skipped, never fatal; use
+ *  `packProfileCacheWithReport` when you need to know which. */
+export function packProfileCache(profileDir: string): Buffer {
+  return packProfileCacheWithReport(profileDir).archive
 }
 
 /** Replace the profile's synced state with the archive's. */
@@ -346,11 +398,11 @@ function personaToLauncher(p: Persona): Record<string, unknown> {
 }
 
 /**
- * Build a portable `.fpprofile`. Export with the browser closed: a live Chrome
- * holds SQLite mid-write, and a torn copy loses cookies and tabs on import.
+ * The identity an export will carry, or the refusal that stops it. Separate from
+ * the packing itself so a caller that has to prepare the directory first (an
+ * encrypted profile is converted on a copy) can be refused before doing the work.
  */
-export function exportProfileArchive(profileDir: string, meta: PortableProfileMeta): Buffer {
-  const zip = new AdmZip()
+export function readExportablePersona(profileDir: string, meta: PortableProfileMeta): Persona {
   // Export must not create the identity it exports. An Android or captured-machine
   // profile deliberately has no persona until its first launch, and generating one
   // here would both freeze a plain desktop identity onto it forever and stamp the
@@ -369,6 +421,78 @@ export function exportProfileArchive(profileDir: string, meta: PortableProfileMe
     throw new Error(
       `This profile is recorded as "${meta.deviceType}" but its identity is ` +
         `"${persona.deviceType ?? 'desktop'}". Exporting would carry the mismatch forward.`,
+    )
+  }
+  return persona
+}
+
+/**
+ * Copy exactly the files a portable export reads, so a caller that has to
+ * transform the profile first works on the same set that ships. Anything left
+ * out of the copy is also left out of the archive.
+ */
+export function copyPortableProfileFiles(srcDir: string, dstDir: string): void {
+  fs.mkdirSync(dstDir, { recursive: true })
+  for (const name of [PERSONA_ENTRY, PASSKEYS_ENTRY]) {
+    copyFileSafe(path.join(srcDir, name), path.join(dstDir, name))
+  }
+  const srcUserData = path.join(srcDir, 'user-data')
+  const dstUserData = path.join(dstDir, 'user-data')
+  for (const rel of PORTABLE_USER_DATA) {
+    const src = path.join(srcUserData, rel)
+    let stat: fs.Stats
+    try { stat = fs.statSync(src) } catch { continue }
+    if (stat.isDirectory()) {
+      copyDirSafe(src, path.join(dstUserData, rel))
+    } else if (stat.isFile()) {
+      copyFileSafe(src, path.join(dstUserData, rel))
+      for (const side of SQLITE_SIDES) copyFileSafe(src + side, path.join(dstUserData, rel + side))
+    }
+  }
+}
+
+function copyFileSafe(src: string, dst: string): void {
+  try {
+    fs.mkdirSync(path.dirname(dst), { recursive: true })
+    fs.copyFileSync(src, dst)
+  } catch { /* missing or locked - the pack skips it too */ }
+}
+
+function copyDirSafe(srcDir: string, dstDir: string): void {
+  let entries: fs.Dirent[]
+  try {
+    entries = fs.readdirSync(srcDir, { withFileTypes: true })
+  } catch {
+    return
+  }
+  fs.mkdirSync(dstDir, { recursive: true })
+  for (const e of entries) {
+    if (SKIP_FILES.has(e.name) || DBSC_FILES.has(e.name)) continue
+    if (e.isDirectory()) {
+      if (SKIP_DIRS.has(e.name)) continue
+      copyDirSafe(path.join(srcDir, e.name), path.join(dstDir, e.name))
+    } else if (e.isFile()) {
+      copyFileSafe(path.join(srcDir, e.name), path.join(dstDir, e.name))
+    }
+  }
+}
+
+/**
+ * Build a portable `.fpprofile`. Export with the browser closed: a live Chrome
+ * holds SQLite mid-write, and a torn copy loses cookies and tabs on import.
+ *
+ * An encrypted profile needs `exportProfileArchiveAsync` instead: this packs the
+ * directory as it stands, and the recipient has no key for it.
+ */
+export function exportProfileArchive(profileDir: string, meta: PortableProfileMeta): Buffer {
+  const zip = new AdmZip()
+  const persona = readExportablePersona(profileDir, meta)
+  // The key never enters the profile directory, so packing an encrypted one
+  // produces ciphertext nobody can open - including the person who exported it.
+  if (isProfileEncrypted(profileDir)) {
+    throw new Error(
+      'This profile is encrypted, so exporting it as it stands would produce a file nobody can ' +
+        'open. Use exportProfileArchiveAsync(), which converts a temporary copy first.',
     )
   }
   // `realFingerprint` has no home in the interchange schema (the identity itself
@@ -426,6 +550,20 @@ function addPortableFile(zip: AdmZip, userData: string, abs: string): void {
  * Restore a portable archive and return its metadata. Reads `.fpprofile` and the
  * legacy `.zip`; neither metadata entry is left behind in the profile directory.
  */
+
+/**
+ * State the imported data's encryption for a directory that may have held a
+ * different profile before. A restore cannot go stale - a profile's encryption
+ * never changes and its own archive always carries the answer - but an import
+ * replaces the data wholesale, and a marker left from the previous occupant
+ * would put a key on data that was never written under one. The question is
+ * what the ARCHIVE said, so it cannot be answered by re-reading the directory:
+ * the stale file is still sitting there.
+ */
+function settleImportedCryptState(profileDir: string, archiveSaidSo: boolean): void {
+  if (!archiveSaidSo) writeCryptState(profileDir, false)
+}
+
 export function importProfileArchive(buf: Buffer, profileDir: string): ImportedProfileMeta {
   const zip = new AdmZip(buf)
   const launcherEntry = zip.getEntry(LAUNCHER_MANIFEST_ENTRY)
@@ -445,6 +583,7 @@ export function importProfileArchive(buf: Buffer, profileDir: string): ImportedP
   if (identity) fs.writeFileSync(metaPath, identity)
   else fs.rmSync(metaPath, { force: true })
   clearArchiveVersion(profileDir)
+  settleImportedCryptState(profileDir, !!zip.getEntry(CRYPT_STATE_FILE))
   const { name, kernelVersion, ...rest } = legacy as { name?: string; kernelVersion?: string }
   return {
     source: 'legacy',
@@ -539,7 +678,7 @@ function resolveImportedKernelVersion(wanted: string, android = false): string {
         'Refresh the kernel list with an internet connection and import again.',
     )
   }
-  return DEFAULT_KERNEL_VERSION.version
+  return defaultKernelVersion().version
 }
 
 /** Keep every seed and hardware fact so the import renders the same
@@ -593,7 +732,7 @@ function importLauncherArchive(zip: AdmZip, manifest: LauncherManifest, profileD
   // Resolved before anything is written: an Android pin that cannot be honoured
   // here must fail with the target directory still untouched.
   const android = lp.persona?.device_type === 'android'
-  const kernelVersion = resolveImportedKernelVersion(lp.kernel_version || DEFAULT_KERNEL_VERSION.version, android)
+  const kernelVersion = resolveImportedKernelVersion(lp.kernel_version || defaultKernelVersion().version, android)
   fs.mkdirSync(profileDir, { recursive: true })
 
   for (const entry of zip.getEntries()) {
@@ -609,6 +748,9 @@ function importLauncherArchive(zip: AdmZip, manifest: LauncherManifest, profileD
   const persona = launcherPersonaToPersona(lp.persona ?? {}, kernelVersion)
   fs.writeFileSync(path.join(profileDir, 'persona.json'), JSON.stringify(persona, null, 2))
   clearArchiveVersion(profileDir)
+  // The portable format carries neither the marker nor a key, so what lands here
+  // is unencrypted as far as this machine can act on it.
+  settleImportedCryptState(profileDir, false)
 
   return {
     source: 'launcher',
@@ -641,6 +783,7 @@ export async function downloadProfileCache(getUrl: string, profileDir: string): 
 /** Pack and upload to a presigned PUT URL. Returns the new generation (the
  *  object's ETag), or undefined when R2 did not name one. */
 export async function uploadProfileCache(profileDir: string, putUrl: string): Promise<string | undefined> {
+  // `lastProfilePackReport(profileDir)` describes exactly this archive afterwards.
   const buf = packProfileCache(profileDir)
   const res = await fetch(putUrl, {
     method: 'PUT',

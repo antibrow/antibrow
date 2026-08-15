@@ -12,6 +12,8 @@ import { readProfileMeta } from './profile-dir'
 /** Portable passkey store, kept at the profile root so exports carry it. */
 export const PASSKEYS_FILE = 'passkeys.json'
 
+const PRODUCT_NAME = 'antibrow'
+
 export interface KernelLaunchOptions extends Omit<FpConfigSettings, 'apiLogPath'> {
   exePath: string
   profileDir: string
@@ -21,6 +23,8 @@ export interface KernelLaunchOptions extends Omit<FpConfigSettings, 'apiLogPath'
   proxyUrl?: string
   /** Signed license token. */
   licenseToken: string
+  /** Per-profile encryption key, when this profile was created under one. */
+  cryptKey?: string
   /** Window/address label. Defaults to the profile directory basename. */
   label?: string
   headless?: boolean
@@ -324,6 +328,9 @@ function killByUserDataDir(profileDir: string): Promise<void> {
 export interface BuildLaunchArgsOptions {
   fpConfigPath: string
   licenseToken: string
+  /** Per-profile encryption key. Whether it belongs on this launch is decided
+   *  by the profile directory (see resolveCryptKey), never here. */
+  cryptKey?: string
   userDataDir: string
   displayLabel: string
   cdpPort: number
@@ -362,6 +369,11 @@ export function buildLaunchArgs(opts: BuildLaunchArgsOptions): string[] {
     `--fp-license=${opts.licenseToken}`,
     `--user-data-dir=${opts.userDataDir}`,
     `--fp-address-label=${opts.displayLabel}`,
+    // Renames the browser in chrome://version and the About page. Measured as
+    // invisible to pages: with and without it, navigator, the high-entropy UA
+    // hints and the Sec-CH-UA headers are byte-identical. Kernels that predate
+    // the flag ignore it.
+    `--fp-product-name=${PRODUCT_NAME}`,
     `--remote-debugging-port=${opts.cdpPort}`,
     '--remote-allow-origins=*',
     '--no-first-run',
@@ -419,6 +431,10 @@ export function buildLaunchArgs(opts: BuildLaunchArgsOptions): string[] {
       ? ['-AppleLanguages', `(${opts.language})`]
       : []),
   ]
+
+  // Cookies and saved passwords are encrypted under this key, which never
+  // touches the profile directory; the kernel keeps only a verifier there.
+  if (opts.cryptKey) args.push(`--fp-crypt-key=${opts.cryptKey}`)
 
   args.push(`--fp-webauthn-store=${path.join(opts.profileDir, PASSKEYS_FILE)}`)
   if (opts.webauthnCapture === false) args.push('--fp-webauthn-create=choose')
@@ -543,6 +559,7 @@ export async function launchKernel(opts: KernelLaunchOptions): Promise<KernelSes
   const args = buildLaunchArgs({
     fpConfigPath,
     licenseToken,
+    cryptKey: opts.cryptKey,
     userDataDir,
     displayLabel,
     cdpPort,

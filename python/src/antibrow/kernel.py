@@ -1,9 +1,10 @@
 """Browser kernel catalogue, download and on-disk cache.
 
 Kernels are per-platform zips cached under ``<cache_dir>/kernels/<version>/``.
-Versions come from the compiled-in :data:`KERNEL_VERSIONS` baseline (one entry:
-what new profiles get) plus a runtime manifest that only *augments* it - remote
-entries never rewrite a built-in URL or move the default.
+Versions come from the compiled-in :data:`KERNEL_VERSIONS` baseline (one entry,
+the offline fallback) plus a runtime manifest that only *augments* it - remote
+entries never rewrite a built-in URL. A new profile takes the newest version in
+the merged catalogue, so the manifest does move the default.
 """
 
 from __future__ import annotations
@@ -122,8 +123,9 @@ def normalize_kernel_version(version: Optional[str]) -> str:
     return head if head.isdigit() else raw
 
 
-#: The one version compiled in: what new profiles get. Every other kernel comes
-#: from the manifest at runtime, so the default moves only with a release.
+#: The one version compiled in. It is only the floor now that new profiles take
+#: the newest kernel in the catalogue: it answers when the manifest is
+#: unreachable and nothing was cached, i.e. an offline first install.
 KERNEL_VERSIONS: List[KernelVersion] = [
     KernelVersion(
         version="150",
@@ -400,15 +402,15 @@ def refresh_kernel_versions(
 
 
 def default_kernel_version() -> KernelVersion:
-    """Kernel used for brand-new profiles: newest baseline build for this platform."""
+    """Kernel a brand-new profile is created against: the newest one the
+    catalogue knows for this platform, installed or not. Resolved per call
+    because the manifest registers versions at runtime.
+    """
     try:
-        plat = current_platform()
+        newest = kernels_for_platform()
     except UnsupportedPlatformError:
         return KERNEL_VERSIONS[0]
-    for kv in KERNEL_VERSIONS:
-        if plat in kv.platforms:
-            return kv
-    return KERNEL_VERSIONS[0]
+    return newest[0] if newest else KERNEL_VERSIONS[0]
 
 
 def find_kernel_version(version: Optional[str]) -> KernelVersion:

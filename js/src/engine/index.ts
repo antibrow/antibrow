@@ -4,7 +4,7 @@ import os from 'node:os'
 import {
   ensureKernel,
   KERNEL_VERSIONS,
-  DEFAULT_KERNEL_VERSION,
+  defaultKernelVersion,
   findKernelVersion,
   findKernelVersionStrict,
   refreshKernelVersions,
@@ -16,7 +16,7 @@ import {
   installedKernelBuild,
   type KernelVersion,
 } from './downloader'
-import { loadOrGeneratePersona, type ApiLogMode, type DeviceType, type PersonaInit } from './persona'
+import { loadOrGeneratePersona, readPersona, writePersona, withKernelVersion, type ApiLogMode, type DeviceType, type Persona, type PersonaInit } from './persona'
 import { fetchRealDevice } from './devices'
 import { lookupProxyGeo, type ProxyGeo } from './geoip'
 import { getLicenseToken } from './license'
@@ -28,20 +28,26 @@ import {
   writeArchiveVersion,
   clearArchiveVersion,
 } from './profile-cache'
-import { resolveProfileDir, readProfileMeta } from './profile-dir'
+import { resolveProfileDir, resolveProfileDirSync, readProfileMeta, settleCryptState, type ProfileRootOptions } from './profile-dir'
+import { fetchProfileCryptKey, resolveCryptKey } from './crypt-key'
 
-export { KERNEL_VERSIONS, DEFAULT_KERNEL_VERSION, ensureKernel, isKernelInstalled, findKernelVersion, findKernelVersionStrict, normalizeKernelVersion, migrateLegacyKernelDirs, listInstalledKernels, kernelDirSize, deleteKernel, kernelDir, kernelAvailableOnPlatform, kernelsForPlatform, allKernelVersions, registerKernelVersions, fetchRemoteKernelVersions, refreshKernelVersions, loadCachedKernelVersions, KERNEL_MANIFEST_URL, KERNEL_MANIFEST_TTL_MS, KERNEL_VERSION_CACHE_FILE, currentPlatform, installedKernelBuild, writeInstalledKernelBuild, kernelUpdateStatus, installedKernelUpdates, kernelSupportsAndroid, kernelReadsAppLocaleFromConfig, kernelVersionAtLeast, androidCapableKernels, resolveAndroidKernel, ANDROID_MIN_KERNEL_VERSION, APP_LOCALE_MIN_KERNEL_VERSION, APP_LOCALE_MIN_KERNEL_BUILD } from './downloader'
+export { KERNEL_VERSIONS, DEFAULT_KERNEL_VERSION, defaultKernelVersion, ensureKernel, isKernelInstalled, findKernelVersion, findKernelVersionStrict, normalizeKernelVersion, migrateLegacyKernelDirs, listInstalledKernels, kernelDirSize, deleteKernel, kernelDir, kernelAvailableOnPlatform, kernelsForPlatform, allKernelVersions, registerKernelVersions, fetchRemoteKernelVersions, refreshKernelVersions, loadCachedKernelVersions, KERNEL_MANIFEST_URL, KERNEL_MANIFEST_TTL_MS, KERNEL_VERSION_CACHE_FILE, currentPlatform, installedKernelBuild, writeInstalledKernelBuild, kernelUpdateStatus, installedKernelUpdates, kernelSupportsAndroid, kernelReadsAppLocaleFromConfig, kernelVersionAtLeast, androidCapableKernels, resolveAndroidKernel, ANDROID_MIN_KERNEL_VERSION, APP_LOCALE_MIN_KERNEL_VERSION, APP_LOCALE_MIN_KERNEL_BUILD } from './downloader'
 export type { KernelVersion, KernelUpdateStatus } from './downloader'
 export type { KernelSession as EngineSession } from './launcher'
-export { downloadProfileCache, uploadProfileCache, packProfileCache, unpackProfileCache, exportProfileArchive, importProfileArchive, PROFILE_ARCHIVE_EXT, ARCHIVE_VERSION_FILE, readArchiveVersion, writeArchiveVersion, clearArchiveVersion, normalizeArchiveVersion } from './profile-cache'
+export { downloadProfileCache, uploadProfileCache, packProfileCache, packProfileCacheWithReport, lastProfilePackReport, unpackProfileCache, exportProfileArchive, importProfileArchive, PROFILE_ARCHIVE_EXT, ARCHIVE_VERSION_FILE, readArchiveVersion, writeArchiveVersion, clearArchiveVersion, normalizeArchiveVersion } from './profile-cache'
+export type { ProfilePackReport, ProfilePackResult } from './profile-cache'
 export type { PortableProfileMeta, ImportedProfileMeta } from './profile-cache'
-export { generatePersona, loadOrGeneratePersona, readPersona } from './persona'
+export { generatePersona, loadOrGeneratePersona, readPersona, writePersona, withKernelVersion } from './persona'
 export type { Persona, ApiLogMode, DeviceType, CapturedFacts, PersonaInit } from './persona'
 export { fetchRealDevice } from './devices'
 export type { RealDevice } from './devices'
 export { getLicenseToken, fetchLicenseToken, type LicenseInfo } from './license'
 export { lookupProxyGeo as lookupEngineProxyGeo, probeProxyExit, type ProxyGeo, type ProxyProbeResult } from './geoip'
-export { resolveProfileDir, resolveProfileDirSync, listProfileEntries, readProfileMeta, writeProfileMeta, sanitizeProfileName, profilesRoot, TEMPORARY_PROFILES_DIR } from './profile-dir'
+export { resolveProfileDir, resolveProfileDirSync, listProfileEntries, readProfileMeta, writeProfileMeta, isProfileEncrypted, markProfileEncrypted, unmarkProfileEncrypted, readCryptState, writeCryptState, settleCryptState, isCryptKeyPending, markCryptKeyPending, clearCryptKeyPending, profileCryptMarker, CRYPT_STATE_FILE, CRYPT_PENDING_FILE, sanitizeProfileName, profilesRoot, TEMPORARY_PROFILES_DIR } from './profile-dir'
+export type { CryptSettlement } from './profile-dir'
+export { fetchProfileCryptKey, parseCryptKeyBody, resolveCryptKey } from './crypt-key'
+export { exportProfileArchiveAsync, runCryptRekey, buildRekeyArgs, parseRekeyCode, CryptRekeyError, NO_CRYPT_KEY, REKEY_TIMEOUT_CODE } from './crypt-rekey'
+export type { ExportProfileArchiveOptions, CryptRekeyOptions, RekeyRequest, RekeyRunner } from './crypt-rekey'
 export type { ProfileEntry, ProfileMeta, ResolvedProfile, ProfileRootOptions } from './profile-dir'
 
 export function defaultCacheDir(): string {
@@ -59,6 +65,12 @@ export interface OpenProfileOptions {
   label?: string
   /** Pre-fetched license token, used instead of requesting a new one. */
   licenseToken?: string
+  /** Pre-fetched encryption key, used instead of asking the server for one.
+   *  Ignored unless the profile directory is marked as created under a key. */
+  cryptKey?: string
+  /** Where the encryption key comes from when the profile needs one. Defaults
+   *  to this account's own profile endpoint; a guest passes the shared one. */
+  getCryptKey?: () => Promise<string | undefined>
   /** Proxy URL: scheme://user:pass@host:port */
   proxyUrl?: string
   headless?: boolean
@@ -144,6 +156,63 @@ export function assertAndroidKernel(version: string | undefined): void {
 }
 
 /**
+ * Whether the cloud archive has to be laid over this profile. Equality, not
+ * ordering - an ETag has none. The case that matters: the last upload failed, so
+ * the cloud still holds the generation this machine has, and restoring it would
+ * erase newer local work (a kernel switch included: persona.json is in the
+ * archive and the restore runs before it is read).
+ */
+export function shouldRestoreArchive(local: string | undefined, server: string | undefined): boolean {
+  return !(server && local && local === server)
+}
+
+export interface SetProfileKernelVersionOptions extends ProfileRootOptions {
+  /** Target kernel, e.g. "151". A legacy full version string is accepted. */
+  version: string
+  /** Profile to move; ignored when `profileDir` is given. */
+  profileName?: string
+  profileDir?: string
+  cacheDir?: string
+}
+
+/**
+ * Move an existing profile to another kernel major, keeping its identity: only
+ * the three version-derived persona fields change. `openProfile`'s
+ * `kernelVersion` cannot do this - it seeds a new profile and is ignored once
+ * persona.json exists.
+ *
+ * Takes effect on the next launch. A synced profile whose cloud archive is a
+ * newer generation than this machine's copy still restores that archive first,
+ * reverting the change, so switch on the machine that last used the profile.
+ */
+export async function setProfileKernelVersion(opts: SetProfileKernelVersionOptions): Promise<Persona> {
+  const cacheDir = opts.cacheDir ?? defaultCacheDir()
+  const dir = opts.profileDir
+    ?? (opts.profileName && resolveProfileDirSync(cacheDir, opts.profileName, { temporary: opts.temporary }).dir)
+  if (!dir) throw new Error('setProfileKernelVersion needs a profileDir or a profileName')
+
+  const persona = readPersona(dir)
+  if (!persona) {
+    throw new Error(
+      `Profile at ${dir} has no persona yet, so there is no identity to move. ` +
+        'Create it with openProfile({ kernelVersion }) instead.',
+    )
+  }
+
+  // Versions published after this release exist only in the manifest, and the
+  // lookup is strict for the same reason the Android one is: silently answering
+  // with the compiled-in default would leave the profile on its old kernel while
+  // reporting the new one.
+  await refreshKernelVersions(cacheDir)
+  const kv = findKernelVersionStrict(opts.version)
+  if (persona.deviceType === 'android') assertAndroidKernel(kv.version)
+
+  const next = withKernelVersion(persona, kv.version)
+  writePersona(dir, next)
+  return next
+}
+
+/**
  * Restore the archive, load the persona, download the kernel it requires, look
  * up the proxy timezone, launch over CDP, and upload the archive on exit.
  */
@@ -172,11 +241,7 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
 
   // Restore first: persona.json carries the kernel version read below.
   if (opts.archiveGetUrl) {
-    const local = readArchiveVersion(profileDir)
-    // Equality, not ordering - an ETag has none. The case that matters: the last
-    // upload failed, so the cloud still holds the generation this machine has,
-    // and restoring it would erase newer local work.
-    if (opts.archiveVersion && local && local === opts.archiveVersion) {
+    if (!shouldRestoreArchive(readArchiveVersion(profileDir), opts.archiveVersion)) {
       opts.onProgress?.('Profile archive already current; skipping restore')
     } else {
       opts.onProgress?.('Restoring profile archive')
@@ -190,6 +255,27 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
       )
     }
   }
+
+  // After the restore, before the kernel install: crypt-state.json rides in the
+  // archive, so on a second machine the restore is what tells us this profile's
+  // data is encrypted. The directory decides - a key is never fetched without
+  // its say-so, and a key that cannot be obtained fails the launch here rather
+  // than being downgraded into a launch without the flag.
+  //
+  // Settled first, against the data the restore just laid down: it closes out a
+  // previous session the kernel already answered (including one that ended in a
+  // crash, before the exit hook below could run) and corrects a mark that data
+  // contradicts, so what follows reads a directory that agrees with itself.
+  settleCryptState(profileDir)
+  const cryptKey = await resolveCryptKey({
+    profileDir,
+    cryptKey: opts.cryptKey,
+    getCryptKey:
+      opts.getCryptKey ??
+      (opts.key
+        ? () => fetchProfileCryptKey({ key: opts.key as string, server: opts.server, name: resolved.name })
+        : undefined),
+  })
 
   // Versions newer than this release exist only in the manifest, so resolve the
   // catalogue first. `updateKernelBeforeLaunch` acts on the published build, so
@@ -207,7 +293,7 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
     ? resolveAndroidKernel(opts.kernelVersion)
     : opts.kernelVersion
       ? findKernelVersion(opts.kernelVersion)
-      : DEFAULT_KERNEL_VERSION
+      : defaultKernelVersion()
 
   opts.onProgress?.('Loading persona')
   const persona = loadOrGeneratePersona(profileDir, defaultKv.version, personaInit)
@@ -252,6 +338,7 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
     publicIp,
     proxyUrl: opts.proxyUrl,
     licenseToken,
+    cryptKey,
     label: opts.label ?? resolved.name,
     headless: opts.headless,
     focusWindow: opts.focusWindow,
@@ -267,15 +354,21 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
 
   // Decided at launch so the hook exists before the browser can exit; the URL
   // is resolved inside it.
-  if (opts.getArchivePutUrl || opts.archivePutUrl) {
-    session.onExit(() => {
-      opts.onArchiveSync?.({ phase: 'upload', state: 'start' })
-      session.archiveUpload = uploadArchive(profileDir, opts).then(
-        () => opts.onArchiveSync?.({ phase: 'upload', state: 'done' }),
-        (e: unknown) => opts.onArchiveSync?.({ phase: 'upload', state: 'error', error: errText(e) }),
-      )
-    })
-  }
+  const uploads = !!(opts.getArchivePutUrl || opts.archivePutUrl)
+  session.onExit(() => {
+    // The kernel has stopped and flushed `Local State`, so this is the first
+    // moment the outcome of --fp-crypt-key can be read - and the last one before
+    // the pack below turns this directory into the archive every other machine
+    // will restore. A build that ignored the switch settles as plain here, so
+    // nothing claims an encryption that was never applied.
+    settleCryptState(profileDir)
+    if (!uploads) return
+    opts.onArchiveSync?.({ phase: 'upload', state: 'start' })
+    session.archiveUpload = uploadArchive(profileDir, opts).then(
+      () => opts.onArchiveSync?.({ phase: 'upload', state: 'done' }),
+      (e: unknown) => opts.onArchiveSync?.({ phase: 'upload', state: 'error', error: errText(e) }),
+    )
+  })
 
   return session
 }

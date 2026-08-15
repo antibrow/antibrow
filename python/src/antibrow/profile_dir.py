@@ -16,6 +16,17 @@ from .config import encode_path_segment
 
 META_FILE = "profile.json"
 
+#: Travels in the cloud archive: ``{"encrypted": bool}``, no key material.
+CRYPT_STATE_FILE = "crypt-state.json"
+
+#: Machine-local, never packed: this directory has a key waiting for it and the
+#: next launch is the one that offers it. Only the kernel can turn that into an
+#: answer, so the marker survives until the directory's data can be read.
+CRYPT_PENDING_FILE = ".crypt-pending"
+
+#: What ``settle_crypt_state`` concluded from the data.
+CryptSettlement = Literal["bound", "plain", "unknown"]
+
 #: How long a "not on the server" answer is trusted before re-asking.
 SERVER_RECHECK_SECONDS = 24 * 60 * 60
 
@@ -28,6 +39,8 @@ class ProfileMeta:
     name: str
     origin: Origin = "local"
     server_checked_at: Optional[str] = None
+    #: This directory's browser data was created under an external crypt key.
+    encrypted: bool = False
 
 
 @dataclass(frozen=True)
@@ -60,6 +73,7 @@ def read_profile_meta(directory: Path) -> Optional[ProfileMeta]:
         name=name,
         origin="server" if raw.get("origin") == "server" else "local",
         server_checked_at=checked if isinstance(checked, str) else None,
+        encrypted=raw.get("encrypted") is True,
     )
 
 
@@ -68,7 +82,149 @@ def write_profile_meta(directory: Path, meta: ProfileMeta) -> None:
     payload = {"id": meta.id, "name": meta.name, "origin": meta.origin}
     if meta.server_checked_at:
         payload["serverCheckedAt"] = meta.server_checked_at
+    if meta.encrypted:
+        payload["encrypted"] = True
     (directory / META_FILE).write_text(json.dumps(payload, indent=2), encoding="utf8")
+
+
+def read_crypt_state(directory: Path | str) -> Optional[bool]:
+    """``None`` when the directory says nothing, which is not the same as "no"."""
+    try:
+        raw = json.loads((Path(directory) / CRYPT_STATE_FILE).read_text(encoding="utf8"))
+    except (OSError, ValueError):
+        return None
+    return raw.get("encrypted") is True if isinstance(raw, dict) else None
+
+
+def write_crypt_state(directory: Path | str, encrypted: bool) -> None:
+    root = Path(directory)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / CRYPT_STATE_FILE).write_text(json.dumps({"encrypted": encrypted}, indent=2), encoding="utf8")
+
+
+def is_profile_encrypted(directory: Path | str) -> bool:
+    """Whether this profile's data is encrypted, as the directory reports it.
+
+    Encryption is a property of the DATA, so the answer travels with the data:
+    ``crypt-state.json`` is packed into the cloud archive, which is what makes a
+    directory restored on a second machine come out right.
+
+    The identity record's own ``encrypted`` flag is machine-local (profile.json
+    is never packed - it carries the guest marker, which must not travel). It is
+    the creation-time writer and the fallback for directories predating the state
+    file; the state file wins whenever both are present, because it is the one
+    that was restored alongside the data it describes.
+    """
+    from_state = read_crypt_state(directory)
+    if from_state is not None:
+        return from_state
+    # Read raw rather than through read_profile_meta: a record too damaged to
+    # name the profile can still be the only thing saying its data is encrypted,
+    # and answering "no" there launches without the key.
+    try:
+        raw = json.loads((Path(directory) / META_FILE).read_text(encoding="utf8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(raw, dict) and raw.get("encrypted") is True
+
+
+def mark_profile_encrypted(directory: Path | str) -> None:
+    """Record that this profile's data is encrypted, in both places: the archived
+    state file (so every machine that restores this profile agrees) and the local
+    identity record (so a directory whose archive predates the state file still
+    has an answer). No key material, nothing secret - one boolean.
+    """
+    root = Path(directory)
+    write_crypt_state(root, True)
+    try:
+        raw = json.loads((root / META_FILE).read_text(encoding="utf8"))
+    except (OSError, ValueError):
+        # No record yet, or an unreadable one: the state file is what must land.
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    # Rewritten rather than re-serialised from ProfileMeta: the desktop app keeps
+    # its own keys in here (the guest marker among them) and losing them would
+    # change what the directory is.
+    raw["encrypted"] = True
+    (root / META_FILE).write_text(json.dumps(raw, indent=2), encoding="utf8")
+
+
+def unmark_profile_encrypted(directory: Path | str) -> None:
+    """Undo a mark the data contradicts. Never called on "cannot tell"."""
+    root = Path(directory)
+    write_crypt_state(root, False)
+    try:
+        raw = json.loads((root / META_FILE).read_text(encoding="utf8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(raw, dict) or "encrypted" not in raw:
+        return
+    del raw["encrypted"]
+    (root / META_FILE).write_text(json.dumps(raw, indent=2), encoding="utf8")
+
+
+def is_crypt_key_pending(directory: Path | str) -> bool:
+    return (Path(directory) / CRYPT_PENDING_FILE).exists()
+
+
+def mark_crypt_key_pending(directory: Path | str) -> None:
+    """Record that the next launch has a key to offer this directory."""
+    root = Path(directory)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / CRYPT_PENDING_FILE).write_text("", encoding="utf8")
+
+
+def clear_crypt_key_pending(directory: Path | str) -> None:
+    try:
+        (Path(directory) / CRYPT_PENDING_FILE).unlink()
+    except OSError:
+        pass
+
+
+def profile_crypt_marker(user_data_dir: Path | str) -> str:
+    """Whether this user-data directory's data is bound to an external key, read
+    from the verifier the kernel keeps in ``Local State``.
+
+    ``"unreadable"`` is its own answer on purpose. "Cannot tell" must never
+    collapse into "no key": that is the answer that ships an archive nobody can
+    open. Returns ``"key-bound"``, ``"plain"`` or ``"unreadable"``.
+    """
+    try:
+        parsed = json.loads((Path(user_data_dir) / "Local State").read_text(encoding="utf8"))
+    except (OSError, ValueError):
+        return "unreadable"
+    if not isinstance(parsed, dict):
+        return "unreadable"
+    # A pending conversion counts as key-bound: the kernel refuses to open a
+    # half-converted profile, with the key and without it alike.
+    return "key-bound" if isinstance(parsed.get("fp_crypt"), dict) else "plain"
+
+
+def settle_crypt_state(profile_dir: Path | str) -> CryptSettlement:
+    """Make the mark say what the kernel did rather than what we asked for.
+
+    Chromium ignores switches it does not understand, so ``--fp-crypt-key`` may
+    have been dropped on the floor and the profile created plain; the verifier
+    the kernel writes is the only witness either way.
+
+    ``"unknown"`` writes nothing at all - a directory that cannot answer keeps
+    whatever it already claims, so a genuinely key-bound profile with an
+    unreadable ``Local State`` still refuses to launch without its key. Clearing
+    a mark therefore needs positive evidence: readable data carrying no verifier,
+    which is data under the kernel's built-in key with no protection to drop.
+    """
+    root = Path(profile_dir)
+    marker = profile_crypt_marker(root / "user-data")
+    if marker == "unreadable":
+        return "unknown"
+    if marker == "key-bound":
+        if not is_profile_encrypted(root):
+            mark_profile_encrypted(root)
+    elif is_profile_encrypted(root):
+        unmark_profile_encrypted(root)
+    clear_crypt_key_pending(root)
+    return "bound" if marker == "key-bound" else "plain"
 
 
 def list_profile_entries(cache_dir: Path | str | None = None, *, temporary: bool = False) -> list[ProfileEntry]:

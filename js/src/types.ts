@@ -26,6 +26,8 @@ export interface AntiDetectBrowserOptions {
 export interface LaunchOptions {
   /** Tags stored on the profile metadata when auto-creating it */
   tags?: string[]
+  /** Group stored on the profile config when auto-creating it */
+  group?: string
   /** Proxy address: protocol://user:pass@host:port */
   proxy?: string
   /** Managed proxy id. When set, the SDK activates it and injects it, taking precedence over `proxy`. */
@@ -125,6 +127,10 @@ export interface ProfileConfig {
    *  same identity before the profile is ever launched there. */
   deviceType?: import('./engine/persona').DeviceType
   realFingerprint?: boolean
+  /** Chrome major (150/151). Travels for the same reason deviceType does: a
+   *  machine that has never opened the profile still has to know which kernel
+   *  it runs, before any persona has been pulled down there. */
+  kernelVersion?: string
 }
 
 /** Wire shape returned by the profile sync endpoints. */
@@ -132,6 +138,7 @@ export interface SyncedProfile {
   id: string
   name: string
   config: ProfileConfig | null
+  tags?: string[]
   createdAt: string
   updatedAt: string
   deletedAt: string | null

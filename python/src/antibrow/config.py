@@ -128,3 +128,14 @@ def list_profiles(cache_dir: Path | str | None = None, *, temporary: bool = Fals
     from .profile_dir import list_profile_entries
 
     return sorted(entry.name for entry in list_profile_entries(cache_dir, temporary=temporary))
+
+
+def profile_exists(name: str, cache_dir: Path | str | None = None, *, temporary: bool = False) -> bool:
+    """Whether a profile of this name is already on disk.
+
+    Answered from the identity records, not from a directory listing: a profile
+    directory is named after its id, so its name is only inside it.
+    """
+    from .profile_dir import list_profile_entries
+
+    return any(entry.name == name for entry in list_profile_entries(cache_dir, temporary=temporary))

@@ -52,12 +52,13 @@ npm install anti-detect-browser
 Получите API-ключ в панели управления на [antibrow.com](https://antibrow.com/ru), затем:
 
 ```ts
-import { AntiDetectBrowser } from 'anti-detect-browser'
+import { profile } from 'anti-detect-browser'
 
-const ab = new AntiDetectBrowser({ key: process.env.ANTI_DETECT_BROWSER_KEY })
+const key = process.env.ANTI_DETECT_BROWSER_KEY
 
 // Unlimited local profiles - just name one. It's created on disk on first use.
-const { page, browser } = await ab.launch({ profile: 'shopper-01' })
+const p = await profile({ key, name: 'shopper-01' })
+const { page, browser } = await p.launch()
 
 await page.goto('https://whoer.net')      // standard Playwright from here on
 console.log(await page.title())
@@ -67,14 +68,23 @@ await browser.close()
 С управляемым резидентским прокси (часовой пояс и гео следуют за ним) и визуальной меткой:
 
 ```ts
-const { page } = await ab.launch({
-  profile: 'shopper-02',
-  proxyId: 'px_xxxxxxxx',   // managed residential proxy - activated + injected for you
-  label: 'acct@shop.com',   // drawn by the kernel in front of the address bar
+const p = await profile({
+  key,
+  name: 'shopper-02',
+  proxy: { kind: 'managed' },   // claimed from the managed pool on first use, reused after
 })
+
+const { page } = await p.launch({ label: 'acct@shop.com' })   // drawn by the kernel in front of the address bar
 ```
 
-`launch()` возвращает `{ browser, context, page, profileDir }` - `context` и `page` являются настоящими объектами Playwright.
+Прокси записывается при первом запуске, поэтому дальше достаточно имени:
+
+```ts
+const same = await profile({ key, name: 'shopper-02' })
+await same.launch()                       // тот же исходящий IP, часовой пояс и гео
+```
+
+`p.launch()` возвращает `{ browser, context, page, profileDir }` - `context` и `page` являются настоящими объектами Playwright.
 
 ## Android-профили
 
@@ -204,6 +214,41 @@ console.log(`removed ${removed.length} temporary profiles`)
 
 При каждом запуске `temporary: false` возвращает один профиль обратно в управляемое дерево.
 
+### Linux-серверы, включая ARM
+
+Ядро для Linux выходит в двух сборках, x64 и arm64, и SDK сам выбирает ту, что
+соответствует процессору, на котором он запущен. Настраивать ничего не нужно:
+процесс Node с архитектурой arm64 под Linux скачивает arm64-сборку ядра, а
+флаги песочницы для контейнеров (`--no-sandbox`, `--disable-dev-shm-usage` и
+остальные) подставляются автоматически. ARM-инстанс здесь обычная цель, а не
+обходной путь, поэтому парку машин, который уже работает на ARM, не нужно
+держать отдельную x86-машину ради браузера.
+
+Единственное, что меняется на сервере, - это headless. У настоящего headless
+Chromium свой собственный отпечаток, поэтому ядро запускается в оконном режиме
+на виртуальном дисплее:
+
+```dockerfile
+FROM node:22-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      xvfb libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
+      libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+      libgbm1 libasound2 libpango-1.0-0 libcairo2 fonts-liberation ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY package*.json ./
+RUN npm install --omit=dev
+COPY . .
+CMD ["xvfb-run", "-a", "node", "index.js"]
+```
+
+Один и тот же файл собирается и под `linux/amd64`, и под `linux/arm64`.
+
+О чём стоит помнить, если кэш смонтирован как том: ядра разложены по версиям, а
+не по архитектурам (`~/.anti-detect-browser/kernels/<version>/`). Общий том для
+amd64-хоста и arm64-хоста отдаст неверный бинарник тому из них, кто скачает
+вторым, поэтому для каждой архитектуры заведите свой том.
+
 ### Чтобы окно не мешало вашей работе
 
 Запуск забирает фокус, что становится проблемой, когда автоматизация должна
@@ -235,6 +280,78 @@ await ab.launch({ profile: 'main-account', sync: false })  // stay local
 `sync: true` и `temporary: true` взаимно исключают друг друга; передача обоих
 приводит к исключению. `sync: true` также вызывает исключение, если ваш
 тариф не включает облачную синхронизацию.
+
+## Хэндл профиля
+
+`launch()` принимает имя профиля и забывает его сразу после возврата. `profile()`
+вместо этого отдаёт вам устойчивый хэндл - он разрешает профиль (создавая его
+при первом использовании), а затем запоминает прокси, группу и теги, которые
+вы на нём задали, так что более поздний вызов `profile({ name })` без этих
+опций вернёт всё в точности так, как было оставлено:
+
+```ts
+import { profile } from 'anti-detect-browser'
+
+const p = await profile({
+  key: process.env.ANTI_DETECT_BROWSER_KEY,
+  name: 'shop-01',
+  proxy: 'http://user:pass@host:8080',
+})
+const { page, browser } = await p.launch()
+await browser.close()
+
+// позже, где угодно - прокси возвращается вместе с профилем
+const same = await profile({ key: process.env.ANTI_DETECT_BROWSER_KEY, name: 'shop-01' })
+await same.launch()
+```
+
+`profile()` принимает всё, что принимает конструктор `AntiDetectBrowser`, плюс
+`name` (обязательно), `proxy`, `sync`, `temporary`, `tags`, `group`,
+`userDataDir`, а также `deviceType` и `realFingerprint`, которые применяются
+только при первом создании профиля, как и в `launch()`. `tags` и `group`
+подчиняются правилу «передали - не передали», описанному ниже;
+`userDataDir` задаёт каталог профиля на том вызове, где он передан. Хэндл
+предоставляет `name`, `id`, `synced`, `dir` и `proxy` как состояние для
+чтения, а также:
+
+- **`p.launch(options?)`** - запускает браузер. Принимает только опции уровня
+  сессии (`headless`, `label`, `focusWindow`, `liveView`,
+  `updateKernelBeforeLaunch`); передача `proxy`, `tags`, `group`, `sync` или
+  `temporary` здесь вызывает исключение - эти параметры принадлежат профилю,
+  а не одному запуску.
+- **`p.setProxy(next)`** - меняет привязку прокси у профиля. Строка URL
+  привязывает этот прокси напрямую. `{ kind: 'managed' }` забирает прокси из
+  управляемого пула при первом использовании и повторно использует тот же
+  самый при каждом следующем вызове; `{ kind: 'managed', managedProxyId }`
+  привязывает конкретный управляемый прокси по id. `null` снимает привязку и
+  переходит на прямое соединение.
+- **`p.swapProxy()`** - меняет текущий привязанный управляемый прокси на
+  другой выход. Вызывает исключение, если у профиля сейчас не привязан
+  управляемый прокси.
+- **`p.getGroup()` / `p.setGroup(group | null)`** и **`p.getTags()` /
+  `p.setTags(tags)`** - читают и напрямую записывают группу и теги профиля.
+  `setGroup(null)` очищает группу - это единственный способ снять её после
+  установки. Передача `group` или `tags` в `profile()` подчиняется тому же
+  правилу, что и `proxy`: передали раз - значение запомнено и держится
+  дальше; не передали - то, что уже сохранено, остаётся нетронутым.
+- **`p.enableSync()`** - переносит локальный профиль в облако, загружая его
+  текущее состояние с диска, чтобы другая машина, открывшая профиль с тем же
+  именем, получила настоящий браузер, а не пустую оболочку.
+- **`p.dangerousDisconnectSync()`** - удаляет облачную копию и её архив.
+  **Необратимо.** Локальный каталог не затрагивается и остаётся пригодным для
+  запуска - его прокси, группа и теги сначала считываются в локальную запись,
+  так что после удаления облачной строки профиль сохраняет свою личность.
+- **`p.export(filePath?)`** - упаковывает профиль с диска в переносимый архив
+  `.fpprofile` (личность, куки, хранилище, привязка прокси). Отражает
+  состояние диска на текущий момент, поэтому сначала запустите профиль хотя
+  бы раз - личность профиля не создаётся до первого запуска, и экспорт до
+  этого приведёт к исключению. Если привязан прокси по URL, он записывается
+  в архив полностью, вместе с паролем - тот, кому вы передадите файл,
+  получит и этот пароль вместе с профилем. Зашифрованный профиль сначала
+  преобразуется на временной копии, чтобы архив открывался без ключа: для
+  этого нужно, чтобы ядро профиля было установлено, а при неудаче экспорт
+  прерывается и файл не создаётся - лучше так, чем файл, который никто не
+  сможет открыть.
 
 ## Что вы получаете
 

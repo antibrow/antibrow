@@ -15,14 +15,11 @@ stays local, which is the correct outcome for a free plan or an offline run.
 
 from __future__ import annotations
 
-import json
-import urllib.error
-import urllib.parse
-import urllib.request
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from .config import USER_AGENT, default_server, encode_path_segment
+from . import _http
+from .config import default_server, encode_path_segment
 
 ARCHIVE_PATH = "/api/v1/profiles/{0}/archive"
 PROFILES_PATH = "/api/v1/profiles"
@@ -50,31 +47,13 @@ def _request(
     api_key: str,
     payload: Optional[Dict[str, Any]] = None,
 ) -> Tuple[int, Dict[str, Any]]:
-    """Send one authenticated JSON request. Returns (status, decoded body)."""
-    headers = {
-        "Authorization": "Bearer {0}".format(api_key),
-        "Accept": "application/json",
-        "User-Agent": USER_AGENT,
-    }
-    data = None
-    if payload is not None:
-        data = json.dumps(payload).encode("utf-8")
-        headers["Content-Type"] = "application/json"
+    """Send one authenticated JSON request. Returns (status, decoded body).
 
-    request = urllib.request.Request(url, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(request, timeout=_REQUEST_TIMEOUT) as response:  # noqa: S310
-            body = response.read().decode("utf-8", "replace")
-            status = response.status
-    except urllib.error.HTTPError as error:
-        return error.code, {}
-    except (urllib.error.URLError, OSError):
-        return 0, {}
-
-    try:
-        decoded = json.loads(body) if body else {}
-    except ValueError:
-        return status, {}
+    Never raises: the whole module treats a failure as "no cloud slot". The
+    raising counterpart of this transport is :mod:`antibrow.api`.
+    """
+    status, text = _http.send(method, url, api_key=api_key, payload=payload, timeout=_REQUEST_TIMEOUT)
+    decoded = _http.parse_json(text)
     return status, decoded if isinstance(decoded, dict) else {}
 
 

@@ -27,6 +27,8 @@ from .kernel import normalize_kernel_version
 
 PERSONA_FILE = "persona.json"
 FP_CONFIG_FILE = "fp-config.json"
+#: Where the kernel writes the per-profile API log when one is enabled.
+API_LOG_FILE = "fp-api-log.jsonl"
 
 DeviceType = Literal["desktop", "android"]
 
@@ -609,11 +611,17 @@ def persona_to_fp_config(
     timezone: str,
     public_ip: Optional[str] = None,
     rtt_ms: Optional[float] = None,
+    canvas_noise: Optional[bool] = None,
+    api_log: Optional[str] = None,
+    api_log_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Serialize a persona into the kernel's ``fp-config.json`` schema (version 1).
 
     ``timezone`` is passed separately because it follows the proxy exit node at
-    launch time and must not be baked into the frozen persona.
+    launch time and must not be baked into the frozen persona. The three
+    per-profile switches behave the same way: they are launch settings, not
+    identity, and leaving them unset produces exactly the config this function
+    produced before they existed.
     """
     android = persona.device_type == "android"
     # Android has no taskbar; the real avail size arrives via `captured` anyway.
@@ -634,6 +642,21 @@ def persona_to_fp_config(
     webgpu: Dict[str, Any] = (
         {"vendor": gpu_vendor, "architecture": gpu_arch} if gpu_vendor else {}
     )
+
+    webgl: Dict[str, Any] = dict(
+        {
+            "unmaskedVendor": persona.gpu_vendor,
+            "unmaskedRenderer": persona.gpu_renderer,
+        },
+        **captured_webgl_config(persona.captured_webgl),
+    )
+    canvas: Dict[str, Any] = {"seed": persona.canvas_seed}
+    # Written only when noise is explicitly off - the kernel already defaults it
+    # on, so emitting "on" would make an unchanged profile look changed.
+    if canvas_noise is False:
+        webgl["mode"] = "off"
+        canvas["mode"] = "off"
+    mode = api_log or "off"
 
     nav_platform = "Linux armv81" if android else "Win32"
     max_touch_points = 5 if android else 0
@@ -715,15 +738,9 @@ def persona_to_fp_config(
             "pixelDepth": 24,
             "devicePixelRatio": persona.device_pixel_ratio,
         },
-        "webgl": dict(
-            {
-                "unmaskedVendor": persona.gpu_vendor,
-                "unmaskedRenderer": persona.gpu_renderer,
-            },
-            **captured_webgl_config(persona.captured_webgl),
-        ),
+        "webgl": webgl,
         "webgpu": webgpu,
-        "canvas": {"seed": persona.canvas_seed},
+        "canvas": canvas,
         "audio": {"seed": persona.audio_seed},
         "domrect": {"seed": persona.domrect_seed},
         "webrtc": webrtc,
@@ -740,7 +757,7 @@ def persona_to_fp_config(
             "allow": allow_fonts,
             "generic": generic_fonts,
         },
-        "apilog": {"enabled": False, "mode": "off", "path": ""},
+        "apilog": {"enabled": mode != "off", "mode": mode, "path": api_log_path or ""},
     }
 
     if android:
@@ -874,6 +891,22 @@ def load_or_generate_persona(
     return persona
 
 
+def with_kernel_version(persona: Persona, version: str) -> Persona:
+    """The same identity on another Chrome major.
+
+    Only these three fields follow the kernel version - every seed, the GPU, the
+    screen and the captured facts are version-independent, and re-rolling them
+    would hand the site a brand new device behind the same cookies.
+    """
+    kernel_version = normalize_kernel_version(version)
+    chrome_major = chrome_major_of(kernel_version)
+    moved = Persona.from_dict(persona.to_dict())
+    moved.kernel_version = kernel_version
+    moved.chrome_major = chrome_major
+    moved.ua = re.sub(r"Chrome/\d+", "Chrome/{0}".format(chrome_major), moved.ua, count=1)
+    return moved
+
+
 def write_persona(profile_dir: Path | str, persona: Persona) -> Path:
     """Persist a persona to ``<profile>/persona.json``."""
     directory = Path(profile_dir)
@@ -891,12 +924,23 @@ def write_fp_config(
     timezone: str,
     public_ip: Optional[str] = None,
     rtt_ms: Optional[float] = None,
+    canvas_noise: Optional[bool] = None,
+    api_log: Optional[str] = None,
 ) -> Path:
     """Write ``<profile>/fp-config.json`` and return its path."""
     directory = Path(profile_dir)
     directory.mkdir(parents=True, exist_ok=True)
     config = persona_to_fp_config(
-        persona, label=label, timezone=timezone, public_ip=public_ip, rtt_ms=rtt_ms
+        persona,
+        label=label,
+        timezone=timezone,
+        public_ip=public_ip,
+        rtt_ms=rtt_ms,
+        canvas_noise=canvas_noise,
+        api_log=api_log,
+        # The kernel writes the log itself, so the path has to be one it can
+        # reach - beside the profile, like the passkey store.
+        api_log_path=str(directory / API_LOG_FILE) if api_log and api_log != "off" else None,
     )
     path = directory / FP_CONFIG_FILE
     path.write_text(json.dumps(config, indent=2), encoding="utf-8")

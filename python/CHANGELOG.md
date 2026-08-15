@@ -4,6 +4,199 @@ All notable changes to the `antibrow` Python SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.14.0] - 2026-08-15
+
+Per-profile encryption reaches feature parity with the Node SDK. A profile
+created under an external key encrypts its cookies and saved passwords with a key
+that never touches the profile directory; this release makes such a profile
+launchable, syncable and - the part that was outright broken - exportable.
+
+### Added
+
+- `settle_crypt_state()` records whether a profile is encrypted from what the
+  kernel actually did, read from the verifier it leaves in `Local State`. It runs
+  after the cloud archive is restored and again once the browser has exited, so a
+  mark is never a guess about a kernel that may have ignored the switch. When the
+  data cannot be read it writes nothing at all: "cannot tell" is its own answer,
+  and folding it into "no key" is what loses data.
+- `mark_crypt_key_pending()` / `is_crypt_key_pending()` /
+  `clear_crypt_key_pending()` and `.crypt-pending`: a directory that has a key
+  waiting for it but has not been launched yet. The first launch carries the key
+  and the settlement above turns the outcome into the mark. Machine-local - it is
+  never packed into the cloud archive.
+- `unmark_profile_encrypted()` heals a profile marked encrypted whose data proves
+  otherwise, so it stops demanding a key it never used.
+- `profile_crypt_marker()` reports a `user-data` directory as `key-bound`,
+  `plain` or `unreadable`.
+- The kernel's one-shot re-encryption: `run_crypt_rekey()`, `build_rekey_args()`,
+  `parse_rekey_code()`, `NO_CRYPT_KEY`, `REKEY_TIMEOUT_CODE` and `CryptRekeyError`
+  (with the kernel's machine-readable `code`, which is what to match on - the
+  prose has already changed between builds).
+- `copy_portable_profile_files()` copies exactly the set a portable export packs.
+
+### Changed
+
+- **`export_profile_archive()` no longer produces an unopenable file for an
+  encrypted profile.** It copies the profile to a temporary directory, converts
+  the copy to the kernel's built-in key, verifies on the copy that the verifier
+  is really gone, and only then packs. The profile itself is never touched. A
+  kernel without the conversion feature ignores the switches and exits
+  successfully having done nothing, so the check is on the outcome, not on the
+  kernel's version - and when nothing was converted the export aborts instead of
+  writing a broken package. Pass `api_key`/`server` (or `crypt_key`) plus
+  `cache_dir` so the key, the kernel and the licence can be resolved; an
+  unencrypted profile still packs directly and needs none of it.
+- A launch carries `--fp-crypt-key` for a directory with a pending marker too,
+  not only one already marked encrypted: binding happens on the first launch, so
+  the mark cannot be its precondition.
+- A key that cannot be fetched now names the profile and says that the key is
+  what could not be reached, rather than surfacing a bare socket error.
+- The packaged version in `pyproject.toml` had fallen behind `__version__`
+  (0.12.0 against 0.13.0); both now read 0.14.0.
+
+## [0.13.0] - 2026-08-15
+
+Everything the Node SDK could do to an account's cloud resources, this SDK can
+do now. These had been missing since 0.1.0, which scoped itself to "the Node
+SDK's local-profile path"; the cloud-sync work in 0.7.0 added only what a launch
+itself needs, and the rest was never revisited.
+
+### Added
+
+- Cloud profile management: `create_profile`, `get_profile`,
+  `get_or_create_profile`, `update_profile`, `delete_profile`,
+  `list_server_profiles`, `sync_pull_profiles` (delta pulls, with the server's
+  clock to use as the next `since`) and `get_profile_for_launch`, which resolves
+  a profile into `launch()` arguments and follows its proxy reference. Configs
+  travel as `ProfileConfig`, so group, label, tags, kernel version and the
+  per-profile switches read the same here, in the Node SDK and in the desktop app.
+- `launch(proxy_id=...)` opens a profile through one of your managed proxies. The
+  launch activates it (the ownership and quota check), takes a short-lived
+  ticket, and hands the kernel a `relay://` URL built from that - the account key
+  never reaches the command line, and the ticket is handed back on `close()` or
+  if the launch fails after issuing it. Managing them: `list_proxies`,
+  `claim_managed_proxy`, `release_managed_proxy`, `swap_managed_proxy`,
+  `activate_proxy`, `issue_proxy_ticket`, `revoke_proxy_ticket` and
+  `managed_proxy_to_relay_url`.
+- Your own proxy library on the server: `create_user_proxy`, `update_user_proxy`,
+  `delete_user_proxy`, `list_user_proxies`, `sync_pull_user_proxies` and
+  `proxy_config_to_url`.
+- `get_account()` reports the plan, its concurrency cap and how much of the
+  cloud-profile quota is left.
+- `upload_profile_state` / `download_profile_state` carry cookies and
+  `localStorage` as plain values you can read and edit - the portable
+  counterpart to the profile archive, which is the browser's own binary state.
+- Live View: `launch(live_view=True)` streams the window to your dashboard and
+  `browser.live_view.view_url` is where to watch it. Needs the new `liveview`
+  extra (`pip install "antibrow[liveview]"`); nothing else in the package uses a
+  WebSocket client, so an install that never streams does not carry one. Frames
+  are written from a sender thread rather than the CDP callback, and only the
+  newest frame is kept while the socket is busy: late video is not worth showing
+  and queueing it would grow without bound exactly when the network is already
+  the problem.
+- `launch(canvas_noise=False)` turns off the per-profile Canvas and WebGL noise,
+  and `launch(api_log="curated"|"all")` logs the fingerprint APIs a page touches
+  to `<profile>/fp-api-log.jsonl`. Leaving both unset writes the same fp-config
+  as before they existed.
+- `profile_exists(name)`, plus `resolve_profile_dir`, `list_profile_entries`,
+  `read_profile_meta`, `write_profile_meta`, `ProfileMeta` and `ProfileEntry`
+  exported from the package root - they existed already, only not in `__all__`.
+- `ApiError` for the management calls above, carrying `.status` (the HTTP status,
+  or `0` when the server could not be reached) so callers branch on the status
+  rather than the message. `LiveViewError` for a live view that cannot start.
+
+### Changed
+
+- Both SDKs' HTTP now goes through one place, so every request carries the
+  explicit `User-Agent` Cloudflare needs. Cloud sync keeps its old behaviour of
+  never raising - a failure there still means "stay local", not a failed launch.
+
+## [0.12.0] - 2026-08-14
+
+### Added
+
+- `launch()` passes the kernel's `--fp-crypt-key` for profiles created under an
+  external encryption key, so their cookies and saved passwords are encrypted
+  under a key that never touches the profile directory. Whether a launch carries
+  the flag is decided by the profile directory itself, not by whether the server
+  happens to hold a key; the key is fetched per launch and kept in memory only.
+  A profile created without a key is never marked and behaves exactly as before.
+- `crypt_key` / `get_crypt_key` on `launch()` and `prepare_launch()`, plus
+  `mark_profile_encrypted`, `is_profile_encrypted`, `read_crypt_state`,
+  `write_crypt_state`, `fetch_profile_crypt_key`, `parse_crypt_key_body` and
+  `resolve_crypt_key`. A marked profile whose key cannot be obtained raises the
+  new `CryptKeyError` instead of launching: there is deliberately no fallback to
+  launching without the flag, because the kernel binds the key when the profile
+  is created, so starting such a profile without its key is refused - and on
+  kernels predating build `2026-08-14` it destroyed the profile's existing
+  encrypted data instead of refusing.
+- `pack_profile_cache_with_report(profile_dir)` returns the archive alongside the
+  entries it could not read, and `last_profile_pack_report(profile_dir)` reads
+  back the report of the pack an upload just sent. An upload returning 2xx says
+  the bytes arrived, not that they are all of the profile, so anything that
+  deletes the local copy afterwards needs this instead. `pack_profile_cache`
+  keeps its signature and its tolerance of locked files.
+- Launches pass `--fp-product-name`, which renames the browser in
+  `chrome://version` and the About page. Measured against kernel 151 build
+  `2026-08-13c`: with and without the flag, `navigator`, the high-entropy UA
+  hints and the `Sec-CH-UA` headers are byte-identical, so the name never reaches
+  a page. Kernels that predate the flag ignore it.
+
+### Changed
+
+- Whether a profile's data is encrypted now travels with that data: a
+  `crypt-state.json` root item (one boolean, no key material) is packed into the
+  profile archive alongside `persona.json` and `passkeys.json`. Restoring a
+  profile on a second machine therefore launches with its key instead of being
+  refused by the kernel. `profile.json` stays out of the archive, so a
+  directory's local markers never travel.
+- The launch decision is made after the archive is restored, and the restored
+  state file wins over the local record when the two disagree - it is the one
+  that arrived with the data it describes.
+- Importing a portable profile into a directory that previously held an encrypted
+  one now states the imported data's encryption instead of inheriting the
+  previous occupant's marker.
+
+## [0.11.1] - 2026-08-14
+
+### Changed
+
+- The binary license now separates the two lists it used to mix. Redistributing
+  the kernel, baking it into a published image, serving it to your own
+  customers, reselling it and shipping it under your own name are things we
+  license under an OEM agreement (new §10), not things we forbid; only
+  circumventing the license check and reverse engineering stay prohibited
+  outright. The three rows of the §4 table that used to end in "contact us" now
+  name the grant that covers them, and §10.4 states plainly which markets we do
+  not intend to enter against a licensee.
+
+## [0.11.0] - 2026-08-13
+
+### Added
+
+- `set_profile_kernel_version(version, profile_name=… | profile_dir=…)` moves an
+  existing profile to another Chrome major. `launch(kernel_version=…)` only
+  seeds a new profile, so until now the only way to move one was to hand-edit
+  `persona.json` — and editing the version alone leaves the UA contradicting it.
+  Only the three version-derived fields change, so the identity behind the
+  profile's cookies survives the move. Unknown versions are refused rather than
+  silently resolved to the default, and an Android profile refuses a kernel
+  without the mobile patches.
+- `should_restore_archive(local, server)` exposes the rule that decides whether
+  a launch lays the cloud archive over the local profile.
+
+## [0.10.0] - 2026-08-13
+
+### Changed
+
+- A brand-new profile is created against the newest kernel the catalogue knows
+  for this platform, installed or not, rather than the one compiled into this
+  release. Publishing a kernel to the manifest now moves the default without an
+  SDK release, and the first launch of such a profile downloads that kernel.
+  The compiled-in version stays as the fallback for an offline first install.
+- `default_kernel_version()` resolves per call instead of scanning the baseline,
+  so `find_kernel_version()` falls back to the newest kernel too.
+
 ## [0.9.0] - 2026-08-12
 
 ### Changed

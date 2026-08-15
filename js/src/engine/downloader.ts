@@ -17,6 +17,13 @@ export interface KernelPlatformAsset {
   exeRelPath: string
   /** Opaque freshness marker; a rebuilt same-version zip bumps it. */
   build?: string
+  /**
+   * Full upstream version this asset was published under (e.g. "151.0.0.10").
+   * The catalogue only ever tracks the major, so this is what lets a merge tell
+   * which of two rows for the same major is newer without depending on the
+   * order it saw them in. Unset on the compiled-in baseline.
+   */
+  sourceVersion?: string
 }
 
 export interface KernelVersion {
@@ -39,8 +46,9 @@ export function normalizeKernelVersion(version: string | undefined): string {
 }
 
 /**
- * The one version compiled in: what new profiles get. Every other kernel comes
- * from the manifest at runtime, so the default moves only with a release.
+ * The one version compiled in. It is only the floor now that new profiles take
+ * the newest kernel in the catalogue: it answers when the manifest is
+ * unreachable and nothing was cached, i.e. an offline first install.
  */
 export const KERNEL_VERSIONS: KernelVersion[] = [
   {
@@ -67,7 +75,26 @@ export const KERNEL_VERSIONS: KernelVersion[] = [
   },
 ]
 
+/**
+ * The compiled-in baseline for this platform. Kept as the offline fallback and
+ * for callers that predate the catalogue; new profiles go through
+ * `defaultKernelVersion()` instead, which sees manifest versions too.
+ */
 export const DEFAULT_KERNEL_VERSION: KernelVersion = pickDefaultKernel()
+
+/**
+ * Kernel a brand-new profile is created against: the newest one the catalogue
+ * knows for this platform, installed or not. Evaluated per call because the
+ * manifest registers versions at runtime - a module-level constant is fixed at
+ * import time and can never see them.
+ */
+export function defaultKernelVersion(): KernelVersion {
+  try {
+    return kernelsForPlatform()[0] ?? DEFAULT_KERNEL_VERSION
+  } catch {
+    return DEFAULT_KERNEL_VERSION
+  }
+}
 
 function pickDefaultKernel(): KernelVersion {
   let platform: SupportedPlatform | null = null
@@ -124,10 +151,33 @@ function mergePlatformsInto(target: KernelVersion, platforms: KernelVersion['pla
     if (!incoming) continue
     const existing = target.platforms[key]
     if (!existing) {
-      // Baseline URLs win over remote ones; only `build` tracks the latest seen.
       target.platforms[key] = { ...incoming }
       continue
     }
+
+    // Both sides know the full version they came from: let that decide who
+    // wins, so the merge gives the same answer no matter which row this
+    // function saw first. Neither side knowing (the baseline, or a caller
+    // that predates sourceVersion) falls through to the old build-only,
+    // last-writer-wins tracking below - it is what "Baseline URLs win over
+    // remote ones" and every pre-existing caller already depend on.
+    if (existing.sourceVersion && incoming.sourceVersion) {
+      // compareVersionsDesc sorts newest first, so a positive result means
+      // `existing` (the second argument) is the newer of the two.
+      const cmp = compareVersionsDesc(incoming.sourceVersion, existing.sourceVersion)
+      if (cmp > 0) continue // existing is the newer full version; keep it as-is
+      if (cmp < 0) {
+        target.platforms[key] = { ...incoming } // incoming is the newer full version; it supersedes existing entirely
+        continue
+      }
+      // Same full version: a later refresh may legitimately bump the build,
+      // but `build` is an opaque marker we cannot validate, so never let a
+      // stale re-registration walk a known build backwards.
+      if (incoming.build && (!existing.build || incoming.build >= existing.build)) existing.build = incoming.build
+      continue
+    }
+
+    // Baseline URLs win over remote ones; only `build` tracks the latest seen.
     if (incoming.build && existing.build !== incoming.build) existing.build = incoming.build
   }
 }
@@ -155,14 +205,29 @@ export function allKernelVersions(): KernelVersion[] {
   return [...byVersion.values()].sort((a, b) => compareVersionsDesc(a.version, b.version))
 }
 
-/** Register manifest-discovered versions (idempotent; augments only). */
+/**
+ * Register manifest-discovered versions (idempotent; augments only).
+ *
+ * `v.version` is normalized to a major before it becomes the catalogue key,
+ * but its pre-normalization value is also the full version each of `v`'s
+ * platform assets was published under - so it is stamped onto every asset
+ * that does not already carry its own `sourceVersion` (fetchRemoteKernelVersions
+ * sets that per-row, which is more precise when one `v` mixes platforms from
+ * different manifest rows). Without this, two calls for the same major with no
+ * other way to compare them would have nothing to break the tie with.
+ */
 export function registerKernelVersions(versions: KernelVersion[]): void {
   for (const v of versions) {
     if (!v?.version || !v.platforms) continue
     const version = normalizeKernelVersion(v.version)
+    const platforms = copyPlatforms(v.platforms)
+    for (const key of Object.keys(platforms) as SupportedPlatform[]) {
+      const asset = platforms[key]
+      if (asset && asset.sourceVersion === undefined) asset.sourceVersion = v.version
+    }
     const existing = registeredKernelVersions.find((k) => k.version === version)
-    if (!existing) registeredKernelVersions.push({ version, label: v.label, platforms: copyPlatforms(v.platforms) })
-    else mergePlatformsInto(existing, v.platforms)
+    if (!existing) registeredKernelVersions.push({ version, label: v.label, platforms })
+    else mergePlatformsInto(existing, platforms)
   }
 }
 
@@ -191,7 +256,7 @@ export async function fetchRemoteKernelVersions(manifestUrl: string = KERNEL_MAN
       byVersion.set(version, kv)
     }
     if (!kv.platforms[plat]) {
-      kv.platforms[plat] = { downloadUrl, exeRelPath: r.exe_rel_path ?? defaultExeRelPath(plat), build: r.build }
+      kv.platforms[plat] = { downloadUrl, exeRelPath: r.exe_rel_path ?? defaultExeRelPath(plat), build: r.build, sourceVersion: r.version }
     }
   }
   return [...byVersion.values()]
@@ -262,10 +327,10 @@ export async function refreshKernelVersions(
   }
 }
 
-/** Look up a version string, falling back to DEFAULT_KERNEL_VERSION. */
+/** Look up a version string, falling back to the default kernel. */
 export function findKernelVersion(version: string): KernelVersion {
   const want = normalizeKernelVersion(version)
-  return allKernelVersions().find((kv) => kv.version === want) ?? DEFAULT_KERNEL_VERSION
+  return allKernelVersions().find((kv) => kv.version === want) ?? defaultKernelVersion()
 }
 
 /**
@@ -548,7 +613,7 @@ export function deleteKernel(cacheDir: string, version: string): void {
  */
 export async function ensureKernel(
   cacheDir: string,
-  kv: KernelVersion = DEFAULT_KERNEL_VERSION,
+  kv: KernelVersion = defaultKernelVersion(),
   onProgress?: (message: string) => void,
   opts?: { force?: boolean },
 ): Promise<string> {

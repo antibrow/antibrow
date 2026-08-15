@@ -16,11 +16,28 @@ function seed(str: string): number {
   return h
 }
 
-// Brand palette.
-const TILE = { r: 0x14, g: 0x18, b: 0x10 } // dark rounded tile background
-const BORDER = { r: 0xc6, g: 0xe7, b: 0x6b } // --acc lime, edge definition
-const RING = { r: 0xec, g: 0xec, b: 0xe6 } // --text, the sigil rings
-const DOT = { r: 0xc6, g: 0xe7, b: 0x6b } // --acc lime center dot
+// The same layers as the app icon - graded face, dark inset panel, lime sigil -
+// so a profile's window reads as part of the family instead of an unrelated
+// tile. Only the sigil's gaps and rotation vary per profile.
+const FACE_A = { r: 0x2f, g: 0x63, b: 0x50 }
+const FACE_B = { r: 0x1b, g: 0x33, b: 0x55 }
+const FACE_C = { r: 0x0b, g: 0x12, b: 0x26 }
+const PANEL = { r: 0x05, g: 0x0b, b: 0x14 }
+const MARK_A = { r: 0xf4, g: 0xff, b: 0xd2 }
+const MARK_B = { r: 0xc0, g: 0xe4, b: 0x65 }
+const PANEL_ALPHA = 0.62
+// Light along the top edge, the way the app icon's rim does it. A saturated
+// keyline all the way round is what made the old tile look pasted on.
+const RIM_ALPHA = 0.22
+
+interface Rgb { r: number; g: number; b: number }
+function mix(a: Rgb, b: Rgb, t: number): Rgb {
+  return { r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t, b: a.b + (b.b - a.b) * t }
+}
+/** Face gradient at a point, as a fraction along the top-left → bottom-right diagonal. */
+function faceAt(t: number): Rgb {
+  return t < 0.5 ? mix(FACE_A, FACE_B, t * 2) : mix(FACE_B, FACE_C, (t - 0.5) * 2)
+}
 
 // Supersampling factor per axis.
 const SS = 4
@@ -36,22 +53,20 @@ function clamp255(v: number): number {
   return v < 0 ? 0 : v > 255 ? 255 : Math.round(v)
 }
 
-/** Standard rounded-rectangle containment test (clamp point to nearest corner center). */
-function insideRRect(
-  x: number,
-  y: number,
-  x0: number,
-  y0: number,
-  x1: number,
-  y1: number,
-  rad: number,
-): boolean {
-  if (x < x0 || x > x1 || y < y0 || y > y1) return false
-  const cxr = x < x0 + rad ? x0 + rad : x > x1 - rad ? x1 - rad : x
-  const cyr = y < y0 + rad ? y0 + rad : y > y1 - rad ? y1 - rad : y
-  const dx = x - cxr
-  const dy = y - cyr
-  return dx * dx + dy * dy <= rad * rad
+/**
+ * Continuous-curvature corner, as a superellipse centred on (cx, cy) with
+ * half-width `half`. An approximation of the shape the app icon uses (which is
+ * built from arcs and beziers, not expressible as a containment test) - close
+ * enough that the two read as the same family, and far closer than the plain
+ * rounded rectangle this replaced.
+ */
+const SQUIRCLE_N = 5.5
+function insideSquircle(x: number, y: number, cx: number, cy: number, half: number): boolean {
+  if (half <= 0) return false
+  const dx = Math.abs(x - cx) / half
+  const dy = Math.abs(y - cy) / half
+  if (dx > 1 || dy > 1) return false
+  return Math.pow(dx, SQUIRCLE_N) + Math.pow(dy, SQUIRCLE_N) <= 1
 }
 
 interface Ring {
@@ -64,39 +79,32 @@ interface Ring {
 /** Render one square icon size to a top-down RGBA byte buffer (w*h*4). */
 function renderRGBA(size: number, sd: number): Uint8Array {
   const out = new Uint8Array(size * size * 4)
-  const cx = size / 2
-  const cy = size / 2
+  const c = size / 2
+  const half = size / 2
 
-  // Tile geometry (a small inset keeps the accent border off the very edge).
-  const inset = 0.5
-  const ox0 = inset
-  const oy0 = inset
-  const ox1 = size - inset
-  const oy1 = size - inset
-  const rrRad = size * 0.22
-  const borderW = Math.max(size * 0.02, 0.8)
-  const irad = Math.max(rrRad - borderW, 0)
+  // Panel and rim are detail that only muddies the smallest .ico entries, where
+  // the icon is a handful of pixels and the sigil alone has to carry it.
+  const detailed = size >= 32
+  const panelHalf = size * 0.3
+  const rimBand = Math.max(size * 0.012, 0.75)
 
-  // Sigil geometry inside a padded inner box (same ratios as Sigil.tsx, scaled).
-  const pad = size * 0.14
-  const s2 = size - 2 * pad
-  const rings: Ring[] = []
-  for (let i = 0; i < 4; i++) {
-    rings.push({
-      r: s2 * (0.10625 + i * 0.125),
-      gapAngle: 2 * Math.PI * (0.16 + ((sd >> (i * 3)) % 9) / 44),
-      rotRad: (((sd * (i + 2) * 37) % 360) * Math.PI) / 180,
-      op: 0.9 - i * 0.14,
-    })
-  }
-  const halfStroke = Math.max(size * 0.05, 1.0) / 2
-  const dotR = Math.max(size * 0.045, 1.0)
+  // Sigil ratios copied from the app icon so the two marks are the same mark.
+  // The seed only moves each ring's gap and rotation, which is what tells one
+  // profile from another.
+  const rings: Ring[] = [0.191, 0.121].map((f, i) => ({
+    r: size * f,
+    gapAngle: 2 * Math.PI * (0.16 + ((sd >> (i * 3)) % 9) / 44),
+    rotRad: (((sd * (i + 2) * 37) % 360) * Math.PI) / 180,
+    op: 1,
+  }))
+  const halfStroke = Math.max(size * 0.0195, 0.6)
+  const dotR = Math.max(size * 0.035, 1.0)
   const twoPi = 2 * Math.PI
 
   for (let py = 0; py < size; py++) {
     for (let px = 0; px < size; px++) {
-      // Accumulate premultiplied color so rounded-corner AA (opaque tile over
-      // transparent background) blends correctly.
+      // Premultiplied, so the rounded corners blend correctly against the
+      // transparent surround.
       let pr = 0
       let pg = 0
       let pb = 0
@@ -110,43 +118,52 @@ function renderRGBA(size: number, sd: number): Uint8Array {
           let cb = 0
           let ca = 0
 
-          if (insideRRect(x, y, ox0, oy0, ox1, oy1, rrRad)) {
-            cr = TILE.r
-            cg = TILE.g
-            cb = TILE.b
+          if (insideSquircle(x, y, c, c, half)) {
+            const t = Math.min(1, Math.max(0, (x + y) / (2 * size)))
+            const face = faceAt(t)
+            cr = face.r
+            cg = face.g
+            cb = face.b
             ca = 1
-            // Accent border band = inside outer rrect but outside the shrunk one.
-            if (!insideRRect(x, y, ox0 + borderW, oy0 + borderW, ox1 - borderW, oy1 - borderW, irad)) {
-              const ba = 0.65
-              cr = BORDER.r * ba + cr * (1 - ba)
-              cg = BORDER.g * ba + cg * (1 - ba)
-              cb = BORDER.b * ba + cb * (1 - ba)
+
+            if (detailed && !insideSquircle(x, y, c, c, half - rimBand)) {
+              // Top-lit only: full strength at the top, gone by the bottom.
+              const a = RIM_ALPHA * Math.max(0, 1 - y / size)
+              cr = 255 * a + cr * (1 - a)
+              cg = 255 * a + cg * (1 - a)
+              cb = 255 * a + cb * (1 - a)
             }
 
-            const dx = x - cx
-            const dy = y - cy
+            if (detailed && insideSquircle(x, y, c, c, panelHalf)) {
+              cr = PANEL.r * PANEL_ALPHA + cr * (1 - PANEL_ALPHA)
+              cg = PANEL.g * PANEL_ALPHA + cg * (1 - PANEL_ALPHA)
+              cb = PANEL.b * PANEL_ALPHA + cb * (1 - PANEL_ALPHA)
+            }
+
+            const dx = x - c
+            const dy = y - c
             const dist = Math.sqrt(dx * dx + dy * dy)
             let theta = Math.atan2(dy, dx)
             if (theta < 0) theta += twoPi
+            const mark = mix(MARK_A, MARK_B, t)
             for (let i = 0; i < rings.length; i++) {
               const rg = rings[i]
               if (Math.abs(dist - rg.r) <= halfStroke) {
                 let rel = (theta - rg.rotRad) % twoPi
                 if (rel < 0) rel += twoPi
-                // Single dash covering (2π - gapAngle); the gap sits at the end.
+                // One dash spanning (2pi - gapAngle); the gap sits at the end.
                 if (rel <= twoPi - rg.gapAngle) {
-                  const a = rg.op
-                  cr = RING.r * a + cr * (1 - a)
-                  cg = RING.g * a + cg * (1 - a)
-                  cb = RING.b * a + cb * (1 - a)
+                  cr = mark.r
+                  cg = mark.g
+                  cb = mark.b
                 }
               }
             }
 
             if (dist <= dotR) {
-              cr = DOT.r
-              cg = DOT.g
-              cb = DOT.b
+              cr = mark.r
+              cg = mark.g
+              cb = mark.b
             }
           }
 

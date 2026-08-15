@@ -4,6 +4,242 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.19.0] - 2026-08-15
+
+### Fixed
+
+- A profile was recorded as encrypted when its key was minted, before any
+  browser had run. Only some kernel builds understand `--fp-crypt-key`, and
+  Chromium ignores switches it does not know, so on a build without support the
+  profile was created as an ordinary unencrypted one while its directory - and
+  the cloud archive that carries that record - claimed otherwise. The claim was
+  harmless on the machine that made it and only surfaced elsewhere: a kernel
+  that does support the key refused to start, having found no verifier to check
+  it against. Encryption is now recorded from what the kernel actually did.
+
+### Added
+
+- `settleCryptState(profileDir)` reconciles a profile's encryption record with
+  the verifier its browser data carries, returning `bound`, `plain` or
+  `unknown`. `openProfile()` runs it twice: after the archive restore, so the
+  launch reads a directory that agrees with itself, and once the browser has
+  exited, which is both the first moment the outcome can be read and the last
+  before the archive is packed. `unknown` - an unreadable or absent `Local
+  State` - writes nothing, so "cannot tell" is never read as "no key" and an
+  encrypted profile whose key is unavailable still refuses to launch.
+- A record contradicted by the data it describes is corrected: a profile marked
+  encrypted whose browser data carries no verifier is unmarked and launches
+  normally. This needs positive evidence - readable data with no verifier is
+  data under the built-in key, with no protection to drop.
+- `markCryptKeyPending(profileDir)` records that a key is waiting for a
+  directory whose first launch has yet to happen. `resolveCryptKey()` now
+  passes the key for such a directory too: the kernel binds the key on the
+  profile's first launch, so that launch has to carry it, and the encryption
+  record is its result rather than its precondition. The marker is
+  machine-local and never packed into the cloud archive. Companion helpers:
+  `isCryptKeyPending()`, `clearCryptKeyPending()`, `unmarkProfileEncrypted()`,
+  `CRYPT_PENDING_FILE`.
+
+## [2.18.0] - 2026-08-15
+
+### Fixed
+
+- `exportProfileArchiveAsync()` resolved the conversion kernel with the same
+  lenient lookup as an ordinary launch, but never refreshed the kernel
+  catalogue first the way a launch does - so a profile pinned to a version
+  published after this SDK (e.g. a new major only present in the runtime
+  manifest) silently converted on the compiled-in baseline instead. Against a
+  baseline kernel with no `--fp-crypt-rekey` support, Chromium ignores the
+  unknown switches and opens a full browser on the temporary copy instead of
+  converting it, hanging until the conversion timeout and then failing with a
+  message that pointed at the wrong kernel. The export path now refreshes the
+  catalogue and resolves the version strictly, the same guard already used for
+  the Android kernel floor: a version absent from the catalogue now fails
+  immediately, naming the version, instead of quietly running on a different
+  one.
+- The conversion timeout is now 60s instead of 10 minutes - a real conversion
+  finishes in well under a second, so 60s is two orders of magnitude of
+  headroom while still failing far short of what a hung, wrong-kernel browser
+  window used to cost. A run that hits the timeout now says so explicitly
+  (distinct from a kernel refusal, which exits on its own with a code) rather
+  than reading like an unexplained failure.
+- `fetchProfileCryptKey()` let a transport-level failure (offline, DNS,
+  connection refused) through as a bare `fetch failed`, with nothing tying it
+  to encryption or to which profile. An encrypted profile cannot launch
+  without reaching the server for its key - by design - so this is the error
+  users hit most often when offline; it now names the profile and says an
+  encrypted profile cannot start without the key, wrapping the original
+  transport error rather than hiding it. Launch behaviour is unchanged: the
+  key is still required and the kernel is still never spawned without it.
+
+## [2.17.0] - 2026-08-15
+
+### Added
+
+- `exportProfileArchiveAsync()`, and `p.export()` now uses it, so an encrypted
+  profile can be exported at all. Its encryption key never enters its own
+  directory, so packing the directory as it stands hands the recipient
+  ciphertext and nothing to open it with. The profile is now copied to a
+  temporary directory, converted there to the browser's built-in encryption,
+  and packed from the copy - the profile itself is never touched, and the
+  archive opens anywhere, on any machine, with no key.
+
+### Changed
+
+- The export verifies the outcome instead of trusting the browser core: a core
+  that predates the conversion feature ignores the switches, converts nothing
+  and exits successfully, which would have produced an archive nobody could
+  open. The converted copy is now checked for the key verifier the core keeps
+  beside the data, and an export that did not convert aborts with an error
+  naming the core, writing no file. The temporary copy is removed on every
+  path, success or failure.
+- `exportProfileArchive()` (the synchronous one) refuses an encrypted profile
+  rather than packing unopenable ciphertext. Unencrypted profiles export
+  exactly as before.
+
+## [2.16.0] - 2026-08-15
+
+### Fixed
+
+- A kernel major with two full-version rows in the manifest (upstream
+  republishing the same major under a newer patch) could register the older
+  row's build instead of the newer one, depending only on which row the
+  in-memory catalogue happened to see last. Since `.fp-build` drift is what
+  drives the "update available" prompt, an unlucky merge order could make a
+  major stop offering updates entirely, no matter what upstream published
+  next. Kernel platform assets now carry the full version they were published
+  under, so a merge always keeps the newer row's build regardless of arrival
+  order; a same-full-version refresh can still bump a stale build forward, but
+  never walks a known build backwards.
+
+## [2.15.0] - 2026-08-14
+
+### Added
+
+- `profile()`, a durable alternative to passing a profile name to `launch()`
+  every time. It resolves (creating on first use) the profile once and hands
+  back a `ProfileHandle` that remembers the proxy, group and tags you set on
+  it - a later `profile({ name })` call with none of those options passed
+  comes back exactly as it was left. The handle adds `launch()` (session-only
+  options - passing a proxy, tags, group, `sync` or `temporary` there throws),
+  `setProxy()` / `swapProxy()`, `getGroup()` / `setGroup()`, `getTags()` /
+  `setTags()`, `enableSync()`, `dangerousDisconnectSync()` (irreversible - it
+  deletes the cloud copy and its archive but leaves the local directory
+  launchable) and `export()`.
+- Exported `ProfileHandle`, and the types `ProfileOptions`, `SessionOptions`,
+  `ProxyInput` and `ProxyBinding`.
+
+## [2.14.1] - 2026-08-14
+
+### Changed
+
+- The binary license now separates the two lists it used to mix. Redistributing
+  the kernel, baking it into a published image, serving it to your own
+  customers, reselling it and shipping it under your own name are things we
+  license under an OEM agreement (new §10), not things we forbid; only
+  circumventing the license check and reverse engineering stay prohibited
+  outright. The three rows of the §4 table that used to end in "contact us" now
+  name the grant that covers them, and §10.4 states plainly which markets we do
+  not intend to enter against a licensee.
+- Package description no longer reads as though the fingerprint work happens
+  over CDP. Spoofing is in the kernel; CDP is only the control transport.
+
+## [2.14.0] - 2026-08-14
+
+### Changed
+
+- Whether a profile's data is encrypted now travels with that data: a
+  `crypt-state.json` root item (one boolean, no key material) is packed into the
+  profile archive alongside `persona.json` and `passkeys.json`. Restoring a
+  profile on a second machine therefore launches with its key instead of being
+  refused by the kernel. The key itself is still fetched per launch and kept in
+  memory only. `profile.json` stays out of the archive, so a directory's local
+  markers never travel.
+- The launch decision is made after the archive is restored, and the restored
+  state file wins over the local record when the two disagree - it is the one
+  that arrived with the data it describes.
+- Importing a portable profile into a directory that previously held an
+  encrypted one now states the imported data's encryption instead of inheriting
+  the previous occupant's marker.
+
+## [2.13.0] - 2026-08-14
+
+### Added
+
+- `openProfile` passes the kernel's `--fp-crypt-key` for profiles created under
+  an external encryption key, so their cookies and saved passwords are encrypted
+  under a key that never touches the profile directory. Whether a launch carries
+  the flag is decided by a mark on the profile directory itself, written when the
+  profile is created; the key is fetched per launch and kept in memory only.
+  A profile created without a key is never marked and behaves exactly as before.
+- `cryptKey` / `getCryptKey` on `openProfile`, plus `markProfileEncrypted`,
+  `isProfileEncrypted`, `fetchProfileCryptKey` and `resolveCryptKey`.
+
+### Notes
+
+- A marked profile whose key cannot be obtained fails the launch. There is
+  deliberately no fallback to launching without the flag: the kernel binds the
+  key when the profile is created, so starting such a profile without its key is
+  refused - and on kernels predating build `2026-08-14` it destroyed the
+  profile's existing encrypted data instead of refusing.
+
+## [2.12.0] - 2026-08-14
+
+### Added
+
+- Launches pass `--fp-product-name`, which renames the browser in
+  `chrome://version` and the About page. Measured against kernel 151 build
+  `2026-08-13c`: with and without the flag, `navigator`, the high-entropy UA
+  hints and the `Sec-CH-UA` headers are byte-identical, so the name never
+  reaches a page. Kernels that predate the flag ignore it.
+
+## [2.11.0] - 2026-08-13
+
+### Added
+
+- `packProfileCacheWithReport(profileDir)` returns `{ archive, skipped }`, and
+  `lastProfilePackReport(profileDir)` gives the same report for the pack that
+  `uploadProfileCache()` did internally. A pack skips files it cannot read (a
+  running browser holds some open) and that archive still uploads with a 2xx, so
+  a successful upload was never proof the archive is the whole profile. Anything
+  that erases the local copy after an upload needs `skipped` to be empty
+  first: an archive missing `persona.json` restores as a different identity.
+  `packProfileCache()` keeps returning the buffer and packs exactly what it
+  packed before: tolerating a locked file is still better than failing the save.
+
+## [2.10.0] - 2026-08-13
+
+### Added
+
+- `setProfileKernelVersion({ profileName | profileDir, version })` moves an
+  existing profile to another Chrome major. `launch()`/`openProfile()`'s
+  `kernelVersion` only seeds a new profile, so until now the only way to move
+  one was to hand-edit `persona.json` — and editing the version alone leaves the
+  UA contradicting it. Only the three version-derived fields change, so the
+  identity behind the profile's cookies survives the move. Unknown versions are
+  refused rather than silently resolved to the default, and an Android profile
+  refuses a kernel without the mobile patches.
+- `shouldRestoreArchive(local, server)` exposes the rule that decides whether a
+  launch lays the cloud archive over the local profile.
+
+## [2.9.0] - 2026-08-13
+
+### Changed
+
+- A brand-new profile is created against the newest kernel the catalogue knows
+  for this platform, installed or not, rather than the one compiled into this
+  release. Publishing a kernel to the manifest now moves the default without an
+  SDK release, and the first launch of such a profile downloads that kernel.
+  The compiled-in version stays as the fallback for an offline first install.
+- `findKernelVersion()` and `ensureKernel()`'s default argument follow the same
+  resolution, so an unknown or omitted version lands on the newest kernel.
+
+### Added
+
+- `defaultKernelVersion()`, the kernel a new profile gets. `DEFAULT_KERNEL_VERSION`
+  still exports the compiled-in baseline: it is fixed at import time and cannot
+  see manifest versions, so prefer the function.
+
 ## [2.8.0] - 2026-08-12
 
 ### Changed

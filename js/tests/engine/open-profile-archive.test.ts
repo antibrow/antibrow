@@ -12,7 +12,7 @@ const uploadSpy = vi.fn(async (_dir: string, _url: string) => undefined as strin
 const downloadSpy = vi.fn(async (_url: string, _dir: string) => true)
 
 vi.mock('../../src/engine/downloader', () => ({
-  DEFAULT_KERNEL_VERSION: { version: '150.0.0.0', label: 'Chrome 150', platforms: {} },
+  defaultKernelVersion: () => ({ version: '150.0.0.0', label: 'Chrome 150', platforms: {} }),
   KERNEL_VERSIONS: [],
   findKernelVersion: (v: string) => ({ version: v, label: `Chrome ${v}`, platforms: {} }),
   ensureKernel: async () => 'C:/kernels/chrome.exe',

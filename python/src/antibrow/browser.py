@@ -21,15 +21,18 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
+from . import api as _api
 from . import config as _config
 from . import devices as _devices
 from . import kernel as _kernel
 from . import profile_sync as _sync
-from .errors import ProfileCacheError
+from .crypt_key import fetch_profile_crypt_key, resolve_crypt_key
+from .errors import LicenseError, ProfileCacheError, ProxyError
 from .geoip import lookup_proxy_geo
 from .launcher import (
     DEFAULT_LAUNCH_TIMEOUT,
@@ -43,7 +46,23 @@ from .launcher import (
     wait_for_cdp,
 )
 from .license import LicenseInfo, LicenseProvider, get_license_token, resolve_api_key
-from .persona import PERSONA_FILE, DeviceType, Persona, load_or_generate_persona, write_fp_config
+from .liveview import (
+    DEFAULT_RELAY_URL,
+    LiveViewOptions,
+    LiveViewSession,
+    LiveViewStream,
+    register_live_session,
+)
+from .persona import (
+    PERSONA_FILE,
+    DeviceType,
+    Persona,
+    load_or_generate_persona,
+    read_persona,
+    with_kernel_version,
+    write_fp_config,
+    write_persona,
+)
 from .profile_cache import (
     clear_archive_version,
     download_profile_cache,
@@ -51,7 +70,7 @@ from .profile_cache import (
     upload_profile_cache,
     write_archive_version,
 )
-from .profile_dir import read_profile_meta, resolve_profile_dir
+from .profile_dir import read_profile_meta, resolve_profile_dir, settle_crypt_state
 from .proxy import ProxyLike, ProxySpec, parse_proxy
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -98,6 +117,20 @@ class ArchivePlan:
 
 
 @dataclass
+class ProxyTicketRef:
+    """One issued managed-proxy ticket, and how to hand it back.
+
+    ``revoke`` carries the credentials rather than the plan doing so, for the
+    same reason ``ArchivePlan.sign_upload`` does: an API key on a value the
+    caller can print is a key in somebody's logs.
+    """
+
+    proxy_id: str
+    ticket_id: str
+    revoke: Optional[Callable[[], None]] = field(default=None, repr=False)
+
+
+@dataclass
 class LaunchPlan:
     """Everything resolved before the kernel process starts.
 
@@ -119,17 +152,22 @@ class LaunchPlan:
     proxy: Optional[ProxySpec] = None
     #: None when this profile is local-only (free plan, ``sync=False``, offline).
     archive: Optional[ArchivePlan] = None
+    #: The short-lived managed-proxy credential this launch minted, if any. Handed
+    #: back when the session closes; it also expires on its own.
+    proxy_ticket: Optional[ProxyTicketRef] = None
 
     @property
     def cdp_url(self) -> str:
         return "http://127.0.0.1:{0}".format(self.cdp_port)
 
     def redacted_args(self) -> List[str]:
-        """Arguments with the license token and proxy password masked."""
+        """Arguments with the license token, encryption key and proxy password masked."""
         out = []
         for arg in self.args:
             if arg.startswith("--fp-license="):
                 out.append("--fp-license=<redacted>")
+            elif arg.startswith("--fp-crypt-key="):
+                out.append("--fp-crypt-key=<redacted>")
             elif arg.startswith("--proxy-server=") and self.proxy is not None:
                 out.append("--proxy-server={0}".format(self.proxy.to_url(with_credentials=False)))
             else:
@@ -143,6 +181,8 @@ def prepare_launch(
     headless: bool = False,
     focus_window: bool = True,
     proxy: ProxyLike = None,
+    proxy_id: Optional[str] = None,
+    proxy_host: Optional[str] = None,
     geoip: bool = True,
     timezone: Optional[str] = None,
     api_key: Optional[str] = None,
@@ -155,11 +195,15 @@ def prepare_launch(
     proxy_auth: str = "native",
     license_token: Optional[str] = None,
     license_provider: Optional[LicenseProvider] = None,
+    crypt_key: Optional[str] = None,
+    get_crypt_key: Optional[Callable[[], Optional[str]]] = None,
     update_kernel: bool = False,
     webauthn_capture: Optional[bool] = None,
     restore_tabs: bool = True,
     device_type: Optional[DeviceType] = None,
     real_fingerprint: bool = False,
+    canvas_noise: Optional[bool] = None,
+    api_log: Optional[str] = None,
     sync: Optional[bool] = None,
     temporary: bool = False,
     on_sync: Optional[SyncCallback] = None,
@@ -223,6 +267,20 @@ def prepare_launch(
         on_progress=on_progress,
     )
 
+    # After the restore, before the kernel install: crypt-state.json rides in the
+    # archive, so on a second machine the restore is what tells us this profile's
+    # data is encrypted. The directory decides - a key is never fetched without
+    # its say-so, and a key that cannot be obtained fails the launch here rather
+    # than being downgraded into a launch without the flag.
+    #
+    # Settled first, against the data the restore just laid down: it closes out a
+    # previous session the kernel already answered (including one that ended in a
+    # crash, before close() could run) and corrects a mark that data contradicts,
+    # so what follows reads a directory that agrees with itself.
+    settle_crypt_state(directory)
+    key_source = get_crypt_key or _own_crypt_key_source(resolved_name, api_key, server)
+    launch_crypt_key = resolve_crypt_key(directory, crypt_key=crypt_key, get_crypt_key=key_source)
+
     # Kernels published after this SDK was built are only known from the manifest,
     # so resolve the catalogue before mapping a version string onto an asset. This
     # has to happen before the version below is resolved even when update_kernel is
@@ -276,52 +334,75 @@ def prepare_launch(
         kv.version, _kernel.installed_kernel_build(root, kv.version)
     )
 
-    proxy_spec = parse_proxy(proxy)
-    resolved_timezone = timezone or persona.timezone
-    public_ip: Optional[str] = None
-    geo = None
-    if proxy_spec is not None and geoip:
-        notify("Looking up proxy geo")
-        geo = lookup_proxy_geo(proxy_spec)
-        if geo is not None:
-            if geo.timezone and not timezone:
-                resolved_timezone = geo.timezone
-            if geo.ip:
-                public_ip = geo.ip
-
-    display_label = label or resolved_name
-    fp_config_path = write_fp_config(
-        directory,
-        persona,
-        label=display_label,
-        timezone=resolved_timezone,
-        public_ip=public_ip,
-        rtt_ms=geo.rtt_ms if geo else None,
+    # Last, so that everything able to reject this launch - the license, the sync
+    # mode, the kernel install - has already run. A ticket minted before those
+    # would stay live for its whole lifetime with no session to revoke it.
+    proxy, ticket = _resolve_managed_proxy(
+        proxy=proxy,
+        proxy_id=proxy_id,
+        proxy_host=proxy_host,
+        api_key=api_key,
+        server=server,
+        label=label or resolved_name,
+        notify=notify,
     )
 
-    user_data_dir = directory / "user-data"
-    user_data_dir.mkdir(parents=True, exist_ok=True)
-    cdp_port = pick_free_port()
+    try:
+        proxy_spec = parse_proxy(proxy)
+        resolved_timezone = timezone or persona.timezone
+        public_ip: Optional[str] = None
+        geo = None
+        if proxy_spec is not None and geoip:
+            notify("Looking up proxy geo")
+            geo = lookup_proxy_geo(proxy_spec)
+            if geo is not None:
+                if geo.timezone and not timezone:
+                    resolved_timezone = geo.timezone
+                if geo.ip:
+                    public_ip = geo.ip
 
-    launch_args = build_launch_args(
-        fp_config_path=fp_config_path,
-        license_token=license_info.token,
-        user_data_dir=user_data_dir,
-        label=display_label,
-        cdp_port=cdp_port,
-        language=persona.languages[0] if persona.languages else "en-US",
-        headless=headless,
-        focus_window=focus_window,
-        locale_from_config=locale_from_config,
-        platform=_kernel.current_platform(),
-        proxy=proxy_spec,
-        proxy_auth=proxy_auth,
-        profile_dir=directory,
-        webauthn_capture=webauthn_capture,
-        restore_tabs=restore_tabs,
-        android_screen=(persona.screen_w, persona.screen_h) if persona.device_type == "android" else None,
-        extra_args=args,
-    )
+        display_label = label or resolved_name
+        fp_config_path = write_fp_config(
+            directory,
+            persona,
+            label=display_label,
+            timezone=resolved_timezone,
+            public_ip=public_ip,
+            rtt_ms=geo.rtt_ms if geo else None,
+            canvas_noise=canvas_noise,
+            api_log=api_log,
+        )
+
+        user_data_dir = directory / "user-data"
+        user_data_dir.mkdir(parents=True, exist_ok=True)
+        cdp_port = pick_free_port()
+
+        launch_args = build_launch_args(
+            fp_config_path=fp_config_path,
+            license_token=license_info.token,
+            user_data_dir=user_data_dir,
+            label=display_label,
+            cdp_port=cdp_port,
+            language=persona.languages[0] if persona.languages else "en-US",
+            headless=headless,
+            focus_window=focus_window,
+            locale_from_config=locale_from_config,
+            platform=_kernel.current_platform(),
+            proxy=proxy_spec,
+            proxy_auth=proxy_auth,
+            profile_dir=directory,
+            webauthn_capture=webauthn_capture,
+            restore_tabs=restore_tabs,
+            android_screen=(persona.screen_w, persona.screen_h) if persona.device_type == "android" else None,
+            crypt_key=launch_crypt_key,
+            extra_args=args,
+        )
+    except BaseException:
+        # No session was created, so nothing will ever close and revoke it.
+        # Retrying against a flaky proxy would otherwise mint one live
+        # credential per attempt.
+        _revoke_ticket(ticket)
+        raise
 
     return LaunchPlan(
         exe_path=Path(exe_path),
@@ -337,7 +418,123 @@ def prepare_launch(
         public_ip=public_ip,
         proxy=proxy_spec,
         archive=archive,
+        proxy_ticket=ticket,
     )
+
+
+def _resolve_managed_proxy(
+    *,
+    proxy: ProxyLike,
+    proxy_id: Optional[str],
+    proxy_host: Optional[str],
+    api_key: Optional[str],
+    server: Optional[str],
+    label: str,
+    notify: ProgressCallback,
+) -> Tuple[ProxyLike, Optional[ProxyTicketRef]]:
+    """Turn a managed proxy id into a ``relay://`` URL the kernel can use.
+
+    Activation comes first because that is what checks ownership and meters the
+    monthly quota; only then is a credential minted, and it is a short-lived
+    ticket rather than the account key - the key would otherwise sit in the
+    kernel's command line for anyone on the machine to read.
+    """
+    if not proxy_id:
+        return proxy, None
+    if proxy is not None:
+        raise ValueError("Pass either proxy= or proxy_id=, not both")
+    key = resolve_api_key(api_key)
+    if not key:
+        raise LicenseError("A managed proxy needs an API key: set ANTIBROW_API_KEY or pass api_key=")
+
+    notify("Activating managed proxy")
+    activation = _api.activate_proxy(key, server, proxy_id=proxy_id)
+    if activation.proxy is None:
+        raise ProxyError("Proxy activation did not return a proxy")
+    issued = _api.issue_proxy_ticket(key, server, proxy_id=activation.proxy.id, label=label)
+    url = _api.managed_proxy_to_relay_url(
+        issued.username, issued.password, proxy_host or issued.host or _api.DEFAULT_RELAY_HOST
+    )
+    ref = ProxyTicketRef(proxy_id=activation.proxy.id, ticket_id=issued.ticket_id)
+    ref.revoke = lambda: _api.revoke_proxy_ticket(
+        key, server, proxy_id=ref.proxy_id, ticket_id=ref.ticket_id
+    )
+    return url, ref
+
+
+def _revoke_ticket(ticket: Optional[ProxyTicketRef]) -> None:
+    """Hand a managed-proxy ticket back. Never raises - it expires on its own."""
+    if ticket is None or ticket.revoke is None:
+        return
+    try:
+        ticket.revoke()
+    except Exception:
+        pass
+
+
+def _start_live_view(
+    context: Any,
+    page: Any,
+    *,
+    live_view: "bool | LiveViewOptions",
+    relay_url: Optional[str],
+    api_key: Optional[str],
+    server: Optional[str],
+    plan: LaunchPlan,
+    notify: ProgressCallback,
+) -> Optional[LiveViewSession]:
+    """Register and start a live view, or report why not and carry on.
+
+    A browser you cannot watch still works, so nothing here is allowed to take
+    the session down with it.
+    """
+    if not live_view:
+        return None
+    key = resolve_api_key(api_key)
+    if not key:
+        notify("Live View needs an API key; continuing without it")
+        return None
+
+    options = live_view if isinstance(live_view, LiveViewOptions) else LiveViewOptions()
+    session_key = uuid.uuid4().hex
+    try:
+        registration = register_live_session(
+            key,
+            server,
+            session_key=session_key,
+            profile_name=plan.label,
+            label=plan.label,
+            ua=plan.persona.ua,
+        )
+        stream = LiveViewStream(
+            context,
+            page,
+            relay_url or DEFAULT_RELAY_URL,
+            registration.session_key,
+            registration.relay_token,
+            options,
+        )
+        stream.start()
+    except Exception as error:
+        notify("Live View unavailable: {0}".format(error))
+        return None
+    notify("Live View at {0}".format(registration.view_url))
+    return LiveViewSession(stream, registration, key, server)
+
+
+def _own_crypt_key_source(
+    profile_name: str, api_key: Optional[str], server: Optional[str]
+) -> Optional[Callable[[], Optional[str]]]:
+    """This account's own key endpoint. A guest passes ``get_crypt_key`` instead,
+    because the key it needs belongs to the profile's owner."""
+    key = resolve_api_key(api_key)
+    if not key:
+        return None
+
+    def _fetch() -> Optional[str]:
+        return fetch_profile_crypt_key(profile_name, key, server or _config.default_server())
+
+    return _fetch
 
 
 def _resolve_persona_init(
@@ -378,6 +575,65 @@ def _assert_android_kernel(version: Optional[str]) -> None:
             _kernel.ANDROID_MIN_KERNEL_VERSION, version or "unknown"
         )
     )
+
+
+def should_restore_archive(local: Optional[str], server: Optional[str]) -> bool:
+    """Whether the cloud archive has to be laid over this profile.
+
+    Equality, not ordering - an ETag has none. The case that matters: the last
+    upload failed, so the cloud still holds the generation this machine already
+    has, and restoring it would erase newer local work (a kernel switch
+    included: persona.json is in the archive and the restore runs before it is
+    read).
+    """
+    return not (server and local and local == server)
+
+
+def set_profile_kernel_version(
+    version: str,
+    *,
+    profile_name: Optional[str] = None,
+    profile_dir: Optional[Path | str] = None,
+    cache_dir: Optional[Path | str] = None,
+    temporary: bool = False,
+) -> Persona:
+    """Move an existing profile to another kernel major, keeping its identity.
+
+    Only the three version-derived persona fields change. ``launch``'s
+    ``kernel_version`` cannot do this - it seeds a new profile and is ignored
+    once ``persona.json`` exists.
+
+    Takes effect on the next launch. A synced profile whose cloud archive is a
+    newer generation than this machine's copy still restores that archive first,
+    reverting the change, so switch on the machine that last used the profile.
+    """
+    if profile_dir is not None:
+        directory = Path(profile_dir)
+    elif profile_name:
+        directory = resolve_profile_dir(profile_name, cache_dir, temporary=temporary).dir
+    else:
+        raise ValueError("set_profile_kernel_version needs a profile_dir or a profile_name")
+
+    persona = read_persona(directory)
+    if persona is None:
+        raise FileNotFoundError(
+            "Profile at {0} has no persona yet, so there is no identity to move. "
+            "Create it with launch(kernel_version=...) instead.".format(directory)
+        )
+
+    # Versions published after this release exist only in the manifest, and the
+    # lookup is strict for the same reason the Android one is: silently
+    # answering with the compiled-in default would leave the profile on its old
+    # kernel while reporting the new one.
+    root = Path(cache_dir).expanduser() if cache_dir else _config.default_cache_dir()
+    _kernel.refresh_kernel_versions(root)
+    kv = _kernel.find_kernel_version_strict(version)
+    if persona.device_type == "android":
+        _assert_android_kernel(kv.version)
+
+    moved = with_kernel_version(persona, kv.version)
+    write_persona(directory, moved)
+    return moved
 
 
 def _reject_temporary_sync(temporary: bool, sync: Optional[bool]) -> None:
@@ -492,11 +748,7 @@ def _restore_archive(
     )
 
     if urls.download_url:
-        local_version = read_archive_version(directory)
-        # Equality, not ordering - an ETag has none. The case that matters: the
-        # last upload failed, so the cloud still holds the generation this
-        # machine already has, and restoring it would erase newer local work.
-        if urls.version and local_version and local_version == urls.version:
+        if not should_restore_archive(read_archive_version(directory), urls.version):
             notify("Profile archive already current; skipping restore")
         else:
             notify("Restoring profile from the cloud")
@@ -523,6 +775,7 @@ class _BaseSession:
         self._closed = False
         self._uploaded = False
         self._sync_error: Optional[str] = None
+        self._live_view: Optional[LiveViewSession] = None
 
     # -- introspection ----------------------------------------------------
     @property
@@ -580,6 +833,31 @@ class _BaseSession:
         would open a stale copy.
         """
         return self._sync_error
+
+    @property
+    def live_view(self) -> Optional[LiveViewSession]:
+        """The running live view, when this launch asked for one. Its
+        ``view_url`` is where to watch the session."""
+        return self._live_view
+
+    def _stop_live_view(self) -> None:
+        if self._live_view is not None:
+            self._live_view.stop()
+            self._live_view = None
+
+    def _settle_crypt_state(self) -> None:
+        """Record what ``--fp-crypt-key`` actually did, before anything is packed.
+
+        The kernel has stopped and flushed ``Local State``, so this is the first
+        moment its outcome can be read - and the last one before the pack below
+        turns this directory into the archive every other machine will restore. A
+        build that ignored the switch settles as plain here, so nothing claims an
+        encryption that was never applied.
+        """
+        try:
+            settle_crypt_state(self._plan.profile_dir)
+        except OSError:
+            pass  # an unwritable directory is not worth failing a finished session
 
     def _upload_archive(self) -> None:
         """Pack and upload the profile, after the kernel process is gone.
@@ -695,6 +973,7 @@ class Antibrow(_BaseSession):
         # without ever reaching the browser - the kernel then sits out the whole
         # grace period and is SIGKILLed, which is the exact outcome asking politely
         # exists to avoid. AsyncAntibrow.close does the same thing on its loop.
+        self._stop_live_view()
         try:
             self.browser.new_browser_cdp_session().send("Browser.close")
         except Exception:
@@ -708,6 +987,8 @@ class Antibrow(_BaseSession):
             self._playwright.stop()
         except Exception:
             pass
+        _revoke_ticket(self._plan.proxy_ticket)
+        self._settle_crypt_state()
         self._upload_archive()
 
     def __enter__(self) -> "Antibrow":
@@ -770,6 +1051,7 @@ class AsyncAntibrow(_BaseSession):
             return
         self._closed = True
         loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._stop_live_view)
         try:
             cdp = await self.browser.new_browser_cdp_session()
             await cdp.send("Browser.close")
@@ -784,7 +1066,9 @@ class AsyncAntibrow(_BaseSession):
             await self._playwright.stop()
         except Exception:
             pass
-        # Packing and uploading are blocking; keep the event loop free.
+        # Revoking and uploading both block on the network; keep the loop free.
+        await loop.run_in_executor(None, _revoke_ticket, self._plan.proxy_ticket)
+        await loop.run_in_executor(None, self._settle_crypt_state)
         await loop.run_in_executor(None, self._upload_archive)
 
     async def __aenter__(self) -> "AsyncAntibrow":
@@ -949,6 +1233,8 @@ def launch(
     headless: bool = False,
     focus_window: bool = True,
     proxy: ProxyLike = None,
+    proxy_id: Optional[str] = None,
+    proxy_host: Optional[str] = None,
     geoip: bool = True,
     timezone: Optional[str] = None,
     api_key: Optional[str] = None,
@@ -961,11 +1247,17 @@ def launch(
     proxy_auth: str = "native",
     license_token: Optional[str] = None,
     license_provider: Optional[LicenseProvider] = None,
+    crypt_key: Optional[str] = None,
+    get_crypt_key: Optional[Callable[[], Optional[str]]] = None,
     update_kernel: bool = False,
     webauthn_capture: Optional[bool] = None,
     restore_tabs: bool = True,
     device_type: Optional[DeviceType] = None,
     real_fingerprint: bool = False,
+    canvas_noise: Optional[bool] = None,
+    api_log: Optional[str] = None,
+    live_view: "bool | LiveViewOptions" = False,
+    relay_url: Optional[str] = None,
     sync: Optional[bool] = None,
     temporary: bool = False,
     on_sync: Optional[SyncCallback] = None,
@@ -1014,6 +1306,24 @@ def launch(
             (legacy MV3 fallback for HTTP proxies).
         license_token: Use a pre-minted token instead of calling the server.
         license_provider: Callable returning a token - plug in your own issuer.
+        proxy_id: Use one of your managed proxies instead of your own. The
+            upstream endpoint is resolved server-side and never reaches this
+            machine; the launch activates the proxy, takes a short-lived ticket
+            and hands the kernel a ``relay://`` URL. Mutually exclusive with
+            ``proxy``. The ticket is revoked on ``close()``.
+        proxy_host: Relay host for ``proxy_id``. Defaults to whatever the server
+            names, then to ``proxy.antibrow.com``.
+        canvas_noise: ``False`` turns off the per-profile Canvas and WebGL
+            noise. On by default in the kernel; leaving this unset writes the
+            same fp-config as before the switch existed.
+        api_log: Log the fingerprint APIs pages touch to
+            ``<profile>/fp-api-log.jsonl``. ``"off"`` (default), ``"curated"``
+            or ``"all"``.
+        crypt_key: Pre-fetched encryption key, used instead of asking the server
+            for one. Ignored unless the profile directory says its data was
+            created under a key.
+        get_crypt_key: Where that key comes from when the profile needs one.
+            Defaults to this account's own profile endpoint.
         update_kernel: Check for a newer build of this profile's kernel and
             install it before launching.
         webauthn_capture: Keep newly registered passkeys in this profile's
@@ -1065,6 +1375,12 @@ def launch(
         proxy_auth=proxy_auth,
         license_token=license_token,
         license_provider=license_provider,
+        crypt_key=crypt_key,
+        get_crypt_key=get_crypt_key,
+        proxy_id=proxy_id,
+        proxy_host=proxy_host,
+        canvas_noise=canvas_noise,
+        api_log=api_log,
         update_kernel=update_kernel,
         webauthn_capture=webauthn_capture,
         restore_tabs=restore_tabs,
@@ -1092,8 +1408,20 @@ def launch(
         except Exception:
             pass
         kill_process_tree(process)
+        _revoke_ticket(plan.proxy_ticket)
         raise
-    return Antibrow(plan, process, endpoint, playwright, browser, context, reuse_initial_page)
+    session = Antibrow(plan, process, endpoint, playwright, browser, context, reuse_initial_page)
+    session._live_view = _start_live_view(
+        context,
+        session.page,
+        live_view=live_view,
+        relay_url=relay_url,
+        api_key=api_key,
+        server=server,
+        plan=plan,
+        notify=on_progress or (lambda _message: None),
+    )
+    return session
 
 
 async def launch_async(
@@ -1102,6 +1430,8 @@ async def launch_async(
     headless: bool = False,
     focus_window: bool = True,
     proxy: ProxyLike = None,
+    proxy_id: Optional[str] = None,
+    proxy_host: Optional[str] = None,
     geoip: bool = True,
     timezone: Optional[str] = None,
     api_key: Optional[str] = None,
@@ -1114,11 +1444,17 @@ async def launch_async(
     proxy_auth: str = "native",
     license_token: Optional[str] = None,
     license_provider: Optional[LicenseProvider] = None,
+    crypt_key: Optional[str] = None,
+    get_crypt_key: Optional[Callable[[], Optional[str]]] = None,
     update_kernel: bool = False,
     webauthn_capture: Optional[bool] = None,
     restore_tabs: bool = True,
     device_type: Optional[DeviceType] = None,
     real_fingerprint: bool = False,
+    canvas_noise: Optional[bool] = None,
+    api_log: Optional[str] = None,
+    live_view: "bool | LiveViewOptions" = False,
+    relay_url: Optional[str] = None,
     sync: Optional[bool] = None,
     temporary: bool = False,
     on_sync: Optional[SyncCallback] = None,
@@ -1158,6 +1494,12 @@ async def launch_async(
             proxy_auth=proxy_auth,
             license_token=license_token,
             license_provider=license_provider,
+            crypt_key=crypt_key,
+            get_crypt_key=get_crypt_key,
+            proxy_id=proxy_id,
+            proxy_host=proxy_host,
+            canvas_noise=canvas_noise,
+            api_log=api_log,
             update_kernel=update_kernel,
             webauthn_capture=webauthn_capture,
             restore_tabs=restore_tabs,
@@ -1187,8 +1529,27 @@ async def launch_async(
         except Exception:
             pass
         await loop.run_in_executor(None, kill_process_tree, process)
+        await loop.run_in_executor(None, _revoke_ticket, plan.proxy_ticket)
         raise
-    return AsyncAntibrow(plan, process, endpoint, playwright, browser, context, reuse_initial_page)
+    session = AsyncAntibrow(plan, process, endpoint, playwright, browser, context, reuse_initial_page)
+    if live_view:
+        # The stream drives a CDP session of its own and blocks on a socket, so
+        # it is built off the event loop like the other network work here.
+        page = await session.page()
+        session._live_view = await loop.run_in_executor(
+            None,
+            lambda: _start_live_view(
+                context,
+                page,
+                live_view=live_view,
+                relay_url=relay_url,
+                api_key=api_key,
+                server=server,
+                plan=plan,
+                notify=on_progress or (lambda _message: None),
+            ),
+        )
+    return session
 
 
 def launch_persistent_context(profile: str = DEFAULT_PROFILE, **kwargs: Any) -> "SyncBrowserContext":

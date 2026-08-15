@@ -3,6 +3,22 @@ import { encodePathSegment } from './url-path'
 
 const DEFAULT_SERVER = 'https://antibrow.com'
 
+function safeJson(text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return undefined
+  }
+}
+
+function parseProfileResponse(body: unknown): SyncedProfile {
+  const raw = body as SyncedProfile & { tags?: unknown }
+  let tags: string[] | undefined
+  const source = typeof raw.tags === 'string' ? safeJson(raw.tags) : raw.tags
+  if (Array.isArray(source)) tags = source.filter((t): t is string => typeof t === 'string')
+  return { ...raw, tags }
+}
+
 interface ProfileOptions {
   key: string
   server?: string
@@ -36,7 +52,7 @@ export async function createProfile(options: ProfileOptions): Promise<SyncedProf
     throw new Error(`Failed to create profile: HTTP ${response.status}. ${errorBody}`)
   }
 
-  return await response.json() as SyncedProfile
+  return parseProfileResponse(await response.json())
 }
 
 export interface UpdateProfileOptions {
@@ -65,7 +81,7 @@ export async function updateProfile(options: UpdateProfileOptions): Promise<Sync
     throw new Error(`Failed to update profile: HTTP ${response.status}. ${errorBody}`)
   }
 
-  return await response.json() as SyncedProfile
+  return parseProfileResponse(await response.json())
 }
 
 export async function getProfile(options: Omit<ProfileOptions, 'tags'>): Promise<SyncedProfile> {
@@ -78,7 +94,7 @@ export async function getProfile(options: Omit<ProfileOptions, 'tags'>): Promise
     const errorBody = await response.text().catch(() => '')
     throw new Error(`Failed to get profile: HTTP ${response.status}. ${errorBody}`)
   }
-  return await response.json() as SyncedProfile
+  return parseProfileResponse(await response.json())
 }
 
 export async function getOrCreateProfile(options: ProfileOptions): Promise<SyncedProfile> {
@@ -119,7 +135,7 @@ export async function syncPullProfiles(options: { key: string; server?: string; 
   }
 
   const body = await response.json() as Partial<ProfileSyncPage>
-  return { profiles: body.profiles ?? [], serverTime: body.serverTime ?? '' }
+  return { profiles: (body.profiles ?? []).map(parseProfileResponse), serverTime: body.serverTime ?? '' }
 }
 
 export async function deleteProfile(options: { key: string; server?: string; id?: string; name?: string }): Promise<void> {
@@ -158,7 +174,7 @@ export async function getProfileForLaunch(options: { key: string; server?: strin
     throw new Error(`Failed to fetch profile for launch: HTTP ${response.status}. ${errorBody}`)
   }
 
-  const synced = await response.json() as SyncedProfile
+  const synced = parseProfileResponse(await response.json())
   if (typeof synced.name !== 'string') throw new Error('Invalid profile response: missing "name" field')
   const out: LaunchProfile = { profile: synced.name }
   const c = synced.config

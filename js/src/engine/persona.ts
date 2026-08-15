@@ -587,6 +587,29 @@ export function readPersona(profileDir: string): Persona | undefined {
   }
 }
 
+export function writePersona(profileDir: string, persona: Persona): void {
+  fs.mkdirSync(profileDir, { recursive: true })
+  fs.writeFileSync(path.join(profileDir, PERSONA_FILE), JSON.stringify(persona, null, 2), 'utf8')
+}
+
+/**
+ * The same identity on another Chrome major. Only these three fields follow the
+ * kernel version - every seed, the GPU, the screen and the captured facts are
+ * version-independent, and re-rolling them would hand the site a brand new
+ * device behind the same cookies.
+ */
+export function withKernelVersion(persona: Persona, version: string): Persona {
+  const kernelVersion = normalizeKernelVersion(version)
+  const chromeMajor = parseInt(kernelVersion, 10)
+  if (!chromeMajor) throw new Error(`Malformed kernel version: ${version}`)
+  return {
+    ...persona,
+    kernelVersion,
+    chromeMajor,
+    ua: persona.ua.replace(/Chrome\/\d+/, `Chrome/${chromeMajor}`),
+  }
+}
+
 /** Load the persisted persona, or generate and persist a new one. */
 export function loadOrGeneratePersona(profileDir: string, defaultKernelVersion?: string, init?: PersonaInit): Persona {
   const file = path.join(profileDir, PERSONA_FILE)

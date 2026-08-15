@@ -39,6 +39,9 @@ That is a real Chromium — with a real device's fingerprint, its own persistent
 - [API reference](#api-reference)
 - [Profiles and fingerprints](#profiles-and-fingerprints)
 - [Proxies](#proxies)
+  - [Managed proxies](#managed-proxies) · [Your own proxy library](#your-own-proxy-library)
+- [Managing cloud profiles](#managing-cloud-profiles)
+- [Live View](#live-view)
 - [Framework integrations](#framework-integrations)
   - [Playwright](#playwright) · [Puppeteer / Node](#coming-from-puppeteer-or-the-node-sdk) · [browser-use](#browser-use) · [crawl4ai](#crawl4ai) · [Scrapling](#scrapling) · [MCP](#ai-agents-and-mcp) · [Selenium](#selenium)
 - [Running automation at scale](#running-automation-at-scale)
@@ -143,6 +146,7 @@ Starts the kernel and returns a handle that is ready to drive. Blocking (sync) A
 | `focus_window` | `bool` | `True` | Whether the new window takes focus. `False` opens it behind whatever is in front, so a launch does not interrupt you - the window is still there, just not focused. Not headless. Decided in the kernel, so install the latest kernel for the profile before relying on it. |
 | `headless` | `bool` | `False` | Hide the window. On Windows the window is moved off-screen instead of `--headless=new`, because headless Chromium has its own detectable fingerprint. On Linux use Xvfb (see [Docker](#docker)); on macOS it has no effect yet. |
 | `proxy` | `str \| dict` | `None` | `"http://user:pass@host:port"`, `"socks5://…"`, `"https://…"`, or Playwright's `{"server": …, "username": …, "password": …}`. |
+| `proxy_id` | `str` | `None` | Use one of your **managed** proxies instead. See [Managed proxies](#managed-proxies). Mutually exclusive with `proxy`. |
 | `geoip` | `bool` | `True` | Resolve the proxy's exit IP through the proxy and make timezone + WebRTC match it. No-op without a proxy. |
 | `timezone` | `str` | `None` | Force an IANA timezone (`"Europe/Berlin"`), overriding the geo lookup. |
 | `api_key` | `str` | env / key file | AntiBrow API key. |
@@ -160,6 +164,9 @@ Starts the kernel and returns a handle that is ready to drive. Blocking (sync) A
 | `real_fingerprint` | `bool` | `False` | Draw the identity from the fingerprint library on the server instead of generating one (paid plans). Also creation-time only. |
 | `sync` | `bool` | plan default | Cloud profile sync: restore before launching, save after closing. `None` follows the plan the key is on, `False` keeps the launch local, `True` attempts it regardless. |
 | `on_sync` | `callable` | `None` | Receives a `SyncEvent` as each transfer starts and finishes. |
+| `canvas_noise` | `bool` | `True` | Per-profile Canvas + WebGL noise. `False` turns both off; the identity itself does not change. |
+| `api_log` | `"off" \| "curated" \| "all"` | `"off"` | Log the fingerprint APIs pages touch to `<profile>/fp-api-log.jsonl`. |
+| `live_view` | `bool \| LiveViewOptions` | `False` | Stream the window to your dashboard. See [Live View](#live-view). |
 | `webauthn_capture` | `bool` | `True` | Keep new passkeys in the profile's portable store, so they travel with a sync or an export. `False` lets the browser ask where to save instead (phone / security key) and those stay on this device. |
 | `reuse_initial_page` | `bool` | `True` | Let the first `new_page()` return Chromium's initial blank tab instead of opening a second one. |
 | `timeout` | `float` | `120.0` | Seconds to wait for the browser to come up. |
@@ -216,7 +223,7 @@ plan    = prepare_launch(profile="p1")              # resolve everything, start 
 Every intentional failure derives from `AntibrowError`:
 
 ```python
-from antibrow import AntibrowError, ConcurrencyLimitError, LicenseError
+from antibrow import AntibrowError, ApiError, ConcurrencyLimitError, LicenseError
 
 try:
     browser = launch()
@@ -226,6 +233,19 @@ except LicenseError:
     ...   # no API key, or the server rejected it
 except AntibrowError:
     ...   # kernel download, unsupported platform, proxy, launch failure
+```
+
+`ApiError` covers the management calls in [Managing cloud
+profiles](#managing-cloud-profiles) and carries `.status` — the HTTP status, or
+`0` when the server could not be reached — so you can branch on it instead of
+matching the message:
+
+```python
+try:
+    profile = get_profile(api_key, name="shopper")
+except ApiError as error:
+    if error.status == 404:
+        ...
 ```
 
 ## Profiles and fingerprints
@@ -262,6 +282,20 @@ print(browser.persona.ua, browser.persona.gpu_renderer, browser.persona.screen_w
 ```
 
 Sanity checks worth running once: [creepjs](https://abrahamjuliot.github.io/creepjs/), [whoer.net](https://whoer.net), [browserleaks.com/canvas](https://browserleaks.com/canvas), [pixelscan.net](https://pixelscan.net).
+
+### Moving a profile to another Chrome major
+
+A profile's kernel is frozen when it is created, and the persona is what decides which kernel actually runs — so `launch(kernel_version=…)` cannot move an existing one. This can:
+
+```python
+from antibrow import set_profile_kernel_version
+
+set_profile_kernel_version("151", profile_name="shopper-01")
+```
+
+Only the version-derived fields move. The seeds, GPU, screen and everything else stay put, so the site sees the same device on a newer Chrome rather than a brand new one behind the same cookies. It applies on the next launch, and refuses a version the kernel catalogue does not know instead of quietly leaving the profile where it was.
+
+With cloud sync on, run it on the machine that used the profile last: `persona.json` travels in the archive, and a restore from the cloud brings back the version that archive was packed with.
 
 ### Android profiles
 
@@ -314,6 +348,123 @@ With `geoip=True` (the default), the exit IP is looked up *through* the proxy be
 browser = launch(profile="p1", proxy="socks5://user:pass@127.0.0.1:1080")
 print(browser.public_ip, browser.timezone)   # 203.0.113.7 America/Los_Angeles
 ```
+
+### Managed proxies
+
+Proxies the service holds for you. Your code only ever sees an id — the exit
+endpoint is resolved server-side and never reaches the machine running the
+browser:
+
+```python
+from antibrow import launch, list_proxies, claim_managed_proxy
+
+listing = list_proxies(api_key)
+print(listing.quota.remaining, [p.id for p in listing.proxies])
+
+proxy = claim_managed_proxy(api_key)
+browser = launch("shopper", proxy_id=proxy.id)
+```
+
+A launch activates the proxy (that is what checks ownership and meters the
+monthly quota), takes a **short-lived ticket**, and hands the kernel a
+`relay://` URL built from it. Your API key is never on the kernel's command
+line, and the ticket is handed back when the session closes.
+
+`release_managed_proxy` returns one to the pool and `swap_managed_proxy` trades
+it for another.
+
+### Your own proxy library
+
+Keep your own proxies on the server so every machine and the desktop app see the
+same list:
+
+```python
+from antibrow import ProxyConfig, create_user_proxy, list_user_proxies
+
+create_user_proxy(api_key, config=ProxyConfig(
+    type="SOCKS5", host="gate.example.com", port=1080,
+    username="u", password="p", label="US residential",
+))
+for proxy in list_user_proxies(api_key):
+    print(proxy.id, proxy.config.label)
+```
+
+## Managing cloud profiles
+
+Everything the dashboard can do to a cloud profile, this SDK can do too. These
+are management calls: unlike the best-effort sync inside a launch, they raise
+`ApiError` (which carries `.status`) when the server says no.
+
+```python
+from antibrow import (
+    ProfileConfig, create_profile, get_or_create_profile,
+    list_server_profiles, update_profile, delete_profile,
+    get_profile_for_launch, get_account, launch,
+)
+
+account = get_account(api_key)
+print(account.plan, f"{account.profile_count}/{account.profile_limit}")
+
+get_or_create_profile(api_key, name="shopper", tags=["ads"],
+                      config=ProfileConfig(group="ads", label="Shopper"))
+
+for profile in list_server_profiles(api_key):
+    print(profile.name, profile.updated_at)
+
+update_profile(api_key, id="shopper", config=ProfileConfig(note="daily run"))
+delete_profile(api_key, name="shopper")
+```
+
+`get_profile_for_launch` resolves a cloud profile into launch arguments,
+following its proxy reference for you:
+
+```python
+target = get_profile_for_launch(api_key, name="shopper")
+browser = launch(target.profile, proxy_id=target.proxy_id, proxy=target.proxy)
+```
+
+Pass `since=` to `sync_pull_profiles` for a delta: it returns the changes plus
+the server's clock to use as the next `since`, and deleted profiles come back
+carrying `deleted_at` so your own copy can follow.
+
+### Cookies and storage as plain values
+
+The profile archive is the browser's own binary state. `ProfileState` is the
+portable version — cookies and `localStorage` you can read, edit, and replay:
+
+```python
+from antibrow import ProfileStateCookie, upload_profile_state, download_profile_state
+
+upload_profile_state(api_key, name="shopper", cookies=[
+    ProfileStateCookie(name="sid", value="…", domain=".example.com"),
+])
+
+state = download_profile_state(api_key, name="shopper")   # None if never uploaded
+```
+
+## Live View
+
+Watch a running profile from your dashboard. The kernel produces a JPEG
+screencast and the SDK forwards it to the relay over one WebSocket; nothing
+drives the browser, it is a one-way copy of what the window already shows.
+
+```bash
+pip install "antibrow[liveview]"
+```
+
+```python
+from antibrow import launch, LiveViewOptions
+
+browser = launch("shopper", live_view=True)
+print(browser.live_view.view_url)          # open this to watch
+
+# or spend less bandwidth
+browser = launch("shopper", live_view=LiveViewOptions(quality=40, every_nth_frame=4))
+```
+
+The stream stops and the session is released on `close()`. A live view that
+cannot be registered or connected is reported through `on_progress` and the
+browser runs anyway — a browser you cannot watch still works.
 
 ## Framework integrations
 
@@ -516,6 +667,8 @@ docker run --rm -e ANTIBROW_API_KEY=$ANTIBROW_API_KEY \
 
 Mounting the cache volume keeps the kernel (and your profiles) between runs. The full image is in this repo's [`Dockerfile`](Dockerfile); see [`examples/10_docker/`](examples/10_docker/).
 
+Use one volume per architecture. Kernels are keyed by version, not by CPU (`<cache_dir>/kernels/<version>/`), so a volume shared between an amd64 host and an arm64 host hands the wrong binary to whichever one downloads second. An ARM instance is otherwise a normal target here rather than a workaround: if the rest of your fleet already runs on ARM, nothing forces you to keep an x86 machine around for the browser.
+
 ## CLI
 
 ```bash
@@ -596,6 +749,13 @@ open("shopper-01.fpprofile", "wb").write(data)          # export with the browse
 
 meta = import_profile_archive(data, profile_dir("shopper-02"))
 ```
+
+An encrypted profile is converted on a temporary copy first, so the archive opens
+without a key; that needs the profile's own key and kernel, so pass
+`api_key=`/`server=` and `cache_dir=`. The original directory is never touched,
+and if the conversion did not happen the export aborts rather than write a file
+nobody can open. A bound proxy url travels in the archive in full, password
+included - whoever you hand the file to gets that credential too.
 
 Live View remains Node-SDK and desktop only.
 

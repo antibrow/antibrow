@@ -35,6 +35,9 @@ _CONCURRENCY_PATTERN = re.compile(
 #: How long to wait for the browser to expose /json/version.
 DEFAULT_LAUNCH_TIMEOUT = 120.0
 
+#: What the browser calls itself in chrome://version and the About page.
+PRODUCT_NAME = "antibrow"
+
 
 def pick_free_port() -> int:
     """Ask the OS for a free localhost port, then hand it to the kernel."""
@@ -61,6 +64,7 @@ def build_launch_args(
     webauthn_capture: Optional[bool] = None,
     restore_tabs: bool = True,
     android_screen: Optional[Tuple[int, int]] = None,
+    crypt_key: Optional[str] = None,
     extra_args: Optional[Sequence[str]] = None,
 ) -> List[str]:
     """Assemble the kernel command line (without the executable itself).
@@ -77,6 +81,11 @@ def build_launch_args(
         "--fp-license={0}".format(license_token),
         "--user-data-dir={0}".format(user_data_dir),
         "--fp-address-label={0}".format(label),
+        # Renames the browser in chrome://version and the About page. Measured as
+        # invisible to pages: with and without it, navigator, the high-entropy UA
+        # hints and the Sec-CH-UA headers are byte-identical. Kernels that predate
+        # the flag ignore it.
+        "--fp-product-name={0}".format(PRODUCT_NAME),
         "--remote-debugging-port={0}".format(cdp_port),
         "--remote-allow-origins=*",
         "--no-first-run",
@@ -152,6 +161,13 @@ def build_launch_args(
         # retires the pair entirely.
         if not locale_from_config:
             args += ["-AppleLanguages", "({0})".format(language)]
+
+    if crypt_key:
+        # Cookies and saved passwords are encrypted under this key, which never
+        # touches the profile directory; the kernel keeps only a verifier there.
+        # Whether it belongs on this launch is decided by the profile directory
+        # (see resolve_crypt_key), never here.
+        args.append("--fp-crypt-key={0}".format(crypt_key))
 
     # The passkey store sits at the profile root, outside --user-data-dir, so an
     # export or a cloud sync can carry it to another machine.

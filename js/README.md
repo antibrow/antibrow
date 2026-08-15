@@ -52,12 +52,13 @@ npm install anti-detect-browser
 Get an API key from the dashboard at [antibrow.com](https://antibrow.com), then:
 
 ```ts
-import { AntiDetectBrowser } from 'anti-detect-browser'
+import { profile } from 'anti-detect-browser'
 
-const ab = new AntiDetectBrowser({ key: process.env.ANTI_DETECT_BROWSER_KEY })
+const key = process.env.ANTI_DETECT_BROWSER_KEY
 
 // Unlimited local profiles — just name one. It's created on disk on first use.
-const { page, browser } = await ab.launch({ profile: 'shopper-01' })
+const p = await profile({ key, name: 'shopper-01' })
+const { page, browser } = await p.launch()
 
 await page.goto('https://whoer.net')      // standard Playwright from here on
 console.log(await page.title())
@@ -67,14 +68,23 @@ await browser.close()
 With a managed residential proxy (timezone & geo follow it) and a visual label:
 
 ```ts
-const { page } = await ab.launch({
-  profile: 'shopper-02',
-  proxyId: 'px_xxxxxxxx',   // managed residential proxy — activated + injected for you
-  label: 'acct@shop.com',   // drawn by the kernel in front of the address bar
+const p = await profile({
+  key,
+  name: 'shopper-02',
+  proxy: { kind: 'managed' },   // claimed from the managed pool on first use, reused after
 })
+
+const { page } = await p.launch({ label: 'acct@shop.com' })   // drawn by the kernel in front of the address bar
 ```
 
-`launch()` resolves to `{ browser, context, page, profileDir }` — `context` and `page` are the real Playwright objects.
+The proxy is written down the first time, so later runs need only the name:
+
+```ts
+const same = await profile({ key, name: 'shopper-02' })
+await same.launch()                       // same exit IP, timezone and geo
+```
+
+`p.launch()` resolves to `{ browser, context, page, profileDir }` — `context` and `page` are the real Playwright objects.
 
 ## Android profiles
 
@@ -148,6 +158,20 @@ await ab.launch({
 
 If the machine is offline the check is skipped silently and the browser launches with the installed kernel — updates never block a launch. (The notice goes to stdout; the MCP server routes it to stderr to keep the JSON-RPC channel clean.)
 
+### Moving a profile to another Chrome major
+
+A profile's kernel is frozen when it is created, and the persona is what decides which kernel actually runs — so `launch({ kernelVersion })` cannot move an existing one. This can:
+
+```ts
+import { setProfileKernelVersion } from 'anti-detect-browser'
+
+await setProfileKernelVersion({ profileName: 'shopper-01', version: '151' })
+```
+
+Only the version-derived fields move. The seeds, GPU, screen and everything else stay put, so the site sees the same device on a newer Chrome rather than a brand new one behind the same cookies. It applies on the next launch, and refuses a version the kernel catalogue does not know instead of quietly leaving the profile where it was.
+
+With cloud sync on, run it on the machine that used the profile last: `persona.json` travels in the archive, and a restore from the cloud brings back the version that archive was packed with.
+
 ## Use it from an AI agent (MCP)
 
 Add it to your MCP client config and your agent gets a stealth browser:
@@ -203,6 +227,41 @@ Three things to know:
 
 Per launch, `temporary: false` puts one profile back in the managed tree.
 
+### Linux servers, including ARM
+
+The Linux kernel ships as two builds, x64 and arm64, and the SDK picks the one
+that matches the CPU it is running on. There is nothing to configure: an arm64
+Node process on Linux downloads the arm64 kernel, and the container sandbox
+flags (`--no-sandbox`, `--disable-dev-shm-usage` and the rest) are applied for
+you. An ARM instance is a normal target here, not a workaround, so a fleet that
+already runs on ARM does not need an x86 machine kept around for the browser.
+
+Headless is the one thing that changes on a server. Real headless Chromium has a
+fingerprint of its own, so the kernel runs headful against a virtual display
+instead:
+
+```dockerfile
+FROM node:22-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      xvfb libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
+      libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+      libgbm1 libasound2 libpango-1.0-0 libcairo2 fonts-liberation ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY package*.json ./
+RUN npm install --omit=dev
+COPY . .
+CMD ["xvfb-run", "-a", "node", "index.js"]
+```
+
+The same file builds under `linux/amd64` and `linux/arm64`.
+
+One thing to watch when you mount the cache as a volume: kernels are keyed by
+version, not by architecture (`~/.anti-detect-browser/kernels/<version>/`).
+Sharing one volume between an amd64 host and an arm64 host hands the wrong
+binary to whichever one downloads second, so give each architecture its own
+volume.
+
 ### Keeping the window out of your way
 
 A launch takes focus, which is a problem when the automation is meant to run
@@ -233,6 +292,74 @@ await ab.launch({ profile: 'main-account', sync: false })  // stay local
 
 `sync: true` and `temporary: true` are mutually exclusive; passing both throws.
 `sync: true` also throws when your plan does not include cloud sync.
+
+## The profile handle
+
+`launch()` takes a profile name and forgets it the moment the call returns.
+`profile()` gives you back a durable handle instead - it resolves (creating it
+on first use) the profile once, then remembers the proxy, group and tags you
+set on it, so a later `profile({ name })` with none of those options passed
+comes back exactly as it was left:
+
+```ts
+import { profile } from 'anti-detect-browser'
+
+const p = await profile({
+  key: process.env.ANTI_DETECT_BROWSER_KEY,
+  name: 'shop-01',
+  proxy: 'http://user:pass@host:8080',
+})
+const { page, browser } = await p.launch()
+await browser.close()
+
+// later, anywhere - the proxy comes back with the profile
+const same = await profile({ key: process.env.ANTI_DETECT_BROWSER_KEY, name: 'shop-01' })
+await same.launch()
+```
+
+`profile()` accepts everything the `AntiDetectBrowser` constructor does, plus
+`name` (required), `proxy`, `sync`, `temporary`, `tags`, `group`,
+`userDataDir` and, applying only the first time the profile is created (same
+as on `launch()`), `deviceType` and `realFingerprint`. `tags` and `group`
+follow the passed/omitted rule described below; `userDataDir` picks the
+profile's directory on whichever call passes it. The handle exposes `name`,
+`id`, `synced`, `dir` and `proxy` as read state, plus:
+
+- **`p.launch(options?)`** - starts the browser. Takes only session-shaped
+  options (`headless`, `label`, `focusWindow`, `liveView`,
+  `updateKernelBeforeLaunch`); passing `proxy`, `tags`, `group`, `sync` or
+  `temporary` here throws - those live on the profile, not on one launch.
+- **`p.setProxy(next)`** - rebinds the profile's proxy. A URL string binds
+  that proxy directly. `{ kind: 'managed' }` claims one from the managed pool
+  the first time it's used and reuses the same one on every call after that;
+  `{ kind: 'managed', managedProxyId }` binds a specific managed proxy by id.
+  `null` drops the binding and goes direct.
+- **`p.swapProxy()`** - trades the currently bound managed proxy for a
+  different exit. Throws if the profile isn't currently bound to a managed
+  proxy.
+- **`p.getGroup()` / `p.setGroup(group | null)`** and **`p.getTags()` /
+  `p.setTags(tags)`** - read and write the profile's group and tags directly.
+  `setGroup(null)` clears the group - it's the only way to remove one once
+  set. Passing `group` or `tags` to `profile()` follows the same rule as
+  `proxy`: pass it once and it's remembered from then on; leave it out and
+  whatever is already stored stays untouched.
+- **`p.enableSync()`** - moves a local-only profile into the cloud, uploading
+  its current on-disk state so another machine opening the same name gets a
+  real browser, not an empty shell.
+- **`p.dangerousDisconnectSync()`** - deletes the cloud copy and its archive.
+  **Irreversible.** The local directory is untouched and stays launchable -
+  its proxy, group and tags are pulled down into the local record first, so
+  the profile keeps its identity once the cloud row is gone.
+- **`p.export(filePath?)`** - packs the on-disk profile into a portable
+  `.fpprofile` archive (identity, cookies, storage, proxy binding). Reflects
+  whatever is on disk right now, so launch the profile at least once first -
+  a profile's identity isn't generated until its first launch, and exporting
+  before that throws. If a proxy url is bound, it's written into the archive
+  in full, password included - anyone you hand the file to gets that
+  credential along with the profile. An encrypted profile is converted on a
+  temporary copy first, so the archive opens without a key - that needs the
+  profile's kernel installed, and the export aborts (writing nothing) rather
+  than produce a file nobody can open.
 
 ## What you get
 

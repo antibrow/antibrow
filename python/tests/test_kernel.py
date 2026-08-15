@@ -222,8 +222,35 @@ def test_registration_is_idempotent():
     assert len([kv for kv in K.all_kernel_versions() if kv.version == "151"]) == 1
 
 
-def test_registered_versions_never_change_the_default():
-    K.register_kernel_versions(K.parse_kernel_manifest(MANIFEST))
+@pytest.fixture
+def preserve_registry():
+    """Save and restore around a test that registers versions of its own."""
+    saved = list(K._registered)
+    K._registered.clear()
+    yield
+    K._registered[:] = saved
+
+
+def _registered_asset(version, platform):
+    return [
+        K.KernelVersion(
+            version,
+            f"Chrome {version}",
+            {platform: K.KernelAsset(f"https://x/{version}.zip", "chrome")},
+        )
+    ]
+
+
+def test_default_kernel_follows_the_newest_catalogue_version(preserve_registry):
+    plat = K.current_platform()
+    K.register_kernel_versions(_registered_asset("901", plat))
+    assert K.default_kernel_version().version == "901"
+
+
+def test_a_version_missing_this_platform_never_becomes_the_default(preserve_registry):
+    plat = K.current_platform()
+    other = "darwin" if plat != "darwin" else "win32"
+    K.register_kernel_versions(_registered_asset("902", other))
     assert K.default_kernel_version().version == "150"
 
 

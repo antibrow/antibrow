@@ -200,7 +200,7 @@ export class AntiDetectBrowser {
     let archive: { downloadUrl?: string; uploadUrl?: string; version?: string } = {}
     let session: EngineSession
     try {
-      if (syncMode !== 'off' && await this.hasCloudProfile(profileName, syncMode, options.tags)) {
+      if (syncMode !== 'off' && await this.hasCloudProfile(profileName, syncMode, options.tags, options.group)) {
         archive = await getProfileArchiveUrls({
           key: this.key,
           server: this.server,
@@ -290,13 +290,16 @@ export class AntiDetectBrowser {
   /** Whether the server holds this profile; `create` mode makes it so.
    *  Cached per mode: a default launch's "no" must not answer for a later
    *  explicit `sync: true`, whose whole point is to create the row. */
-  private async hasCloudProfile(name: string, mode: SyncMode, tags?: string[]): Promise<boolean> {
+  private async hasCloudProfile(name: string, mode: SyncMode, tags?: string[], group?: string): Promise<boolean> {
     const cacheKey = `${mode}:${name}`
     const cached = this.syncedProfiles.get(cacheKey)
     if (cached !== undefined) return cached
     try {
       if (mode === 'create') {
-        await getOrCreateProfile({ key: this.key, server: this.server, name, tags })
+        await getOrCreateProfile({
+          key: this.key, server: this.server, name, tags,
+          config: group !== undefined ? { group } : undefined,
+        })
         // A created row is one the server now knows, so the default mode has to
         // stop answering "no" for this name.
         this.syncedProfiles.set(`existing:${name}`, true)
