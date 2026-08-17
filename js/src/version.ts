@@ -1,5 +1,5 @@
 /** Version gate: the client reads a static policy manifest and decides locally. */
-export const SDK_VERSION = '2.19.0'
+export const SDK_VERSION = '2.19.1'
 
 const DEFAULT_MANIFEST_URL = 'https://download.antibrow.com/app-versions.json'
 

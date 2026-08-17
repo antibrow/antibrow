@@ -4,6 +4,25 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.19.1] - 2026-08-15
+
+### Fixed
+
+- The MCP server's `close_browser` closed the Playwright context, which on a
+  CDP connection only drops the link and leaves the browser running. The leaked
+  process kept the profile's singleton lock, so the next `launch_browser` on
+  that profile ended with "Browser exited before CDP ready" as the new kernel
+  handed off to the old one and exited; it also held a concurrency slot for the
+  rest of the session, which a single-slot license never gets back. Sessions
+  now shut the browser down through the handle `launch()` returns, so the
+  process ends, cookies are flushed and any cloud archive is uploaded.
+- An agent host that ends the MCP session left every browser it had opened
+  running, the same way. Shutdown now closes all open sessions first, and it
+  runs on the end of the stdio transport as well as on a signal: a host that
+  disappears does not signal the server, it just stops being there and the
+  server's input closes behind it. One browser that refuses to exit no longer
+  keeps the others from being closed.
+
 ## [2.19.0] - 2026-08-15
 
 ### Fixed

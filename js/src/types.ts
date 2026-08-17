@@ -152,6 +152,8 @@ export interface ProfileSyncPage {
 
 export interface McpSession {
   id: string
+  /** Graceful kernel shutdown. Closing `context` only drops the CDP link. */
+  browser: { close(): Promise<void> }
   context: BrowserContext
   page: Page
   profileDir: string

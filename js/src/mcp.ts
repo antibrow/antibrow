@@ -20,6 +20,35 @@ import {
 import { rmSync } from 'node:fs'
 import type { McpSession } from './types'
 
+/**
+ * Ends a session for real. `context.close()` on a CDP connection only drops the
+ * link: the kernel stays up, keeps the profile's singleton lock - so the next
+ * launch of that profile exits with "Opening in existing browser session"
+ * before CDP is ready - and holds a machine-wide concurrency slot that a `mi=1`
+ * license never gets back.
+ */
+export async function closeMcpSession(
+  session: McpSession,
+  unregisterLive: (sessionKey: string) => Promise<void>,
+): Promise<void> {
+  if (session.liveViewStream) {
+    await session.liveViewStream.stop().catch(() => {})
+    await unregisterLive(session.id).catch(() => {})
+    session.liveViewStream = undefined
+  }
+  await session.browser.close()
+}
+
+/** Shutdown path: one wedged kernel must not keep the others alive. */
+export async function closeAllMcpSessions(
+  sessions: Map<string, McpSession>,
+  unregisterLive: (sessionKey: string) => Promise<void>,
+): Promise<void> {
+  const open = [...sessions.values()]
+  sessions.clear()
+  await Promise.allSettled(open.map((session) => closeMcpSession(session, unregisterLive)))
+}
+
 /** The tree a profile tool should act on. Anything but `true` means managed. */
 export function mcpRootOptions(args: Record<string, unknown> | undefined): { temporary: boolean } {
   return { temporary: args?.temporary === true }
@@ -47,6 +76,9 @@ export async function startMcpServer(): Promise<void> {
   const resolvedCacheDir = ensureCacheDir(cacheDir)
   const sessions = new Map<string, McpSession>()
   let sessionCounter = 0
+
+  const unregisterLive = (sessionKey: string) =>
+    unregisterLiveSession({ key: apiKey, server, sessionKey })
 
   const mcpServer = new Server(
     {
@@ -275,6 +307,7 @@ export async function startMcpServer(): Promise<void> {
           const sessionId = `session_${++sessionCounter}`
           const session: McpSession = {
             id: sessionId,
+            browser: result.browser,
             context: result.context,
             page: result.page,
             profileDir: result.profileDir,
@@ -304,15 +337,7 @@ export async function startMcpServer(): Promise<void> {
             }
           }
 
-          if (session.liveViewStream) {
-            await session.liveViewStream.stop().catch(() => {})
-            await unregisterLiveSession({
-              key: apiKey,
-              server,
-              sessionKey: session.id,
-            }).catch(() => {})
-          }
-          await session.context.close()
+          await closeMcpSession(session, unregisterLive)
           sessions.delete(sessionId)
 
           return {
@@ -536,15 +561,29 @@ export async function startMcpServer(): Promise<void> {
   await mcpServer.connect(transport)
 
 
-  process.on('SIGINT', async () => {
-    await mcpServer.close()
-    process.exit(0)
-  })
+  // A host that ends the session takes this process with it; without this every
+  // live kernel would outlive it, still holding its profile lock and license
+  // slot. The host usually does not signal us - it just goes away, and our
+  // stdin closes - so the end of the transport counts as a shutdown too.
+  let shuttingDown: Promise<void> | undefined
+  const shutdown = () => {
+    shuttingDown ??= (async () => {
+      await closeAllMcpSessions(sessions, unregisterLive)
+      await mcpServer.close().catch(() => {})
+      process.exit(0)
+    })()
+    return shuttingDown
+  }
 
-  process.on('SIGTERM', async () => {
-    await mcpServer.close()
-    process.exit(0)
-  })
+  process.on('SIGINT', shutdown)
+  process.on('SIGTERM', shutdown)
+  const serverOnClose = transport.onclose
+  transport.onclose = () => {
+    serverOnClose?.()
+    void shutdown()
+  }
+  process.stdin.on('end', shutdown)
+  process.stdin.on('close', shutdown)
 }
 
 function getSession(sessions: Map<string, McpSession>, sessionId: string): McpSession {
