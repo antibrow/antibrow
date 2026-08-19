@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -59,7 +59,8 @@ vi.mock('../src/engine', async () => ({
 }))
 
 const getOrCreateProfileSpy = vi.fn(async () => ({ id: 'profile-1', name: 'amazon-us', config: null }))
-const getProfileSpy = vi.fn(async () => ({ id: 'profile-1', name: 'amazon-us', config: null }))
+const cloudProfile = { id: 'profile-1', name: 'amazon-us', config: null }
+const getProfileSpy = vi.fn(async () => cloudProfile)
 const getProfileArchiveUrlsSpy = vi.fn(async () => ({ downloadUrl: 'https://r2/get', uploadUrl: 'https://r2/put' }))
 const getProfileArchiveUploadUrlSpy = vi.fn(async () => 'https://r2/put-fresh' as string | undefined)
 vi.mock('../src/api', () => ({
@@ -466,13 +467,15 @@ describe('launch sync behaviour', () => {
     expect(getProfileSpy).toHaveBeenCalledTimes(1) // the created row needs no re-probe
   })
 
-  it('retries creation after a transport failure under sync: true', async () => {
+  it('surfaces a transport failure under sync: true, then retries creation', async () => {
+    // `sync: true` is a promise about where the data goes. Handing back a
+    // browser that silently uploads nothing is worse than not launching.
     getOrCreateProfileSpy.mockRejectedValueOnce(new Error('fetch failed'))
     const ab = new AntiDetectBrowser({ key: 'adb_test' })
-    await ab.launch({ profile: 'brand-new', sync: true })
-    await ab.close()
+    await expect(ab.launch({ profile: 'brand-new', sync: true })).rejects.toThrow('fetch failed')
     expect(getProfileArchiveUrlsSpy).not.toHaveBeenCalled()
 
+    // Nothing was cached, so the next launch is a clean attempt.
     await ab.launch({ profile: 'brand-new', sync: true })
 
     expect(getOrCreateProfileSpy).toHaveBeenCalledTimes(2)
@@ -532,17 +535,18 @@ describe('local-only notice', () => {
     expect(notify).not.toHaveBeenCalled()
   })
 
-  it('stays silent on a transient probe failure', async () => {
+  it('warns on a probe failure rather than launching unsynced in silence', async () => {
     getProfileSpy.mockRejectedValueOnce(new Error('fetch failed'))
     const notify = vi.fn()
     const ab = new AntiDetectBrowser({ key: 'adb_test', notify })
     await ab.launch({ profile: 'amazon-us' })
 
-    expect(notify).not.toHaveBeenCalled()
+    expect(notify.mock.calls.map((c) => c[0]).join('\n')).toMatch(/without cloud sync/i)
   })
 
   it('fires only once across repeated launches of the same name', async () => {
     getProfileSpy.mockRejectedValue(new Error('Failed to get profile: HTTP 404. '))
+    onTestFinished(() => { getProfileSpy.mockReset(); getProfileSpy.mockResolvedValue(cloudProfile) })
     const notify = vi.fn()
     const ab = new AntiDetectBrowser({ key: 'adb_test', notify })
     await ab.launch({ profile: 'brand-new' })
@@ -674,5 +678,39 @@ describe('managed proxy ticket lifecycle', () => {
     const b = new AntiDetectBrowser({ key: 'adb_secretkey' })
     await b.launch({ profile: 'shop-02', proxy: 'http://u:p@1.2.3.4:8080' })
     expect(issueProxyTicket).not.toHaveBeenCalled()
+  })
+})
+
+// A throttled or unreachable server used to be indistinguishable from "this
+// profile does not exist in the cloud": the launch went ahead local-only, so
+// the session neither restored nor uploaded and the data was quietly lost.
+describe('cloud sync when the server cannot answer', () => {
+  it('hands the resolved cloud id to openProfile so the launch looks it up once', async () => {
+    const ab = new AntiDetectBrowser({ key: 'k' })
+    await ab.launch({ profile: 'amazon-us' })
+    expect(getProfileSpy).toHaveBeenCalledTimes(1)
+    expect(openProfileSpy.mock.calls[0][0]).toMatchObject({ serverProfileId: 'profile-1' })
+  })
+
+  const relaunch = async (ab: AntiDetectBrowser, profile: string) => {
+    const res = await ab.launch({ profile })
+    await res.browser.close()
+  }
+
+  it('does not cache the failure as "no cloud profile"', async () => {
+    getProfileSpy.mockRejectedValueOnce(new Error('Failed to get profile: HTTP 429.'))
+    const ab = new AntiDetectBrowser({ key: 'k', notify: vi.fn() })
+    await relaunch(ab, 'amazon-us')
+    await relaunch(ab, 'amazon-us')
+    // The second launch has to ask again, or one 429 turns a long-lived process
+    // local-only for the rest of its life.
+    expect(getProfileSpy).toHaveBeenCalledTimes(2)
+    expect(getProfileArchiveUrlsSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('fails the launch when sync was explicitly requested', async () => {
+    getOrCreateProfileSpy.mockRejectedValueOnce(new Error('Failed to get profile: HTTP 429.'))
+    const ab = new AntiDetectBrowser({ key: 'k', notify: vi.fn() })
+    await expect(ab.launch({ profile: 'amazon-us', sync: true })).rejects.toThrow(/HTTP 429/)
   })
 })

@@ -6,7 +6,9 @@ import pytest
 
 from antibrow.persona import (
     ECT_RTT_THRESHOLDS,
+    CapturedFacts,
     derive_connection,
+    device_to_persona_parts,
     generate_persona,
     persona_to_fp_config,
 )
@@ -69,10 +71,15 @@ def test_stable_per_seed_and_varies_across_seeds():
 
 
 def test_fp_config_no_longer_emits_the_old_constant():
-    persona = generate_persona(150, "150.0.0.0")
-    cfg = persona_to_fp_config(persona, label="p", timezone="UTC")
-    assert cfg["connection"] != {"effectiveType": "4g", "rtt": 100, "downlink": 10}
-    assert cfg["connection"] == derive_connection(persona.seed)
+    # Fixed seeds, not generated ones: rtt lands on a 25ms grid that includes
+    # 100 and downlink tops out at exactly 10, so a random persona hits the old
+    # constant roughly once in three thousand runs and turns this into a flake.
+    for seed in ("0011223344556677", "ffeeddccbbaa9988", "a1b2c3d4e5f60718"):
+        persona = generate_persona(150, "150.0.0.0")
+        persona.seed = seed
+        cfg = persona_to_fp_config(persona, label="p", timezone="UTC")
+        assert cfg["connection"] != {"effectiveType": "4g", "rtt": 100, "downlink": 10}
+        assert cfg["connection"] == derive_connection(seed)
 
 
 def test_fp_config_uses_the_measured_rtt():
@@ -134,3 +141,68 @@ def test_matches_known_golden_values_for_fixed_seeds(seed, unmeasured, measured_
 @pytest.mark.parametrize("rtt_ms", [462.5, 462.7])
 def test_matches_known_golden_values_for_a_fractional_rtt(seed, expected, rtt_ms):
     assert derive_connection(seed, rtt_ms) == expected
+
+
+# One real Windows box out of the device library. rtt 250 / 4g / 4.5 is a trio
+# Chrome itself emitted, so it hangs together; the point of these tests is that
+# nothing ever ships two thirds of it beside a third from somewhere else.
+# Cross-SDK contract with connection.test.ts's "a replayed device's connection".
+CORPUS_DEVICE = {
+    "os": "windows",
+    "ua": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
+    ),
+    "navigator": {"hardwareConcurrency": 16, "deviceMemory": 32},
+    "screen": {"width": 1920, "height": 1080, "devicePixelRatio": 1},
+    "connection": {"effectiveType": "4g", "rtt": 250, "downlink": 4.5, "type": "wifi"},
+    "webgl": {"unmaskedVendor": "Google Inc. (Intel)", "unmaskedRenderer": "ANGLE (Intel, …)"},
+}
+
+
+@pytest.fixture()
+def corpus_captured():
+    return device_to_persona_parts(CORPUS_DEVICE, 151)["captured"]
+
+
+def test_replayed_device_carries_the_whole_trio(corpus_captured):
+    assert corpus_captured.connection_effective_type == "4g"
+    assert corpus_captured.connection_rtt == 250
+    assert corpus_captured.connection_downlink == 4.5
+
+
+def test_replays_the_captured_trio_verbatim_when_nothing_measured(corpus_captured):
+    assert derive_connection("0011223344556677", None, corpus_captured) == {
+        "effectiveType": "4g",
+        "rtt": 250,
+        "downlink": 4.5,
+    }
+
+
+def test_captured_trio_is_discarded_whole_once_rtt_is_measured(corpus_captured):
+    # The bug: effectiveType came from the corpus machine while rtt came from the
+    # proxy probe, shipping '4g' beside rtt 400 - a contradiction Chrome's own
+    # thresholds rule out, and one a site can catch by timing us itself.
+    got = derive_connection("0011223344556677", 400, corpus_captured)
+    assert got == derive_connection("0011223344556677", 400)
+    assert got["effectiveType"] == "3g"
+
+
+def test_never_mixes_when_only_part_of_the_trio_was_captured():
+    # What every persona.json written before the trio travelled together looks
+    # like. Half a reading is worse than none: derive all three instead.
+    partial = CapturedFacts(connection_effective_type="4g")
+    assert derive_connection("0011223344556677", None, partial) == derive_connection(
+        "0011223344556677"
+    )
+
+
+def test_effective_type_still_agrees_with_rtt_through_fp_config():
+    persona = generate_persona(151, "151", device=CORPUS_DEVICE)
+    cfg = persona_to_fp_config(persona, label="p", timezone="UTC", rtt_ms=400)
+    connection = cfg["connection"]
+    assert connection["rtt"] == 400
+    assert connection["effectiveType"] == "3g"
+    assert connection["downlink"] <= 1.5
+    # The medium is not latency-derived, so it still comes from the corpus row.
+    assert connection["type"] == "wifi"

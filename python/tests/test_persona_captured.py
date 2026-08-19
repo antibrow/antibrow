@@ -114,3 +114,19 @@ def test_empty_string_and_false_are_real_captured_values_not_unset():
     assert ua_data["bitness"] == ""
     assert ua_data["model"] == ""
     assert ua_data["mobile"] is False
+
+
+def test_capturedwebgl_carries_the_extension_list_through():
+    """Without this the numeric GL face came from the captured machine while
+    the extension list still described the host GPU."""
+    persona = desktop_persona()
+    persona.captured_webgl = {"extensions": ["EXT_sRGB", "WEBGL_debug_renderer_info"]}
+    webgl = persona_to_fp_config(persona, label="x", timezone="UTC")["webgl"]
+    assert webgl["extensions"] == {"allow": ["EXT_sRGB", "WEBGL_debug_renderer_info"]}
+
+
+def test_capturedwebgl_leaves_extensions_alone_when_the_capture_has_none():
+    persona = desktop_persona()
+    persona.captured_webgl = {"params": {"3379": 16384}}
+    webgl = persona_to_fp_config(persona, label="x", timezone="UTC")["webgl"]
+    assert "extensions" not in webgl

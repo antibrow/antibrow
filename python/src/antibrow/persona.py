@@ -18,6 +18,7 @@ import math
 import random
 import re
 import secrets
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
@@ -346,7 +347,10 @@ def device_to_persona_parts(
         color_depth=screen.get("colorDepth"),
         avail_w=screen.get("availWidth"),
         avail_h=screen.get("availHeight"),
+        # The trio travels together or not at all - see derive_connection.
         connection_effective_type=connection.get("effectiveType"),
+        connection_rtt=connection.get("rtt"),
+        connection_downlink=connection.get("downlink"),
         connection_type=connection.get("type"),
         # The corpus carries `None` for "no cap reported", which is already
         # CapturedFacts' own "not captured" - nothing to collapse here.
@@ -464,6 +468,12 @@ def captured_webgl_config(captured: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         }
         if precision:
             out["shaderPrecision"] = precision
+    # Whitelist, not a replacement: the kernel intersects it with what the host
+    # GPU really supports. Leaving it out kept the extension list host-shaped
+    # while every other GL fact came from the captured machine.
+    extensions = captured.get("extensions")
+    if isinstance(extensions, list) and extensions:
+        out["extensions"] = {"allow": extensions}
     return out
 
 
@@ -504,7 +514,11 @@ def webgpu_identity(renderer: str) -> Tuple[str, str]:
 ECT_RTT_THRESHOLDS: Dict[str, int] = {"four_g": 272, "three_g": 1420, "two_g": 2010}
 
 
-def derive_connection(seed: str, rtt_ms: Optional[float] = None) -> Dict[str, Any]:
+def derive_connection(
+    seed: str,
+    rtt_ms: Optional[float] = None,
+    captured: Optional["CapturedFacts"] = None,
+) -> Dict[str, Any]:
     """Build a self-consistent navigator.connection.
 
     Chrome rounds rtt to 25ms and downlink to 25kbps (0.025Mbps) and derives
@@ -522,6 +536,24 @@ def derive_connection(seed: str, rtt_ms: Optional[float] = None) -> Dict[str, An
     # and raises OverflowError, where JS's Number.isFinite degrades it to the
     # seed-derived fallback like any other non-measurement.
     measured = rtt_ms is not None and math.isfinite(rtt_ms) and rtt_ms > 0
+    # A captured trio is one real Chrome's own output, so it already agrees with
+    # itself - replayed whole rather than re-derived, because Chrome weighs
+    # downlink as well as rtt and our rtt-only approximation would "correct" a
+    # true reading into a false one. Only with nothing measured: once the proxy
+    # probe knows the real latency, a site can measure it too, and that latency
+    # is this connection's, not the corpus machine's.
+    if (
+        not measured
+        and captured is not None
+        and captured.connection_effective_type
+        and captured.connection_rtt is not None
+        and captured.connection_downlink is not None
+    ):
+        return {
+            "effectiveType": captured.connection_effective_type,
+            "rtt": captured.connection_rtt,
+            "downlink": captured.connection_downlink,
+        }
     # Unmeasured: stay under the 4g threshold so the trio holds, but vary per
     # persona - this used to be one global constant.
     raw = float(rtt_ms) if measured else 50 + (seed_sum % 9) * 25
@@ -595,13 +627,75 @@ _WINDOWS_ALLOW_FONTS: Sequence[str] = (
 # The stock AOSP family names. Known gap: no desktop host ships Roboto or
 # Noto, and an allow-list only subtracts - it cannot conjure a font. What it
 # does buy is keeping host-only families (Segoe UI, Helvetica Neue, Menlo)
-# out of the enumerable set. A replayed device overrides this with what that
-# phone really resolved, which on Android is the alias set (Arial, ...).
+# out of the enumerable set. A replayed device adds the names that phone really
+# resolved, which on Android is the alias set (Arial, ...) - see _merge_fonts.
 _ANDROID_ALLOW_FONTS: Sequence[str] = (
     "Roboto", "Roboto Condensed", "Roboto Mono", "Noto Sans", "Noto Serif",
     "Noto Sans Mono", "Noto Color Emoji", "Droid Sans Mono",
     "Carrois Gothic SC", "Coming Soon", "Cutive Mono", "Dancing Script",
 )
+
+# Windows-exclusive families with no stand-in. On a non-Windows host they can
+# never be rendered, so listing them says "installed" on the enumerable side
+# while the measured side says "absent" - two channels of the same browser
+# contradicting each other, which is worse than a Windows box that simply lacks
+# a few optional fonts. Membership is a property of the family, not of this
+# machine: one another desktop OS might ship (Times New Roman, Symbol) stays on,
+# even where a given host turns out not to have it.
+_WINDOWS_ONLY_FONTS = frozenset(
+    {
+        "bahnschrift", "candara", "consolas", "constantia", "corbel", "ebrima",
+        "franklin gothic medium", "gabriola", "gadugi", "ink free",
+        "javanese text", "leelawadee ui", "lucida console",
+        "lucida sans unicode", "mv boli", "marlett", "palatino linotype",
+        "segoe print", "segoe script", "segoe ui emoji", "sitka", "sylfaen",
+        "symbol",
+    }
+)
+
+# Metric-compatible stand-ins the kernel ships and matches behind the original
+# family name. Windows-only families do not exist on another host, so
+# ``measureText`` returns one shared fallback width for all of them - the same
+# width a family nobody ever installed gets, which on a real Windows machine
+# never happens. The stand-ins stay out of ``allow``, so none of them
+# enumerates. Keys must be lowercase and trimmed: that is what the kernel
+# looks up.
+_WINDOWS_FONT_ALIAS: Dict[str, str] = {
+    "segoe ui": "Selawik",
+    "segoe ui semibold": "Selawik Semibold",
+    "segoe ui symbol": "Selawik",
+    "calibri": "Carlito",
+    "cambria": "Caladea",
+    "cambria math": "Caladea",
+    # Metrically identical by design, which is what the Liberation family was
+    # drawn for. Without them the three most basic Windows families are absent
+    # on any host that lacks them, and ``serif`` collapses with them.
+    "times new roman": "Liberation Serif",
+    "arial": "Liberation Sans",
+    "courier new": "Liberation Mono",
+}
+
+
+def _drop_unrenderable(fonts: Sequence[str]) -> List[str]:
+    """Drop what this host can never render; a stand-in exempts a family."""
+    return [
+        f
+        for f in fonts
+        if f.lower() not in _WINDOWS_ONLY_FONTS or f.lower() in _WINDOWS_FONT_ALIAS
+    ]
+
+
+def _merge_fonts(base: Sequence[str], extra: Sequence[str]) -> List[str]:
+    """Case-insensitive union, first spelling wins."""
+    out = list(base)
+    seen = {font.lower() for font in base}
+    for font in extra:
+        key = font.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(font)
+    return out
 
 
 def persona_to_fp_config(
@@ -614,6 +708,7 @@ def persona_to_fp_config(
     canvas_noise: Optional[bool] = None,
     api_log: Optional[str] = None,
     api_log_path: Optional[str] = None,
+    host_platform: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Serialize a persona into the kernel's ``fp-config.json`` schema (version 1).
 
@@ -702,16 +797,38 @@ def persona_to_fp_config(
             "math": "Noto Serif",
         }
     else:
+        # Every family names a second, more widely installed choice. The
+        # first wins wherever it exists; without the fallback a host missing it
+        # drops the whole generic onto the fallback font, where it measures
+        # exactly like a family nobody has - the contradiction being avoided.
         generic_fonts = {
-            "standard": "Times New Roman",
-            "serif": "Times New Roman",
-            "sansSerif": "Arial",
-            "cursive": "Comic Sans MS",
-            "fantasy": "Impact",
+            "standard": "Times New Roman,Georgia",
+            "serif": "Times New Roman,Georgia",
+            "sansSerif": "Arial,Verdana",
+            "cursive": "Comic Sans MS,Trebuchet MS",
+            "fantasy": "Impact,Arial Black",
             "monospace": "Consolas,Courier New",
-            "math": "Cambria Math,Times New Roman",
+            "math": "Cambria Math,Times New Roman,Georgia",
         }
-    allow_fonts = list(_ANDROID_ALLOW_FONTS) if android else list(_WINDOWS_ALLOW_FONTS)
+    # Only when the host is not the OS the persona claims: on Windows those
+    # families are the real thing, aliasing them would substitute a stand-in for
+    # a font that is present, and nothing needs dropping.
+    foreign_host = not android and (host_platform or sys.platform) != "win32"
+    if android:
+        allow_fonts = list(_ANDROID_ALLOW_FONTS)
+    elif foreign_host:
+        allow_fonts = _drop_unrenderable(_WINDOWS_ALLOW_FONTS)
+    else:
+        allow_fonts = list(_WINDOWS_ALLOW_FONTS)
+    fonts: Dict[str, Any] = {
+        "uiFont": ui_font,
+        "keepCjk": 0,
+        "block": [],
+        "allow": allow_fonts,
+        "generic": generic_fonts,
+    }
+    if foreign_host:
+        fonts["alias"] = dict(_WINDOWS_FONT_ALIAS)
 
     config: Dict[str, Any] = {
         "version": 1,
@@ -744,19 +861,13 @@ def persona_to_fp_config(
         "audio": {"seed": persona.audio_seed},
         "domrect": {"seed": persona.domrect_seed},
         "webrtc": webrtc,
-        "connection": derive_connection(persona.seed, rtt_ms),
+        "connection": derive_connection(persona.seed, rtt_ms, persona.captured),
         "prefersColorScheme": color_scheme,
         # ``generic`` maps the five CSS generic families plus 'standard' so
         # they resolve to a platform font instead of the host's own generic
         # settings. monospace and math list comma-separated fallbacks so a
         # host missing the first still lands on a non-host font.
-        "fonts": {
-            "uiFont": ui_font,
-            "keepCjk": 0,
-            "block": [],
-            "allow": allow_fonts,
-            "generic": generic_fonts,
-        },
+        "fonts": fonts,
         "apilog": {"enabled": mode != "off", "mode": mode, "path": api_log_path or ""},
     }
 
@@ -807,12 +918,9 @@ def persona_to_fp_config(
         if cap.prefers_color_scheme:
             config["prefersColorScheme"] = cap.prefers_color_scheme
         connection = config["connection"]
-        if cap.connection_effective_type:
-            connection["effectiveType"] = cap.connection_effective_type
-        if cap.connection_rtt is not None:
-            connection["rtt"] = cap.connection_rtt
-        if cap.connection_downlink is not None:
-            connection["downlink"] = cap.connection_downlink
+        # effectiveType/rtt/downlink are deliberately absent here: overriding one
+        # third of the trio is what produced '4g' beside rtt 400.
+        # derive_connection owns all three.
         if cap.connection_type:
             connection["type"] = cap.connection_type
         if cap.connection_downlink_max is not None:
@@ -823,7 +931,18 @@ def persona_to_fp_config(
         if cap.audio_max_channel_count:
             audio["maxChannelCount"] = cap.audio_max_channel_count
         if cap.fonts:
-            config["fonts"]["allow"] = cap.fonts
+            # A phone reports the names its font config aliases (Arial,
+            # Helvetica, Georgia), not the families behind them, so replaying
+            # the capture alone drops Roboto and the Notos - and with them
+            # sans-serif, serif and monospace, which then all collapse onto one
+            # fallback width. A desktop capture names real files, so it
+            # replaces outright.
+            if android:
+                config["fonts"]["allow"] = _merge_fonts(_ANDROID_ALLOW_FONTS, cap.fonts)
+            elif foreign_host:
+                config["fonts"]["allow"] = _drop_unrenderable(cap.fonts)
+            else:
+                config["fonts"]["allow"] = list(cap.fonts)
         if cap.webgl_extensions:
             config["webgl"]["extensions"] = {"allow": cap.webgl_extensions}
 

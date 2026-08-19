@@ -70,6 +70,8 @@ export interface BuildOpenProfileOptionsInput {
   cacheDir?: string
   profileDir?: string
   temporary: boolean
+  /** Cloud row id already fetched by the sync probe, so the engine skips its own GET. */
+  serverProfileId?: string
   options: LaunchOptions
 }
 
@@ -80,7 +82,7 @@ export interface BuildOpenProfileOptionsInput {
  * deterministic inputs and assert on the object it returns.
  */
 export function buildOpenProfileOptions(input: BuildOpenProfileOptionsInput): OpenProfileOptions {
-  const { key, server, profileName, licenseToken, proxyUrl, archive, getArchivePutUrl, cacheDir, profileDir, temporary, options } = input
+  const { key, server, profileName, licenseToken, proxyUrl, archive, getArchivePutUrl, cacheDir, profileDir, temporary, serverProfileId, options } = input
   return {
     key,
     server,
@@ -96,12 +98,19 @@ export function buildOpenProfileOptions(input: BuildOpenProfileOptionsInput): Op
     cacheDir: profileDir ? undefined : cacheDir,
     profileDir,
     temporary,
+    serverProfileId,
     headless: options.headless,
     focusWindow: options.focusWindow,
     updateKernelBeforeLaunch: options.updateKernelBeforeLaunch,
     deviceType: options.deviceType,
     realFingerprint: options.realFingerprint,
     label: options.label,
+    // Per-profile kernel switches. Undefined leaves the kernel on its defaults,
+    // so the fp-config output is unchanged for callers that name none.
+    apiLog: options.apiLog,
+    canvasNoise: options.canvasNoise,
+    webauthnCapture: options.webauthnCapture,
+    restoreTabs: options.restoreTabs,
   }
 }
 
@@ -124,6 +133,8 @@ export class AntiDetectBrowser {
   private versionWarned = false
   /** Sync conclusion per `<mode>:<name>`, so a relaunch loop probes the server once. */
   private syncedProfiles: Map<string, boolean> = new Map()
+  /** Cloud row id per name, so the engine does not GET the same profile again. */
+  private cloudProfileIds: Map<string, string> = new Map()
   private kernelUpdateChecked = false
   /** Local-only notice already printed for this name, so a relaunch loop prints it once. */
   private localOnlyNotified: Set<string> = new Set()
@@ -221,6 +232,7 @@ export class AntiDetectBrowser {
         cacheDir: this.cacheDir,
         profileDir: options.userDataDir,
         temporary,
+        serverProfileId: this.cloudProfileIds.get(profileName),
         options,
       }))
     } catch (error) {
@@ -296,15 +308,17 @@ export class AntiDetectBrowser {
     if (cached !== undefined) return cached
     try {
       if (mode === 'create') {
-        await getOrCreateProfile({
+        const row = await getOrCreateProfile({
           key: this.key, server: this.server, name, tags,
           config: group !== undefined ? { group } : undefined,
         })
+        if (row.id) this.cloudProfileIds.set(name, row.id)
         // A created row is one the server now knows, so the default mode has to
         // stop answering "no" for this name.
         this.syncedProfiles.set(`existing:${name}`, true)
       } else {
-        await getProfile({ key: this.key, server: this.server, name })
+        const row = await getProfile({ key: this.key, server: this.server, name })
+        if (row.id) this.cloudProfileIds.set(name, row.id)
       }
       this.syncedProfiles.set(cacheKey, true)
       return true
@@ -316,9 +330,28 @@ export class AntiDetectBrowser {
       if (definitive && mode !== 'create') {
         this.syncedProfiles.set(cacheKey, false)
         this.notifyLocalOnly(name)
+        return false
       }
+      // `create` mode is an explicit `sync: true`. Launching anyway would hand
+      // back a browser that looks synced and uploads nothing - the failure the
+      // caller most needs to hear about.
+      if (mode === 'create') throw error
+      // Anything else is "we could not find out", not "there is no cloud copy".
+      // Left silent, a throttled launch runs a full session and discards it.
+      this.notifyUnreachable(name, error)
       return false
     }
+  }
+
+  /** Once per name per process, same as the local-only notice. */
+  private notifyUnreachable(name: string, error: unknown): void {
+    if (this.localOnlyNotified.has(name)) return
+    this.localOnlyNotified.add(name)
+    const reason = error instanceof Error ? error.message : String(error)
+    this.notify(
+      `[anti-detect-browser] Could not reach the cloud profile "${name}" (${reason}); ` +
+      'launching without cloud sync - this session will not be restored or uploaded.',
+    )
   }
 
   /** Once per name per process: a default launch of a name the server has

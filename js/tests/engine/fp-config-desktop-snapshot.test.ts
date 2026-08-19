@@ -22,7 +22,10 @@ const DESKTOP: Persona = {
 }
 
 describe('desktop fp-config is frozen', () => {
-  const config = personaToFpConfig(DESKTOP, { label: 'demo', timezone: 'America/New_York' })
+  // Pinned to a Windows host: the font aliases only go out when the host is not
+  // the OS the persona claims, and without this the snapshot would say
+  // something different on every CI runner.
+  const config = personaToFpConfig(DESKTOP, { label: 'demo', timezone: 'America/New_York', hostPlatform: 'win32' })
 
   it('never grows a device block', () => {
     expect('device' in config).toBe(false)
@@ -109,13 +112,13 @@ describe('desktop fp-config is frozen', () => {
       'Wingdings',
     ])
     expect(fonts.generic).toEqual({
-      standard: 'Times New Roman',
-      serif: 'Times New Roman',
-      sansSerif: 'Arial',
-      cursive: 'Comic Sans MS',
-      fantasy: 'Impact',
+      standard: 'Times New Roman,Georgia',
+      serif: 'Times New Roman,Georgia',
+      sansSerif: 'Arial,Verdana',
+      cursive: 'Comic Sans MS,Trebuchet MS',
+      fantasy: 'Impact,Arial Black',
       monospace: 'Consolas,Courier New',
-      math: 'Cambria Math,Times New Roman',
+      math: 'Cambria Math,Times New Roman,Georgia',
     })
   })
 
@@ -198,13 +201,13 @@ describe('desktop fp-config is frozen', () => {
           ],
           "block": [],
           "generic": {
-            "cursive": "Comic Sans MS",
-            "fantasy": "Impact",
-            "math": "Cambria Math,Times New Roman",
+            "cursive": "Comic Sans MS,Trebuchet MS",
+            "fantasy": "Impact,Arial Black",
+            "math": "Cambria Math,Times New Roman,Georgia",
             "monospace": "Consolas,Courier New",
-            "sansSerif": "Arial",
-            "serif": "Times New Roman",
-            "standard": "Times New Roman",
+            "sansSerif": "Arial,Verdana",
+            "serif": "Times New Roman,Georgia",
+            "standard": "Times New Roman,Georgia",
           },
           "keepCjk": 0,
           "uiFont": "Segoe UI",

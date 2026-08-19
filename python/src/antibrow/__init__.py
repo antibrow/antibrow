@@ -20,7 +20,7 @@ See https://antibrow.com and the project README for the full API.
 
 from __future__ import annotations
 
-__version__ = "0.14.1"
+__version__ = "0.15.0"
 
 from .api import (
     DEFAULT_RELAY_HOST,
@@ -79,6 +79,7 @@ from .browser import (
     launch_persistent_context,
     launch_persistent_context_async,
     prepare_launch,
+    reconcile_kernel_version,
     set_profile_kernel_version,
 )
 from .config import (
@@ -268,6 +269,7 @@ __all__ = [
     "read_persona",
     "write_persona",
     "with_kernel_version",
+    "reconcile_kernel_version",
     "set_profile_kernel_version",
     "persona_to_fp_config",
     "list_profiles",

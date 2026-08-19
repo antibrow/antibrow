@@ -4,6 +4,69 @@ All notable changes to the `antibrow` Python SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.15.0] - 2026-08-19
+
+### Added
+
+- `persona_to_fp_config(host_platform=...)` overrides the host the font
+  decisions are made for. It defaults to this machine.
+
+### Changed
+
+- `launch(sync=True)` now fails when the server cannot confirm the profile,
+  instead of launching without cloud sync. A launch that did not ask for sync
+  still proceeds, and now reports that the session will not be restored or
+  uploaded.
+- `set_profile_kernel_version` commits the switch to the profile's cloud copy
+  when given its `archive`, and rolls back if that upload fails. Without
+  `archive` the switch stays local to that directory, as before.
+- A launch whose `kernel_version` differs from the profile's own now moves the
+  profile to that version instead of ignoring it, keeping its identity. A move
+  that is not allowed is reported and the launch continues on the current
+  version.
+
+### Fixed
+
+- Cloud API calls retry on throttling and transient failures, honouring
+  `Retry-After`.
+- A Windows profile on a macOS or Linux host now measures text the way Windows
+  does. The Windows-only families are absent on those hosts, so every one of
+  them measured like a font nobody has installed - a contradiction sites check
+  for. Needs a browser version that ships the stand-in families; older ones
+  ignore the request and behave as before. Windows hosts are unchanged.
+- That same profile no longer offers the families such a host can never render
+  at all: they were enumerable but unmeasurable, which is one browser
+  contradicting itself. Families with stand-ins are kept, and a Windows host
+  still offers the full set.
+- Each CSS generic family (`serif`, `sans-serif`, `monospace`, `cursive`,
+  `fantasy`) now names a fallback family, so a generic whose first choice is
+  unavailable no longer collapses onto the width of a family nobody has.
+- An Android profile keeps the stock Android font families instead of only the
+  ones its captured device reported, so `sans-serif`, `serif` and `monospace`
+  no longer resolve to one and the same font.
+- A profile whose identity came from a captured device now reports that
+  device's WebGL extensions instead of the host GPU's.
+
+### Removed
+
+- `KERNEL_PIN_FILE`, `read_kernel_pin`, `write_kernel_pin`, `clear_kernel_pin`,
+  `apply_kernel_pin` and the `.kernel-pin` file. A pin left by an older version
+  is ignored - re-apply the switch if one was pending.
+
+## [0.14.2] - 2026-08-17
+
+### Fixed
+
+- A profile replaying a captured machine could report a self-contradictory
+  `navigator.connection`: `effectiveType` came from that machine while `rtt` came
+  from the proxy probe, so a real launch shipped `{effectiveType: '4g', rtt: 400}`
+  — a pairing Chrome's own thresholds rule out, and one a site can catch by timing
+  the connection itself. The trio is now produced by a single decision: with no
+  measured rtt a complete captured trio is replayed whole (it is one real Chrome's
+  own output, so it already agrees with itself); once the proxy rtt is known all
+  three are derived from it. `type` and `downlinkMax` describe the medium rather
+  than the latency and still come from the captured device.
+
 ## [0.14.1] - 2026-08-15
 
 ### Fixed

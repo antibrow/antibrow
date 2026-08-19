@@ -148,7 +148,10 @@ export function deviceToPersonaParts(
     colorDepth: device.screen.colorDepth,
     availW: device.screen.availWidth,
     availH: device.screen.availHeight,
+    // The trio travels together or not at all - see deriveConnection.
     connectionEffectiveType: device.connection?.effectiveType,
+    connectionRtt: device.connection?.rtt,
+    connectionDownlink: device.connection?.downlink,
     connectionType: device.connection?.type,
     // `RealDevice` carries `null` for "no cap reported"; `CapturedFacts` only
     // knows "not captured" (undefined), so null collapses into that.
@@ -164,9 +167,6 @@ export function deviceToPersonaParts(
     fonts: device.fonts,
     webglExtensions: device.webgl.extensions,
   }
-  // rtt and downlink stay generated: they follow the proxy we measure at launch,
-  // not the machine the corpus came off.
-
   return {
     deviceType: android ? 'android' : 'desktop',
     androidModel: android ? device.model : undefined,
@@ -256,6 +256,12 @@ function capturedWebglConfig(captured: Record<string, unknown> | undefined): Rec
     }
     if (Object.keys(precision).length > 0) out.shaderPrecision = precision
   }
+  // Whitelist, not a replacement: the kernel intersects it with what the host
+  // GPU really supports. Leaving it out kept the extension list host-shaped
+  // while every other GL fact came from the captured machine.
+  if (Array.isArray(captured.extensions) && captured.extensions.length) {
+    out.extensions = { allow: captured.extensions }
+  }
   return out
 }
 
@@ -300,9 +306,28 @@ export const ECT_RTT_THRESHOLDS = { fourG: 272, threeG: 1420, twoG: 2010 } as co
 export function deriveConnection(
   seed: string,
   rttMs?: number,
+  captured?: Pick<CapturedFacts, 'connectionEffectiveType' | 'connectionRtt' | 'connectionDownlink'>,
 ): { effectiveType: string; rtt: number; downlink: number } {
   const seedSum = seed.split('').reduce((a, c) => a + c.charCodeAt(0), 0)
   const measured = typeof rttMs === 'number' && Number.isFinite(rttMs) && rttMs > 0
+  // A captured trio is one real Chrome's own output, so it already agrees with
+  // itself - replayed whole rather than re-derived, because Chrome weighs
+  // downlink as well as rtt and our rtt-only approximation would "correct" a
+  // true reading into a false one. Only with nothing measured: once the proxy
+  // probe knows the real latency, a site can measure it too, and that latency
+  // is this connection's, not the corpus machine's.
+  if (
+    !measured &&
+    captured?.connectionEffectiveType &&
+    captured.connectionRtt != null &&
+    captured.connectionDownlink != null
+  ) {
+    return {
+      effectiveType: captured.connectionEffectiveType,
+      rtt: captured.connectionRtt,
+      downlink: captured.connectionDownlink,
+    }
+  }
   // Unmeasured (no proxy, or the lookup failed): stay under the 4g threshold so
   // the trio holds, but vary per persona - this used to be one global constant.
   const raw = measured ? rttMs : 50 + (seedSum % 9) * 25
@@ -370,13 +395,74 @@ const WINDOWS_ALLOW_FONTS = [
 // The stock AOSP family names. Known gap: no desktop host ships Roboto or Noto,
 // and an allow-list only subtracts - it cannot conjure a font. What it does buy
 // is keeping host-only families (Segoe UI, Helvetica Neue, Menlo) out of the
-// enumerable set. A replayed device overrides this with what that phone really
-// resolved, which on Android is the alias set (Arial, Helvetica, ...).
+// enumerable set. A replayed device adds the names that phone really resolved,
+// which on Android is the alias set (Arial, Helvetica, ...) - see mergeFonts.
 const ANDROID_ALLOW_FONTS = [
   'Roboto', 'Roboto Condensed', 'Roboto Mono', 'Noto Sans', 'Noto Serif',
   'Noto Sans Mono', 'Noto Color Emoji', 'Droid Sans Mono',
   'Carrois Gothic SC', 'Coming Soon', 'Cutive Mono', 'Dancing Script',
 ]
+
+/**
+ * Windows-exclusive families with no stand-in. On a non-Windows host they can
+ * never be rendered, so listing them says "installed" on the enumerable side
+ * while the measured side says "absent" - two channels of the same browser
+ * contradicting each other, which is worse than a Windows box that simply
+ * lacks a few optional fonts. Membership is a property of the family, not of
+ * this machine: one another desktop OS might ship (Times New Roman, Symbol)
+ * stays on, even where a given host turns out not to have it.
+ */
+const WINDOWS_ONLY_FONTS = new Set([
+  'bahnschrift', 'candara', 'consolas', 'constantia', 'corbel', 'ebrima',
+  'franklin gothic medium', 'gabriola', 'gadugi', 'ink free', 'javanese text',
+  'leelawadee ui', 'lucida console', 'lucida sans unicode', 'mv boli', 'marlett',
+  'palatino linotype', 'segoe print', 'segoe script', 'segoe ui emoji', 'sitka',
+  'sylfaen', 'symbol',
+])
+
+/**
+ * Metric-compatible stand-ins the kernel ships and matches behind the original
+ * family name. Windows-only families do not exist on another host, so
+ * `measureText` returns one shared fallback width for all of them - the same
+ * width a family nobody ever installed gets, which on a real Windows machine
+ * never happens. The stand-ins stay out of `allow`, so none of them enumerates.
+ * Keys must be lowercase and trimmed: that is the form the kernel looks up.
+ */
+const WINDOWS_FONT_ALIAS: Readonly<Record<string, string>> = {
+  'segoe ui': 'Selawik',
+  'segoe ui semibold': 'Selawik Semibold',
+  'segoe ui symbol': 'Selawik',
+  calibri: 'Carlito',
+  cambria: 'Caladea',
+  'cambria math': 'Caladea',
+  // Metrically identical by design, which is what the Liberation family was
+  // drawn for. Without them the three most basic Windows families are absent
+  // on any host that lacks them, and `serif` collapses with them.
+  'times new roman': 'Liberation Serif',
+  arial: 'Liberation Sans',
+  'courier new': 'Liberation Mono',
+}
+
+/** Drop what this host can never render; a stand-in exempts a family. */
+function dropUnrenderable(fonts: readonly string[]): string[] {
+  return fonts.filter((f) => {
+    const key = f.toLowerCase()
+    return !WINDOWS_ONLY_FONTS.has(key) || key in WINDOWS_FONT_ALIAS
+  })
+}
+
+/** Case-insensitive union, first spelling wins. */
+function mergeFonts(base: readonly string[], extra: readonly string[]): string[] {
+  const out = [...base]
+  const seen = new Set(base.map((f) => f.toLowerCase()))
+  for (const font of extra) {
+    const key = font.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(font)
+  }
+  return out
+}
 
 /** Per-profile kernel behaviour that is not part of the identity. */
 export interface FpConfigSettings {
@@ -391,6 +477,8 @@ export interface FpConfigSettings {
   apiLogPath?: string
   /** Measured proxy round-trip; drives the whole connection trio. */
   rttMs?: number
+  /** Defaults to this machine. Only the font aliases depend on it. */
+  hostPlatform?: NodeJS.Platform
 }
 
 /** Serialize persona to the fp-config.json schema expected by the kernel. */
@@ -459,15 +547,26 @@ export function personaToFpConfig(
         math: 'Noto Serif',
       }
     : {
-        standard: 'Times New Roman',
-        serif: 'Times New Roman',
-        sansSerif: 'Arial',
-        cursive: 'Comic Sans MS',
-        fantasy: 'Impact',
+        // Every family names a second, more widely installed choice. The first
+        // wins wherever it exists; without the fallback a host missing it drops
+        // the whole generic onto the fallback font, where it measures exactly
+        // like a family nobody has - which is the contradiction being avoided.
+        standard: 'Times New Roman,Georgia',
+        serif: 'Times New Roman,Georgia',
+        sansSerif: 'Arial,Verdana',
+        cursive: 'Comic Sans MS,Trebuchet MS',
+        fantasy: 'Impact,Arial Black',
         monospace: 'Consolas,Courier New',
-        math: 'Cambria Math,Times New Roman',
+        math: 'Cambria Math,Times New Roman,Georgia',
       }
-  const allowFonts = android ? ANDROID_ALLOW_FONTS : WINDOWS_ALLOW_FONTS
+  // Only when the host is not the OS the persona claims: on Windows those
+  // families are the real thing, aliasing them would substitute a stand-in for
+  // a font that is present, and nothing needs dropping.
+  const foreignHost = !android && (opts.hostPlatform ?? process.platform) !== 'win32'
+  const fontAlias = foreignHost ? WINDOWS_FONT_ALIAS : undefined
+  const allowFonts = android ? ANDROID_ALLOW_FONTS
+    : foreignHost ? dropUnrenderable(WINDOWS_ALLOW_FONTS)
+      : WINDOWS_ALLOW_FONTS
   const config: Record<string, unknown> = {
     version: 1,
     seed: persona.seed,
@@ -503,7 +602,7 @@ export function personaToFpConfig(
     audio: { seed: persona.audioSeed },
     domrect: { seed: persona.domrectSeed },
     webrtc,
-    connection: deriveConnection(persona.seed, opts.rttMs),
+    connection: deriveConnection(persona.seed, opts.rttMs, persona.captured),
     prefersColorScheme: colorScheme,
     // `generic` maps the five CSS generic families plus 'standard' so they
     // resolve to a platform font instead of falling through to the host's own
@@ -516,6 +615,7 @@ export function personaToFpConfig(
       block: [],
       allow: allowFonts,
       generic: genericFonts,
+      ...(fontAlias ? { alias: fontAlias } : {}),
     },
     apilog: { enabled: apiLog !== 'off', mode: apiLog, path: opts.apiLogPath ?? '' },
   }
@@ -555,15 +655,25 @@ export function personaToFpConfig(
     }
     if (cap.prefersColorScheme) config.prefersColorScheme = cap.prefersColorScheme
     const connection = config.connection as Record<string, unknown>
-    if (cap.connectionEffectiveType) connection.effectiveType = cap.connectionEffectiveType
-    if (cap.connectionRtt != null) connection.rtt = cap.connectionRtt
-    if (cap.connectionDownlink != null) connection.downlink = cap.connectionDownlink
+    // effectiveType/rtt/downlink are deliberately absent here: overriding one
+    // third of the trio is what produced '4g' beside rtt 400. deriveConnection
+    // owns all three.
     if (cap.connectionType) connection.type = cap.connectionType
     if (cap.connectionDownlinkMax != null) connection.downlinkMax = cap.connectionDownlinkMax
     const audio = config.audio as Record<string, unknown>
     if (cap.audioSampleRate) audio.sampleRate = cap.audioSampleRate
     if (cap.audioMaxChannelCount) audio.maxChannelCount = cap.audioMaxChannelCount
-    if (cap.fonts?.length) (config.fonts as Record<string, unknown>).allow = cap.fonts
+    if (cap.fonts?.length) {
+      // A phone reports the names its font config aliases (Arial, Helvetica,
+      // Georgia), not the families behind them, so replaying the capture alone
+      // drops Roboto and the Notos - and with them sans-serif, serif and
+      // monospace, which then all collapse onto one fallback width. A desktop
+      // capture names real files, so it replaces outright.
+      const fonts = config.fonts as Record<string, unknown>
+      fonts.allow = android ? mergeFonts(ANDROID_ALLOW_FONTS, cap.fonts)
+        : foreignHost ? dropUnrenderable(cap.fonts)
+          : cap.fonts
+    }
     if (cap.webglExtensions?.length) webgl.extensions = { allow: cap.webglExtensions }
   }
   return config

@@ -4,6 +4,85 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.20.0] - 2026-08-19
+
+### Changed
+
+- `launch({ sync: true })` now fails when the server cannot confirm the profile,
+  instead of launching without cloud sync. A launch that did not ask for sync
+  still proceeds, and now reports that the session will not be restored or
+  uploaded.
+- `setProfileKernelVersion` commits the switch to the profile's cloud copy when
+  given its `archive`, and rolls back if that upload fails. Without `archive` the
+  switch stays local to that directory, as before.
+- A launch whose `kernelVersion` differs from the profile's own now moves the
+  profile to that version instead of ignoring it, keeping its identity. A move
+  that is not allowed is reported and the launch continues on the current
+  version.
+
+### Fixed
+
+- Cloud API calls retry on throttling and transient failures, honouring
+  `Retry-After`.
+- A launch no longer looks the same profile up twice.
+- `apiLog`, `canvasNoise`, `webauthnCapture` and `restoreTabs` now work from
+  `launch()`; they were missing from `LaunchOptions`. (`antibrow` was not
+  affected.)
+- A cloud restore that changes the profile's browser version now reports it.
+- A Windows profile on a macOS or Linux host now measures text the way Windows
+  does. The Windows-only families are absent on those hosts, so every one of
+  them measured like a font nobody has installed - a contradiction sites check
+  for. Needs a browser version that ships the stand-in families; older ones
+  ignore the request and behave as before. Windows hosts are unchanged.
+- That same profile no longer offers the families such a host can never render
+  at all: they were enumerable but unmeasurable, which is one browser
+  contradicting itself. Families with stand-ins are kept, and a Windows host
+  still offers the full set.
+- Each CSS generic family (`serif`, `sans-serif`, `monospace`, `cursive`,
+  `fantasy`) now names a fallback family, so a generic whose first choice is
+  unavailable no longer collapses onto the width of a family nobody has.
+- An Android profile keeps the stock Android font families instead of only the
+  ones its captured device reported, so `sans-serif`, `serif` and `monospace`
+  no longer resolve to one and the same font.
+- A profile whose identity came from a captured device now reports that
+  device's WebGL extensions instead of the host GPU's.
+
+### Removed
+
+- `KERNEL_PIN_FILE`, `readKernelPin`, `writeKernelPin`, `clearKernelPin`,
+  `applyKernelPin` and the `.kernel-pin` file. A pin left by an older version is
+  ignored - re-apply the switch if one was pending.
+
+## [2.19.3] - 2026-08-18
+
+### Fixed
+
+- Switching an existing profile to another browser core could be undone by the
+  very next launch, silently: `persona.json` - which is what decides the core a
+  profile actually runs on — travels inside the cloud archive, and the restore
+  runs before that persona is read. Any launch that restored (the marker is
+  missing or names another generation) laid the old version straight back over
+  the switch, so the profile kept reporting the core the user had just left while
+  every list said otherwise. `setProfileKernelVersion()` now leaves a
+  machine-local pin next to the profile and a restore re-applies it, moving only
+  the three version-derived fields so the archived identity itself stays the
+  archived one. Uploading the profile clears the pin: from then on the cloud copy
+  carries the switch, and a switch made on another machine wins again as before.
+
+## [2.19.2] - 2026-08-17
+
+### Fixed
+
+- A profile replaying a captured machine could report a self-contradictory
+  `navigator.connection`: `effectiveType` came from that machine while `rtt` came
+  from the proxy probe, so a real launch shipped `{effectiveType: '4g', rtt: 400}`
+  — a pairing Chrome's own thresholds rule out, and one a site can catch by timing
+  the connection itself. The trio is now produced by a single decision: with no
+  measured rtt a complete captured trio is replayed whole (it is one real Chrome's
+  own output, so it already agrees with itself); once the proxy rtt is known all
+  three are derived from it. `type` and `downlinkMax` describe the medium rather
+  than the latency and still come from the captured device.
+
 ## [2.19.1] - 2026-08-15
 
 ### Fixed

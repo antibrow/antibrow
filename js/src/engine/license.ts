@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
+import { retryFetch } from '../retry-fetch'
 
 // Tokens are signed server-side; the SDK only fetches and caches them.
 
@@ -52,7 +53,7 @@ interface TokenResponse {
 
 /** Fetch a signed license token. The response carries `mi` and `sync`. */
 export async function fetchLicenseToken(opts: { key: string; server: string }): Promise<LicenseInfo> {
-  const res = await fetch(new URL('/api/v1/engine/token', opts.server).toString(), {
+  const res = await retryFetch(new URL('/api/v1/engine/token', opts.server).toString(), {
     method: 'POST',
     headers: { Authorization: `Bearer ${opts.key}`, Accept: 'application/json' },
   })

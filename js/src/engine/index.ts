@@ -7,6 +7,7 @@ import {
   defaultKernelVersion,
   findKernelVersion,
   findKernelVersionStrict,
+  normalizeKernelVersion,
   refreshKernelVersions,
   kernelUpdateStatus,
   kernelSupportsAndroid,
@@ -91,6 +92,8 @@ export interface OpenProfileOptions {
   profileDir?: string
   /** Use the temporary profile tree. Never touches the server. */
   temporary?: boolean
+  /** Cloud row id the caller already holds; saves a duplicate profile GET. */
+  serverProfileId?: string
   /** For new profiles only; existing ones use their persona's version. */
   kernelVersion?: string
   /** Pull a newer build of this profile's kernel before launching. */
@@ -173,23 +176,46 @@ export interface SetProfileKernelVersionOptions extends ProfileRootOptions {
   profileName?: string
   profileDir?: string
   cacheDir?: string
+  /**
+   * The profile's cloud archive. Given it, the switch is committed there before
+   * this resolves; without it the switch is local to this directory and the
+   * next restore replaces it.
+   */
+  archive?: {
+    /** Presigned GET for the current cloud copy. */
+    getUrl?: string
+    /** Its generation, compared against this directory's marker. */
+    version?: string
+    /** Resolved at the moment of upload - a presign rarely outlives the pack. */
+    getPutUrl?: () => Promise<string | undefined>
+  }
 }
 
 /**
  * Move an existing profile to another kernel major, keeping its identity: only
- * the three version-derived persona fields change. `openProfile`'s
- * `kernelVersion` cannot do this - it seeds a new profile and is ignored once
- * persona.json exists.
+ * the three version-derived persona fields change.
  *
- * Takes effect on the next launch. A synced profile whose cloud archive is a
- * newer generation than this machine's copy still restores that archive first,
- * reverting the change, so switch on the machine that last used the profile.
+ * With `archive`, the whole thing is one committed operation: the current cloud
+ * copy comes down first (another machine may hold a newer one), the persona
+ * moves, and the result goes back up - and a failed upload rolls the persona
+ * back rather than leaving the switch half-made. That is what makes the switch
+ * hold everywhere, including a second cache directory on this same machine:
+ * they all restore from the archive, and the archive now carries it.
  */
 export async function setProfileKernelVersion(opts: SetProfileKernelVersionOptions): Promise<Persona> {
   const cacheDir = opts.cacheDir ?? defaultCacheDir()
   const dir = opts.profileDir
     ?? (opts.profileName && resolveProfileDirSync(cacheDir, opts.profileName, { temporary: opts.temporary }).dir)
   if (!dir) throw new Error('setProfileKernelVersion needs a profileDir or a profileName')
+
+  // Start from the cloud copy: moving a stale local one and uploading it would
+  // discard whatever another machine last saved.
+  if (opts.archive?.getUrl && shouldRestoreArchive(readArchiveVersion(dir), opts.archive.version)) {
+    if (await downloadProfileCache(opts.archive.getUrl, dir)) {
+      if (opts.archive.version) writeArchiveVersion(dir, opts.archive.version)
+      else clearArchiveVersion(dir)
+    }
+  }
 
   const persona = readPersona(dir)
   if (!persona) {
@@ -209,7 +235,90 @@ export async function setProfileKernelVersion(opts: SetProfileKernelVersionOptio
 
   const next = withKernelVersion(persona, kv.version)
   writePersona(dir, next)
+
+  const getPutUrl = opts.archive?.getPutUrl
+  if (getPutUrl) {
+    try {
+      const putUrl = await getPutUrl()
+      if (putUrl) {
+        const generation = await uploadProfileCache(dir, putUrl)
+        if (generation) writeArchiveVersion(dir, generation)
+        else clearArchiveVersion(dir)
+      }
+    } catch (error) {
+      // A switch that reached this directory but not the cloud is the drift
+      // this function exists to prevent: the caller would report the new
+      // version while every other copy still restores the old one.
+      writePersona(dir, persona)
+      throw error
+    }
+  }
   return next
+}
+
+/**
+ * Say so when a restore just changed which browser core this profile runs.
+ *
+ * The cloud copy is authoritative, so the swap itself is correct - but in
+ * silence it is indistinguishable from the profile having always been on that
+ * version, which is what makes "the app says 152 and it launched 150" so hard
+ * to explain.
+ */
+export function reportRestoredKernelChange(
+  profileDir: string,
+  before: string | undefined,
+  onProgress?: (message: string) => void,
+): void {
+  if (!before || !onProgress) return
+  const after = normalizeKernelVersion(readPersona(profileDir)?.kernelVersion)
+  if (!after || after === normalizeKernelVersion(before)) return
+  onProgress(`Cloud archive moved this profile from Chrome ${normalizeKernelVersion(before)} to ${after}`)
+}
+
+/**
+ * Bring a profile's persona onto the kernel version its caller believes it is
+ * running, and report either way.
+ *
+ * Callers that keep their own registry (the desktop app, a launcher script)
+ * hand `openProfile` a stored kernel version on every launch, while the version
+ * that actually runs comes from persona.json. The two drift apart whenever the
+ * stored one moves on its own - cloud sync copies that field between machines
+ * and never touches the profile directory - and the drift used to be silent:
+ * the row read 152, the browser launched 150 and introduced itself as Chrome
+ * 150 to every site.
+ *
+ * A refused move is reported, not thrown: the persona's own version is a
+ * working launch, and breaking it would be a worse answer than running the
+ * older kernel with the reason said out loud.
+ */
+export async function reconcileKernelVersion(opts: {
+  profileDir: string
+  persona: Persona
+  /** The caller's stored version, if it keeps one. */
+  requested?: string
+  cacheDir: string
+  onProgress?: (message: string) => void
+}): Promise<Persona> {
+  // Both sides are normalised: profiles created before the majors-only change
+  // still carry the full four-segment string, which is never rewritten just for
+  // being read, and a raw comparison would call that a mismatch.
+  const requested = normalizeKernelVersion(opts.requested)
+  if (!requested || requested === normalizeKernelVersion(opts.persona.kernelVersion)) return opts.persona
+  try {
+    const next = await setProfileKernelVersion({
+      profileDir: opts.profileDir, version: requested, cacheDir: opts.cacheDir,
+    })
+    opts.onProgress?.(
+      `Moving profile from Chrome ${opts.persona.kernelVersion} to ${next.kernelVersion}`,
+    )
+    return next
+  } catch (error) {
+    opts.onProgress?.(
+      `Cannot move this profile to Chrome ${requested}, launching on ` +
+      `${opts.persona.kernelVersion}: ${error instanceof Error ? error.message : String(error)}`,
+    )
+    return opts.persona
+  }
 }
 
 /**
@@ -234,12 +343,14 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
         key: opts.key,
         server: opts.server,
         temporary: opts.temporary,
+        serverId: opts.serverProfileId,
         onProgress: opts.onProgress,
       })
   const profileDir = resolved.dir
   fs.mkdirSync(profileDir, { recursive: true })
 
   // Restore first: persona.json carries the kernel version read below.
+  const kernelBeforeRestore = readPersona(profileDir)?.kernelVersion
   if (opts.archiveGetUrl) {
     if (!shouldRestoreArchive(readArchiveVersion(profileDir), opts.archiveVersion)) {
       opts.onProgress?.('Profile archive already current; skipping restore')
@@ -253,6 +364,7 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
         },
         (e: unknown) => opts.onArchiveSync?.({ phase: 'download', state: 'error', error: errText(e) }),
       )
+      reportRestoredKernelChange(profileDir, kernelBeforeRestore, opts.onProgress)
     }
   }
 
@@ -296,7 +408,15 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
       : defaultKernelVersion()
 
   opts.onProgress?.('Loading persona')
-  const persona = loadOrGeneratePersona(profileDir, defaultKv.version, personaInit)
+  // Only a profile that already had one can drift: a persona generated right
+  // here is seeded from the very version the caller asked for.
+  const hadPersona = !!readPersona(profileDir)
+  const seeded = loadOrGeneratePersona(profileDir, defaultKv.version, personaInit)
+  const persona = hadPersona
+    ? await reconcileKernelVersion({
+        profileDir, persona: seeded, requested: opts.kernelVersion, cacheDir, onProgress: opts.onProgress,
+      })
+    : seeded
 
   const kv = persona.deviceType === 'android'
     ? findKernelVersionStrict(persona.kernelVersion)

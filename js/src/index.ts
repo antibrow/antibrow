@@ -96,6 +96,8 @@ export {
   writePersona,
   withKernelVersion,
   setProfileKernelVersion,
+  reconcileKernelVersion,
+  reportRestoredKernelChange,
   fetchRealDevice,
   packProfileCache,
   packProfileCacheWithReport,

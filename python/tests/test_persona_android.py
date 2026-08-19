@@ -1,5 +1,6 @@
 from antibrow.android_devices import ANDROID_FALLBACK_DEVICES
 from antibrow.persona import (
+    CapturedFacts,
     device_to_persona_parts,
     generate_persona,
     persona_to_fp_config,
@@ -77,3 +78,37 @@ def test_device_to_persona_parts_normalizes_webgl_keys():
     assert parts["captured_webgl"]["VERSION"] == ANDROID_FALLBACK_DEVICES[0]["webgl"]["version"]
     assert parts["captured_webgl"]["SHADING_LANGUAGE_VERSION2"] == ANDROID_FALLBACK_DEVICES[0]["webgl"]["shadingLanguageVersion2"]
     assert parts["captured"].ua_platform_version == "15.0.0"
+
+
+# A phone's font probe reports the names Android aliases (Arial, Helvetica,
+# Georgia), never the families behind them, so a capture replayed as-is leaves
+# ``allow`` without Roboto or the Notos. ``allow`` denies by default, so the
+# three CSS generics then resolve to nothing and measure identically - one
+# number where a real phone has three.
+_CAPTURED_FONTS = ["Arial", "Baskerville", "Courier New", "Georgia", "Helvetica", "Verdana"]
+
+
+def _allow_for(device_type):
+    persona = generate_persona(151, "151.0.0.0", device_type=device_type)
+    if persona.captured is None:
+        persona.captured = CapturedFacts()
+    persona.captured.fonts = list(_CAPTURED_FONTS)
+    config = persona_to_fp_config(persona, label="x", timezone="UTC")
+    return config["fonts"]["allow"]
+
+
+def test_android_capture_adds_to_the_aosp_families():
+    allow = _allow_for("android")
+    for family in ("Roboto", "Noto Serif", "Droid Sans Mono", "Noto Sans Mono", "Dancing Script"):
+        assert family in allow
+    for family in _CAPTURED_FONTS:
+        assert family in allow
+
+
+def test_android_allowlist_lists_no_family_twice():
+    allow = _allow_for("android")
+    assert len({f.lower() for f in allow}) == len(allow)
+
+
+def test_desktop_capture_still_replaces_outright():
+    assert _allow_for("desktop") == _CAPTURED_FONTS

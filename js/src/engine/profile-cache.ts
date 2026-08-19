@@ -2,7 +2,7 @@ import AdmZip from 'adm-zip'
 import fs from 'node:fs'
 import path from 'node:path'
 import { defaultKernelVersion, kernelsForPlatform, normalizeKernelVersion } from './downloader'
-import { generatePersona, readPersona, type ApiLogMode, type CapturedFacts, type DeviceType, type Persona } from './persona'
+import { generatePersona, readPersona, withKernelVersion, writePersona, type ApiLogMode, type CapturedFacts, type DeviceType, type Persona } from './persona'
 import { CRYPT_STATE_FILE, isProfileEncrypted, writeCryptState } from './profile-dir'
 
 // Browser state items stored under <profileDir>/user-data/
@@ -249,6 +249,8 @@ export function unpackProfileCache(buf: Buffer, profileDir: string): void {
   fs.mkdirSync(profileDir, { recursive: true })
   clearPackedState(profileDir, entries)
   zip.extractAllTo(profileDir, /* overwrite */ true)
+  // persona.json is in the archive, so this just overwrote it - including the
+  // kernel version of whichever generation was packed.
 }
 
 // Portable archive (.fpprofile): manifest.json + passkeys + whitelisted browser

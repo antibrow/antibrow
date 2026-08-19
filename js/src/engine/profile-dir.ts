@@ -3,6 +3,7 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { ProxyBinding } from '../proxy-binding'
 import { encodePathSegment } from '../url-path'
+import { retryFetch } from '../retry-fetch'
 
 const META_FILE = 'profile.json'
 
@@ -391,7 +392,7 @@ interface ServerLookup {
 async function lookupServerId(name: string, key: string, server: string): Promise<ServerLookup> {
   try {
     const url = new URL(`/api/v1/profiles/${encodePathSegment(name)}`, server)
-    const res = await fetch(url.toString(), {
+    const res = await retryFetch(url.toString(), {
       headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' },
     })
     // 403 is the free-plan answer to this route. It is an answer - treating it
@@ -426,6 +427,9 @@ export async function resolveProfileDir(opts: {
   server?: string
   /** Skips the server entirely: a temporary profile has no cloud counterpart. */
   temporary?: boolean
+  /** The row's id when the caller already fetched it, so one launch does not
+   *  GET the same profile twice and spend its rate-limit budget on itself. */
+  serverId?: string
   onProgress?: (message: string) => void
 }): Promise<ResolvedProfile> {
   const name = opts.profileName
@@ -433,10 +437,13 @@ export async function resolveProfileDir(opts: {
   const root = profilesRoot(opts.cacheDir, opts)
   const entries = listProfileEntries(opts.cacheDir, opts)
   const found = findByName(entries, name)
-  const lookup: ServerLookup =
-    !opts.temporary && opts.key && opts.server && needsLookup(found)
-      ? await lookupServerId(name, opts.key, opts.server)
-      : { checked: false }
+  const lookup: ServerLookup = opts.temporary
+    ? { checked: false }
+    : opts.serverId
+      ? { id: opts.serverId, checked: true }
+      : opts.key && opts.server && needsLookup(found)
+        ? await lookupServerId(name, opts.key, opts.server)
+        : { checked: false }
   const checkedAt = lookup.checked ? new Date().toISOString() : undefined
 
   if (!found) {

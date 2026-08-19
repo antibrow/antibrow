@@ -1,14 +1,21 @@
 """Moving an existing profile to another kernel major without re-rolling it."""
 
 import json
+from pathlib import Path
 
 import pytest
 
+from antibrow import browser as B
 from antibrow import kernel as K
-from antibrow.browser import set_profile_kernel_version, should_restore_archive
+from antibrow.browser import ArchiveCommit, set_profile_kernel_version, should_restore_archive
 from antibrow.errors import KernelDownloadError
 from antibrow.persona import generate_persona, read_persona, write_persona
-from antibrow.profile_cache import pack_profile_cache, unpack_profile_cache
+from antibrow.profile_cache import (
+    pack_profile_cache,
+    read_archive_version,
+    unpack_profile_cache,
+    write_archive_version,
+)
 from antibrow.profile_dir import resolve_profile_dir
 
 NEW = "151"
@@ -149,12 +156,90 @@ def test_switch_is_restored_over_for_a_different_or_unnameable_generation():
     assert should_restore_archive("etag-1", None) is True
 
 
-def test_a_restore_that_does_run_loses_the_switch(tmp_path, profile_dir):
-    cloud = pack_profile_cache(profile_dir)  # packed while still on the old kernel
+def test_the_archive_itself_carries_the_switch_once_committed(tmp_path, profile_dir, monkeypatch):
+    """What makes a switch hold across cache directories and machines.
 
-    # The switch happens after that upload...
+    They all restore from the archive, and the archive now names the new kernel -
+    nothing machine-local has to remember the switch.
+    """
+    uploaded = {}
+
+    def fake_upload(directory, put_url):
+        uploaded["archive"] = pack_profile_cache(directory)
+        return "gen-2"
+
+    monkeypatch.setattr(B, "upload_profile_cache", fake_upload)
+    write_archive_version(profile_dir, "gen-1")
+
+    set_profile_kernel_version(
+        NEW,
+        profile_dir=profile_dir,
+        cache_dir=tmp_path,
+        archive=ArchiveCommit(version="gen-1", get_put_url=lambda: "https://r2/put"),
+    )
+
+    elsewhere = tmp_path / "other"
+    unpack_profile_cache(uploaded["archive"], elsewhere)
+    assert read_persona(elsewhere).kernel_version == NEW
+    assert read_archive_version(profile_dir) == "gen-2"
+
+
+def test_starts_from_the_cloud_copy_when_this_directory_is_behind(tmp_path, profile_dir, monkeypatch):
+    # Another machine may hold a newer archive; moving the local copy and
+    # uploading it would silently discard whatever that machine saved.
+    cloud_dir = tmp_path / "cloud"
+    (cloud_dir / "user-data" / "Default").mkdir(parents=True)
+    (cloud_dir / "user-data" / "Default" / "Cookies").write_text("from-the-cloud", encoding="utf-8")
+    write_persona(cloud_dir, generate_persona(int(OLD), OLD))
+    cloud = pack_profile_cache(cloud_dir)
+
+    monkeypatch.setattr(
+        B, "download_profile_cache", lambda url, directory: (unpack_profile_cache(cloud, directory), True)[1]
+    )
+    uploaded = {}
+    monkeypatch.setattr(
+        B, "upload_profile_cache", lambda directory, url: uploaded.setdefault("d", Path(directory)) and "gen-2"
+    )
+    write_archive_version(profile_dir, "gen-0")
+
+    set_profile_kernel_version(
+        NEW,
+        profile_dir=profile_dir,
+        cache_dir=tmp_path,
+        archive=ArchiveCommit(
+            get_url="https://r2/get", version="gen-1", get_put_url=lambda: "https://r2/put"
+        ),
+    )
+
+    assert (profile_dir / "user-data" / "Default" / "Cookies").read_text(encoding="utf-8") == "from-the-cloud"
+
+
+def test_rolls_the_persona_back_when_the_upload_fails(tmp_path, profile_dir, monkeypatch):
+    before = read_persona(profile_dir)
+
+    def boom(directory, put_url):
+        raise RuntimeError("Failed to upload profile cache: HTTP 500")
+
+    monkeypatch.setattr(B, "upload_profile_cache", boom)
+
+    with pytest.raises(RuntimeError, match="upload"):
+        set_profile_kernel_version(
+            NEW,
+            profile_dir=profile_dir,
+            cache_dir=tmp_path,
+            archive=ArchiveCommit(get_put_url=lambda: "https://r2/put"),
+        )
+
+    # Half a switch is the drift this whole change removes.
+    assert read_persona(profile_dir).kernel_version == before.kernel_version
+
+
+def test_an_uncommitted_switch_is_replaced_by_a_restore(tmp_path, profile_dir):
+    # Not a regression - the reason `archive` exists. An uncommitted switch is
+    # one machine's opinion, and the cloud copy is what everyone else reads.
+    cloud = pack_profile_cache(profile_dir)
+
     set_profile_kernel_version(NEW, profile_dir=profile_dir, cache_dir=tmp_path)
-    # ...and a restore puts the old identity back, kernel version included.
     unpack_profile_cache(cloud, profile_dir)
 
     assert read_persona(profile_dir).kernel_version == OLD

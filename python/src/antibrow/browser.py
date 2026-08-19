@@ -24,7 +24,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 from . import api as _api
 from . import config as _config
@@ -32,7 +32,7 @@ from . import devices as _devices
 from . import kernel as _kernel
 from . import profile_sync as _sync
 from .crypt_key import fetch_profile_crypt_key, resolve_crypt_key
-from .errors import LicenseError, ProfileCacheError, ProxyError
+from .errors import ApiError, LicenseError, ProfileCacheError, ProxyError
 from .geoip import lookup_proxy_geo
 from .launcher import (
     DEFAULT_LAUNCH_TIMEOUT,
@@ -308,9 +308,16 @@ def prepare_launch(
     else:
         default_kv = _kernel.default_kernel_version()
     notify("Loading persona")
+    # Only a profile that already had one can drift: a persona generated right
+    # here is seeded from the very version the caller asked for.
+    had_persona = read_persona(directory) is not None
     persona = load_or_generate_persona(
         directory, default_kv.version, device_type=init_device_type, device=init_device
     )
+    if had_persona:
+        persona = reconcile_kernel_version(
+            directory, persona, kernel_version, cache_dir=cache_dir, on_progress=notify
+        )
     if persona.device_type == "android":
         kv = _kernel.find_kernel_version_strict(persona.kernel_version)
     else:
@@ -589,6 +596,67 @@ def should_restore_archive(local: Optional[str], server: Optional[str]) -> bool:
     return not (server and local and local == server)
 
 
+def reconcile_kernel_version(
+    directory: Path,
+    persona: Persona,
+    requested: Optional[str],
+    *,
+    cache_dir: Optional[Union[str, Path]] = None,
+    on_progress: Optional[ProgressCallback] = None,
+) -> Persona:
+    """Bring a profile's persona onto the kernel version its caller believes it
+    is running, and report either way.
+
+    Callers that keep their own registry (a launcher, the desktop app) pass a
+    stored kernel version on every launch, while the version that actually runs
+    comes from persona.json. The two drift apart whenever the stored one moves on
+    its own - cloud sync copies that field between machines and never touches the
+    profile directory - and the drift used to be silent: the row read 152, the
+    browser launched 150 and introduced itself as Chrome 150 to every site.
+
+    A refused move is reported, not raised: the persona's own version is a
+    working launch, and breaking it would be a worse answer than running the
+    older kernel with the reason said out loud.
+    """
+    # Both sides are normalised: profiles created before the majors-only change
+    # still carry the full four-segment string, which is never rewritten just for
+    # being read, and a raw comparison would call that a mismatch.
+    wanted = _kernel.normalize_kernel_version(requested) if requested else None
+    if not wanted or wanted == _kernel.normalize_kernel_version(persona.kernel_version):
+        return persona
+    try:
+        moved = set_profile_kernel_version(
+            wanted, profile_dir=directory, cache_dir=cache_dir
+        )
+    except Exception as error:  # noqa: BLE001 - any refusal keeps the launch alive
+        if on_progress:
+            on_progress(
+                "Cannot move this profile to Chrome {0}, launching on {1}: {2}".format(
+                    wanted, persona.kernel_version, error
+                )
+            )
+        return persona
+    if on_progress:
+        on_progress(
+            "Moving profile from Chrome {0} to {1}".format(
+                persona.kernel_version, moved.kernel_version
+            )
+        )
+    return moved
+
+
+@dataclass
+class ArchiveCommit:
+    """The profile's cloud archive, as `set_profile_kernel_version` needs it."""
+
+    #: Presigned GET for the current cloud copy.
+    get_url: Optional[str] = None
+    #: Its generation, compared against this directory's marker.
+    version: Optional[str] = None
+    #: Resolved at the moment of upload - a presign rarely outlives the pack.
+    get_put_url: Optional[Callable[[], Optional[str]]] = None
+
+
 def set_profile_kernel_version(
     version: str,
     *,
@@ -596,16 +664,18 @@ def set_profile_kernel_version(
     profile_dir: Optional[Path | str] = None,
     cache_dir: Optional[Path | str] = None,
     temporary: bool = False,
+    archive: Optional["ArchiveCommit"] = None,
 ) -> Persona:
     """Move an existing profile to another kernel major, keeping its identity.
 
-    Only the three version-derived persona fields change. ``launch``'s
-    ``kernel_version`` cannot do this - it seeds a new profile and is ignored
-    once ``persona.json`` exists.
+    Only the three version-derived persona fields change.
 
-    Takes effect on the next launch. A synced profile whose cloud archive is a
-    newer generation than this machine's copy still restores that archive first,
-    reverting the change, so switch on the machine that last used the profile.
+    With ``archive``, the whole thing is one committed operation: the current
+    cloud copy comes down first (another machine may hold a newer one), the
+    persona moves, and the result goes back up - and a failed upload rolls the
+    persona back rather than leaving the switch half-made. That is what makes
+    the switch hold everywhere, including a second cache directory on this same
+    machine: they all restore from the archive, and the archive now carries it.
     """
     if profile_dir is not None:
         directory = Path(profile_dir)
@@ -613,6 +683,17 @@ def set_profile_kernel_version(
         directory = resolve_profile_dir(profile_name, cache_dir, temporary=temporary).dir
     else:
         raise ValueError("set_profile_kernel_version needs a profile_dir or a profile_name")
+
+    # Start from the cloud copy: moving a stale local one and uploading it would
+    # discard whatever another machine last saved.
+    if archive and archive.get_url and should_restore_archive(
+        read_archive_version(directory), archive.version
+    ):
+        if download_profile_cache(archive.get_url, directory):
+            if archive.version:
+                write_archive_version(directory, archive.version)
+            else:
+                clear_archive_version(directory)
 
     persona = read_persona(directory)
     if persona is None:
@@ -633,6 +714,22 @@ def set_profile_kernel_version(
 
     moved = with_kernel_version(persona, kv.version)
     write_persona(directory, moved)
+
+    if archive and archive.get_put_url:
+        try:
+            put_url = archive.get_put_url()
+            if put_url:
+                generation = upload_profile_cache(directory, put_url)
+                if generation:
+                    write_archive_version(directory, generation)
+                else:
+                    clear_archive_version(directory)
+        except Exception:
+            # A switch that reached this directory but not the cloud is the
+            # drift this function exists to prevent: the caller would report the
+            # new version while every other copy still restores the old one.
+            write_persona(directory, persona)
+            raise
     return moved
 
 
@@ -657,6 +754,29 @@ def _reject_unsynced_plan(sync: Optional[bool], license_sync: bool) -> None:
 
 _local_only_notified: Set[str] = set()
 _local_only_notified_lock = threading.Lock()
+
+
+def _notify_unreachable(
+    name: str, status: int, on_progress: Optional[ProgressCallback]
+) -> None:
+    """Say it out loud: this session will not be restored or uploaded.
+
+    Shares the local-only notice's once-per-name gate for the same reason it is
+    not gated on ``on_progress``: it reports data that will be lost, and a
+    relaunch loop must not turn that into a wall of text.
+    """
+    with _local_only_notified_lock:
+        if name in _local_only_notified:
+            return
+        _local_only_notified.add(name)
+    message = (
+        'Could not reach the cloud profile "{0}" (HTTP {1}); launching without '
+        "cloud sync - this session will not be restored or uploaded.".format(name, status)
+    )
+    if on_progress:
+        on_progress(message)
+    else:
+        print("[antibrow] " + message)
 
 
 def _notify_local_only(name: str, on_progress: Optional[ProgressCallback]) -> None:
@@ -732,8 +852,23 @@ def _restore_archive(
         # A confirmed 404 (not a dropped connection) on a default launch means
         # this name silently stayed local-only - worth a nudge, since the
         # caller only finds out the hard way, on another machine.
-        if sync is None and probe_status == [404]:
-            _notify_local_only(profile_name, on_progress)
+        if probe_status == [404]:
+            if sync is None:
+                _notify_local_only(profile_name, on_progress)
+            return None
+        # `sync=True` is a promise about where the data goes; a browser that
+        # looks synced and uploads nothing is worse than a failed launch.
+        status = probe_status[0] if probe_status else 0
+        if sync is True:
+            raise ApiError(
+                'Cloud profile "{0}" could not be confirmed (HTTP {1}); '
+                "refusing to launch unsynced.".format(profile_name, status),
+                status=status,
+            )
+        # Anything else is "we could not find out", not "there is no cloud
+        # copy". Left silent, a throttled launch runs a full session and
+        # discards it.
+        _notify_unreachable(profile_name, status, on_progress)
         return None
     urls = _sync.get_profile_archive_urls(key, server, name=profile_name)
     if not urls:

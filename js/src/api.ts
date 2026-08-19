@@ -1,5 +1,6 @@
 import type { ProfileConfig, SyncedProfile, ProfileSyncPage, ProxyConfig, SyncedProxy, ProxySyncPage } from './types'
 import { encodePathSegment } from './url-path'
+import { retryFetch } from './retry-fetch'
 
 const DEFAULT_SERVER = 'https://antibrow.com'
 
@@ -41,7 +42,7 @@ export async function createProfile(options: ProfileOptions): Promise<SyncedProf
   const server = options.server || DEFAULT_SERVER
   const url = new URL('/api/v1/profiles', server)
 
-  const response = await fetch(url.toString(), {
+  const response = await retryFetch(url.toString(), {
     method: 'POST',
     headers: jsonHeaders(key),
     body: JSON.stringify({ id, name, tags, config }),
@@ -70,7 +71,7 @@ export async function updateProfile(options: UpdateProfileOptions): Promise<Sync
   const server = options.server || DEFAULT_SERVER
   const url = new URL(`/api/v1/profiles/${encodePathSegment(id)}`, server)
 
-  const response = await fetch(url.toString(), {
+  const response = await retryFetch(url.toString(), {
     method: 'PUT',
     headers: jsonHeaders(key),
     body: JSON.stringify({ name, tags, config }),
@@ -89,7 +90,7 @@ export async function getProfile(options: Omit<ProfileOptions, 'tags'>): Promise
   const server = options.server || DEFAULT_SERVER
   const url = new URL(`/api/v1/profiles/${encodePathSegment(name)}`, server)
 
-  const response = await fetch(url.toString(), { method: 'GET', headers: authHeaders(key) })
+  const response = await retryFetch(url.toString(), { method: 'GET', headers: authHeaders(key) })
   if (!response.ok) {
     const errorBody = await response.text().catch(() => '')
     throw new Error(`Failed to get profile: HTTP ${response.status}. ${errorBody}`)
@@ -128,7 +129,7 @@ export async function syncPullProfiles(options: { key: string; server?: string; 
   const url = new URL('/api/v1/profiles', server)
   if (since) url.searchParams.set('since', since)
 
-  const response = await fetch(url.toString(), { method: 'GET', headers: authHeaders(key) })
+  const response = await retryFetch(url.toString(), { method: 'GET', headers: authHeaders(key) })
   if (!response.ok) {
     const errorBody = await response.text().catch(() => '')
     throw new Error(`Failed to pull profiles: HTTP ${response.status}. ${errorBody}`)
@@ -145,7 +146,7 @@ export async function deleteProfile(options: { key: string; server?: string; id?
   const server = options.server || DEFAULT_SERVER
   const url = new URL(`/api/v1/profiles/${encodePathSegment(ident)}`, server)
 
-  const response = await fetch(url.toString(), { method: 'DELETE', headers: authHeaders(key) })
+  const response = await retryFetch(url.toString(), { method: 'DELETE', headers: authHeaders(key) })
   if (!response.ok) {
     const errorBody = await response.text().catch(() => '')
     throw new Error(`Failed to delete profile: HTTP ${response.status}. ${errorBody}`)
@@ -168,7 +169,7 @@ export async function getProfileForLaunch(options: { key: string; server?: strin
   const server = options.server || DEFAULT_SERVER
   const url = new URL(`/api/v1/profiles/${encodePathSegment(ident)}`, server)
 
-  const response = await fetch(url.toString(), { method: 'GET', headers: authHeaders(key) })
+  const response = await retryFetch(url.toString(), { method: 'GET', headers: authHeaders(key) })
   if (!response.ok) {
     const errorBody = await response.text().catch(() => '')
     throw new Error(`Failed to fetch profile for launch: HTTP ${response.status}. ${errorBody}`)
@@ -226,7 +227,7 @@ export async function getProfileArchiveUploadUrl(options: {
   server?: string
   name: string
 }): Promise<string | undefined> {
-  const res = await fetch(archiveUrl(options), { method: 'POST', headers: authHeaders(options.key) })
+  const res = await retryFetch(archiveUrl(options), { method: 'POST', headers: authHeaders(options.key) })
   if (!res.ok) return undefined
   return ((await res.json()) as { uploadUrl?: string }).uploadUrl
 }
@@ -268,7 +269,7 @@ export async function uploadProfileState(options: {
   const { key, name, cookies } = options
   const server = options.server || DEFAULT_SERVER
   const apiUrl = new URL(`/api/v1/profiles/${encodePathSegment(name)}/state`, server)
-  const apiResponse = await fetch(apiUrl.toString(), { method: 'POST', headers: authHeaders(key) })
+  const apiResponse = await retryFetch(apiUrl.toString(), { method: 'POST', headers: authHeaders(key) })
 
   if (!apiResponse.ok) {
     const errorBody = await apiResponse.text().catch(() => '')
@@ -285,7 +286,7 @@ export async function uploadProfileState(options: {
     updatedAt: new Date().toISOString(),
   })
 
-  const uploadResponse = await fetch(uploadUrl, {
+  const uploadResponse = await retryFetch(uploadUrl, {
     method: 'PUT',
     body: stateData,
     headers: { 'Content-Type': 'application/json' },
@@ -301,7 +302,7 @@ export async function downloadProfileState(options: {
   const { key, name } = options
   const server = options.server || DEFAULT_SERVER
   const apiUrl = new URL(`/api/v1/profiles/${encodePathSegment(name)}/state`, server)
-  const apiResponse = await fetch(apiUrl.toString(), { method: 'GET', headers: authHeaders(key) })
+  const apiResponse = await retryFetch(apiUrl.toString(), { method: 'GET', headers: authHeaders(key) })
 
   if (!apiResponse.ok) {
     if (apiResponse.status === 404) return null
@@ -310,7 +311,7 @@ export async function downloadProfileState(options: {
   }
 
   const { downloadUrl } = await apiResponse.json() as { downloadUrl: string }
-  const dataResponse = await fetch(downloadUrl)
+  const dataResponse = await retryFetch(downloadUrl)
   if (dataResponse.status === 404 || dataResponse.status === 403) return null
   if (!dataResponse.ok) throw new Error(`Failed to download state from R2: HTTP ${dataResponse.status}`)
   return await dataResponse.json() as ProfileState
@@ -359,7 +360,7 @@ export async function listProxies(
 ): Promise<{ proxies: ManagedProxy[]; quota: ProxyQuota }> {
   const server = options.server || DEFAULT_SERVER
   const url = new URL('/api/v1/proxies', server)
-  const response = await fetch(url.toString(), { method: 'GET', headers: authHeaders(options.key) })
+  const response = await retryFetch(url.toString(), { method: 'GET', headers: authHeaders(options.key) })
   if (!response.ok) {
     const body = await response.text().catch(() => '')
     throw new Error(`Failed to list proxies: HTTP ${response.status}. ${body}`)
@@ -373,7 +374,7 @@ async function proxyAction(
 ): Promise<Record<string, unknown>> {
   const server = options.server || DEFAULT_SERVER
   const url = new URL('/api/v1/proxies', server)
-  const response = await fetch(url.toString(), {
+  const response = await retryFetch(url.toString(), {
     method: 'POST',
     headers: jsonHeaders(options.key),
     body: JSON.stringify(body),
@@ -414,7 +415,7 @@ export async function activateProxy(
 ): Promise<{ allowed: boolean; proxy?: ManagedProxy; quota?: ProxyQuota }> {
   const server = options.server || DEFAULT_SERVER
   const url = new URL(`/api/v1/proxies/${encodeURIComponent(options.proxyId)}/activate`, server)
-  const response = await fetch(url.toString(), { method: 'POST', headers: authHeaders(options.key) })
+  const response = await retryFetch(url.toString(), { method: 'POST', headers: authHeaders(options.key) })
   throwIfProxyAccessDenied(response)
   const data = await response.json().catch(() => ({})) as {
     allowed?: boolean; reason?: string; proxy?: ManagedProxy; quota?: ProxyQuota
@@ -439,7 +440,7 @@ export async function issueProxyTicket(
   const body: Record<string, unknown> = {}
   if (options.label !== undefined) body.label = options.label
   if (options.ttlMinutes !== undefined) body.ttlMinutes = options.ttlMinutes
-  const response = await fetch(url.toString(), {
+  const response = await retryFetch(url.toString(), {
     method: 'POST',
     headers: jsonHeaders(options.key),
     body: JSON.stringify(body),
@@ -467,7 +468,7 @@ export async function revokeProxyTicket(
   const server = options.server || DEFAULT_SERVER
   const url = new URL(`/api/v1/proxies/${encodeURIComponent(options.proxyId)}/ticket`, server)
   url.searchParams.set('ticketId', options.ticketId)
-  await fetch(url.toString(), { method: 'DELETE', headers: authHeaders(options.key) })
+  await retryFetch(url.toString(), { method: 'DELETE', headers: authHeaders(options.key) })
     .catch(() => undefined)
 }
 
@@ -488,7 +489,7 @@ export interface AccountInfo {
 export async function getAccount(options: { key: string; server?: string }): Promise<AccountInfo> {
   const server = options.server || DEFAULT_SERVER
   const url = new URL('/api/v1/account', server)
-  const response = await fetch(url.toString(), { method: 'GET', headers: authHeaders(options.key) })
+  const response = await retryFetch(url.toString(), { method: 'GET', headers: authHeaders(options.key) })
   if (!response.ok) {
     const body = await response.text().catch(() => '')
     throw new Error(`Failed to get account: HTTP ${response.status}. ${body}`)
@@ -506,7 +507,7 @@ export async function createUserProxy(options: { key: string; server?: string; i
   const { key, id, config } = options
   const server = options.server || DEFAULT_SERVER
   const url = new URL('/api/v1/proxy-library', server)
-  const response = await fetch(url.toString(), {
+  const response = await retryFetch(url.toString(), {
     method: 'POST',
     headers: jsonHeaders(key),
     body: JSON.stringify({ id, config }),
@@ -522,7 +523,7 @@ export async function updateUserProxy(options: { key: string; server?: string; i
   const { key, id, config } = options
   const server = options.server || DEFAULT_SERVER
   const url = new URL(`/api/v1/proxy-library/${encodeURIComponent(id)}`, server)
-  const response = await fetch(url.toString(), {
+  const response = await retryFetch(url.toString(), {
     method: 'PUT',
     headers: jsonHeaders(key),
     body: JSON.stringify({ config }),
@@ -538,7 +539,7 @@ export async function deleteUserProxy(options: { key: string; server?: string; i
   const { key, id } = options
   const server = options.server || DEFAULT_SERVER
   const url = new URL(`/api/v1/proxy-library/${encodeURIComponent(id)}`, server)
-  const response = await fetch(url.toString(), { method: 'DELETE', headers: authHeaders(key) })
+  const response = await retryFetch(url.toString(), { method: 'DELETE', headers: authHeaders(key) })
   if (!response.ok) {
     const errorBody = await response.text().catch(() => '')
     throw new Error(`Failed to delete proxy: HTTP ${response.status}. ${errorBody}`)
@@ -550,7 +551,7 @@ export async function syncPullUserProxies(options: { key: string; server?: strin
   const server = options.server || DEFAULT_SERVER
   const url = new URL('/api/v1/proxy-library', server)
   if (since) url.searchParams.set('since', since)
-  const response = await fetch(url.toString(), { method: 'GET', headers: authHeaders(key) })
+  const response = await retryFetch(url.toString(), { method: 'GET', headers: authHeaders(key) })
   if (!response.ok) {
     const errorBody = await response.text().catch(() => '')
     throw new Error(`Failed to pull proxies: HTTP ${response.status}. ${errorBody}`)

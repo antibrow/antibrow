@@ -23,6 +23,9 @@ vi.mock('../../src/engine/downloader', () => ({
 }))
 
 vi.mock('../../src/engine/persona', () => ({
+  // No persona on disk: these tests are about the archive/directory paths, not
+  // about moving an existing profile to another kernel.
+  readPersona: () => undefined,
   loadOrGeneratePersona: () => ({ kernelVersion: '150.0.0.0', chromeMajor: 150, timezone: 'UTC', languages: ['en-US'] }),
 }))
 

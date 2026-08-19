@@ -26,6 +26,23 @@ describe('capturedWebgl replays both GL contexts', () => {
     expect(webgl.params).toEqual({ '3379': 16384 })
     expect(webgl.shaderPrecision).toEqual({ '35632-36336': '15,15,10' })
   })
+
+  it('carries the extension list through', () => {
+    // Without this the numeric GL face came from the captured machine while the
+    // extension list still described the host GPU.
+    const persona: Persona = {
+      ...desktopPersona(),
+      capturedWebgl: { extensions: ['EXT_sRGB', 'WEBGL_debug_renderer_info'] },
+    }
+    const webgl = personaToFpConfig(persona, { label: 'x', timezone: 'UTC' }).webgl as Record<string, unknown>
+    expect(webgl.extensions).toEqual({ allow: ['EXT_sRGB', 'WEBGL_debug_renderer_info'] })
+  })
+
+  it('leaves the extension list alone when the capture has none', () => {
+    const persona: Persona = { ...desktopPersona(), capturedWebgl: { params: { '3379': 16384 } } }
+    const webgl = personaToFpConfig(persona, { label: 'x', timezone: 'UTC' }).webgl as Record<string, unknown>
+    expect('extensions' in webgl).toBe(false)
+  })
 })
 
 describe('captured facts override the generated defaults', () => {

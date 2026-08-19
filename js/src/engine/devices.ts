@@ -1,3 +1,5 @@
+import { retryFetch } from '../retry-fetch'
+
 /** One real device's bound set of facts, as served by the device library. */
 export interface RealDevice {
   os: string
@@ -75,7 +77,7 @@ export async function fetchRealDevice(opts: {
   const headers: Record<string, string> = { Accept: 'application/json' }
   if (opts.key) headers.Authorization = `Bearer ${opts.key}`
 
-  const res = await fetch(`${server}/api/v1/devices/pick?os=${opts.os}`, { headers })
+  const res = await retryFetch(`${server}/api/v1/devices/pick?os=${opts.os}`, { headers })
   if (!res.ok) {
     let detail = `HTTP ${res.status}`
     try {

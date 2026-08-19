@@ -193,16 +193,27 @@ EXPECTED_FONT_ALLOWLIST = [
 
 #: Generic CSS family mapping. Absent entirely, generic families resolve
 #: through the host's own settings to host fonts - a second way system fonts
-#: used to leak through a Windows persona on a non-Windows host.
+#: used to leak through a Windows persona on a non-Windows host. Every entry
+#: names a second, more widely installed family: a generic that resolves to
+#: nothing measures like a family nobody has.
 EXPECTED_FONT_GENERIC = {
-    "standard": "Times New Roman",
-    "serif": "Times New Roman",
-    "sansSerif": "Arial",
-    "cursive": "Comic Sans MS",
-    "fantasy": "Impact",
+    "standard": "Times New Roman,Georgia",
+    "serif": "Times New Roman,Georgia",
+    "sansSerif": "Arial,Verdana",
+    "cursive": "Comic Sans MS,Trebuchet MS",
+    "fantasy": "Impact,Arial Black",
     "monospace": "Consolas,Courier New",
-    "math": "Cambria Math,Times New Roman",
+    "math": "Cambria Math,Times New Roman,Georgia",
 }
+
+#: Windows-exclusive and with no stand-in: unrenderable on any other host.
+NEVER_ON_A_FOREIGN_HOST = [
+    "Bahnschrift", "Candara", "Consolas", "Constantia", "Corbel", "Ebrima",
+    "Franklin Gothic Medium", "Gabriola", "Gadugi", "Ink Free", "Javanese Text",
+    "Leelawadee UI", "Lucida Console", "Lucida Sans Unicode", "MV Boli",
+    "Marlett", "Palatino Linotype", "Segoe Print", "Segoe Script",
+    "Segoe UI Emoji", "Sitka", "Sylfaen", "Symbol",
+]
 
 
 def test_fonts_block_keeps_the_windows_ui_font_and_no_cjk():
@@ -215,14 +226,31 @@ def test_fonts_block_keeps_the_windows_ui_font_and_no_cjk():
 def test_fonts_allow_is_the_full_windows_font_whitelist():
     # Must fail if `allow` ever goes back to empty - an empty allowlist hides
     # nothing and is exactly the bug that let macOS system fonts enumerate.
-    _, config = config_for()
+    # Pinned to a Windows host: `allow` now depends on the host, so an unpinned
+    # call says something different on each CI runner.
+    _, config = config_for(host_platform="win32")
     assert config["fonts"]["allow"] == EXPECTED_FONT_ALLOWLIST
+
+
+def test_fonts_allow_drops_what_a_foreign_host_can_never_render():
+    # Keeping them would have the enumerable set claim a font the measured set
+    # reports as absent - one browser contradicting itself.
+    _, config = config_for(host_platform="darwin")
+    allow = config["fonts"]["allow"]
+    for family in NEVER_ON_A_FOREIGN_HOST:
+        assert family not in allow
+    # The aliased families stay: a stand-in renders them with Windows metrics.
+    for family in ("Segoe UI", "Segoe UI Symbol", "Calibri", "Cambria", "Cambria Math"):
+        assert family in allow
+    # So do the ones another desktop OS plausibly ships.
+    for family in ("Arial", "Georgia", "Times New Roman", "Verdana", "Tahoma"):
+        assert family in allow
 
 
 def test_fonts_generic_maps_every_css_generic_family():
     # Must fail if any of the seven keys disappears - a missing key falls
     # through to the host's generic-family fonts.
-    _, config = config_for()
+    _, config = config_for(host_platform="win32")
     assert config["fonts"]["generic"] == EXPECTED_FONT_GENERIC
     assert set(config["fonts"]["generic"].keys()) == {
         "standard", "serif", "sansSerif", "cursive", "fantasy", "monospace", "math",

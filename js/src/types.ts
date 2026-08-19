@@ -72,6 +72,18 @@ export interface LaunchOptions {
    * requests). Applies only when the profile is first created.
    */
   realFingerprint?: boolean
+  /** Turn off this profile's Canvas and WebGL noise. */
+  canvasNoise?: boolean
+  /** Log the fingerprint APIs pages touch to `<profileDir>/fp-api-log.jsonl`. */
+  apiLog?: import('./engine/persona').ApiLogMode
+  /** Keep newly registered passkeys in this profile instead of asking. */
+  webauthnCapture?: boolean
+  /**
+   * Reopen the tabs the last session left. On by default. A registration or
+   * warm-up run wants this off: the restored tabs arrive already logged in
+   * somewhere else, and the site sees them.
+   */
+  restoreTabs?: boolean
   /** Overrides the constructor's `temporary`. Temporary profiles are local-only. */
   temporary?: boolean
   /**

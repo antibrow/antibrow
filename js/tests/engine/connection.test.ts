@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { deriveConnection, ECT_RTT_THRESHOLDS, generatePersona, personaToFpConfig } from '../../src/engine/persona'
+import { deriveConnection, deviceToPersonaParts, ECT_RTT_THRESHOLDS, generatePersona, personaToFpConfig } from '../../src/engine/persona'
+import type { RealDevice } from '../../src/engine/devices'
 
 // Chrome 151 real samples: {4g,200,1.6} and {4g,150,1.45}. rtt is a multiple of 25,
 // downlink a multiple of 0.05, and effectiveType is derived from rtt - the three
@@ -97,6 +98,59 @@ describe('deriveConnection', () => {
   })
 })
 
+// One real Windows box out of the device library. rtt 250 / 4g / 4.5 is a trio
+// Chrome itself emitted, so it hangs together; the point of these tests is that
+// nothing ever ships two thirds of it beside a third from somewhere else.
+const CORPUS_DEVICE: RealDevice = {
+  os: 'windows',
+  ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36',
+  navigator: { hardwareConcurrency: 16, deviceMemory: 32 },
+  screen: { width: 1920, height: 1080, devicePixelRatio: 1 },
+  connection: { effectiveType: '4g', rtt: 250, downlink: 4.5, type: 'wifi' },
+  webgl: { unmaskedVendor: 'Google Inc. (Intel)', unmaskedRenderer: 'ANGLE (Intel, …)' },
+}
+
+describe('a replayed device\'s connection', () => {
+  const captured = deviceToPersonaParts(CORPUS_DEVICE, 151).captured
+
+  it('carries the whole trio, not just effectiveType', () => {
+    expect(captured).toMatchObject({ connectionEffectiveType: '4g', connectionRtt: 250, connectionDownlink: 4.5 })
+  })
+
+  it('replays that trio verbatim when nothing was measured', () => {
+    expect(deriveConnection('0011223344556677', undefined, captured))
+      .toEqual({ effectiveType: '4g', rtt: 250, downlink: 4.5 })
+  })
+
+  it('is discarded whole once a proxy rtt is measured', () => {
+    // The bug: effectiveType came from the corpus machine while rtt came from
+    // the proxy probe, shipping '4g' beside rtt 400 - a contradiction Chrome's
+    // own thresholds rule out, and one a site can catch by timing us itself.
+    const c = deriveConnection('0011223344556677', 400, captured)
+    expect(c).toEqual(deriveConnection('0011223344556677', 400))
+    expect(c.effectiveType).toBe('3g')
+  })
+
+  it('never mixes when only part of the trio was captured', () => {
+    // What every persona.json written before the trio travelled together looks
+    // like. Half a reading is worse than none: derive all three instead.
+    const partial = { connectionEffectiveType: '4g' }
+    expect(deriveConnection('0011223344556677', undefined, partial))
+      .toEqual(deriveConnection('0011223344556677'))
+  })
+
+  it('keeps effectiveType agreeing with rtt through personaToFpConfig', () => {
+    const persona = generatePersona(151, '151', { device: CORPUS_DEVICE })
+    const cfg = personaToFpConfig(persona, { label: 'p', timezone: 'UTC', rttMs: 400 }) as
+      { connection: { effectiveType: string; rtt: number; downlink: number; type?: string } }
+    expect(cfg.connection.rtt).toBe(400)
+    expect(cfg.connection.effectiveType).toBe('3g')
+    expect(cfg.connection.downlink).toBeLessThanOrEqual(1.5)
+    // The medium is not latency-derived, so it still comes from the corpus row.
+    expect(cfg.connection.type).toBe('wifi')
+  })
+})
+
 describe('personaToFpConfig connection', () => {
   it('uses the measured rtt when one was passed', () => {
     const persona = generatePersona(150, '150.0.0.0')
@@ -107,12 +161,16 @@ describe('personaToFpConfig connection', () => {
   })
 
   it('no longer emits the old hardcoded trio for every profile', () => {
-    const a = generatePersona(150, '150.0.0.0')
-    const b = generatePersona(150, '150.0.0.0')
-    const cfg = (p: typeof a) => (personaToFpConfig(p, { label: 'p', timezone: 'UTC' }) as
-      { connection: unknown }).connection
-    expect(cfg(a)).not.toEqual({ effectiveType: '4g', rtt: 100, downlink: 10 })
-    expect(cfg(a)).toEqual(deriveConnection(a.seed))
-    expect(cfg(b)).toEqual(deriveConnection(b.seed))
+    // Fixed seeds, not generated ones: rtt lands on a 25ms grid that includes
+    // 100 and downlink tops out at exactly 10, so a random persona hits the old
+    // constant roughly once in three thousand runs and turns this into a flake.
+    const cfg = (seed: string) => {
+      const persona = { ...generatePersona(150, '150.0.0.0'), seed }
+      return (personaToFpConfig(persona, { label: 'p', timezone: 'UTC' }) as { connection: unknown }).connection
+    }
+    for (const seed of ['0011223344556677', 'ffeeddccbbaa9988', 'a1b2c3d4e5f60718']) {
+      expect(cfg(seed)).not.toEqual({ effectiveType: '4g', rtt: 100, downlink: 10 })
+      expect(cfg(seed)).toEqual(deriveConnection(seed))
+    }
   })
 })

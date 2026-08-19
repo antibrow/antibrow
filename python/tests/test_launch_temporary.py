@@ -114,11 +114,15 @@ def test_stays_silent_when_the_profile_already_syncs(tmp_path, capsys):
     assert capsys.readouterr().out == ""
 
 
-def test_stays_silent_on_a_transient_probe_failure(tmp_path, capsys):
+def test_warns_without_claiming_local_only_on_a_transient_probe_failure(tmp_path, capsys):
     # status=0: the request never got an answer, so this is not "the server
-    # said no" - the very distinction a dropped connection must not erase.
+    # said no" - the very distinction a dropped connection must not erase. It
+    # still has to be said out loud, though: silence is what let a whole
+    # session run and be discarded.
     _restore(tmp_path, sync=None, temporary=False, exists=False, status=0)
-    assert capsys.readouterr().out == ""
+    out = capsys.readouterr().out
+    assert "local-only" not in out
+    assert "without cloud sync" in out
 
 
 def test_fires_only_once_across_repeated_launches_of_the_same_name(tmp_path, capsys):

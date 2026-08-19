@@ -20,7 +20,7 @@ from antibrow import browser as B
 from antibrow import kernel as K
 from antibrow import license as L
 from antibrow import profile_cache as P
-from antibrow.errors import ProfileCacheError
+from antibrow.errors import AntibrowError, ProfileCacheError
 from antibrow.profile_sync import ArchiveUrls
 
 
@@ -213,6 +213,45 @@ def test_an_on_progress_caller_gets_it_there_instead_of_stdout(tmp_path, fake_ke
     assert plan.archive is None
     assert capsys.readouterr().out == ""
     assert any("local-only" in m for m in messages)
+
+
+# -- the server could not answer ------------------------------------------
+
+# A throttled or unreachable server used to be indistinguishable from "this
+# profile does not exist in the cloud": the launch went ahead local-only, so the
+# session neither restored nor uploaded and the data was quietly lost.
+
+
+def _unreachable(monkeypatch, status: int) -> None:
+    def ensure(api_key, server=None, *, name, tags=None, create=True, probe_status=None):
+        if probe_status is not None:
+            probe_status.append(status)
+        return False
+
+    monkeypatch.setattr(B._sync, "ensure_server_profile", ensure)
+
+
+def test_a_throttled_probe_warns_instead_of_launching_unsynced_in_silence(
+    tmp_path, fake_kernel, paid_license, monkeypatch
+):
+    _unreachable(monkeypatch, 429)
+    messages = []
+
+    plan = plan_for(tmp_path, on_progress=messages.append)
+
+    assert plan.archive is None
+    assert any("without cloud sync" in m for m in messages)
+
+
+def test_an_explicit_sync_request_fails_rather_than_running_unsynced(
+    tmp_path, fake_kernel, paid_license, monkeypatch
+):
+    # `sync=True` is a promise about where the data goes. Handing back a browser
+    # that silently uploads nothing is worse than not launching.
+    _unreachable(monkeypatch, 429)
+
+    with pytest.raises(AntibrowError, match="429"):
+        plan_for(tmp_path, sync=True)
 
 
 # -- upload on close ------------------------------------------------------

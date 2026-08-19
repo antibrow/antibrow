@@ -56,6 +56,31 @@ describe('temporary profile root', () => {
     expect(second.id).toBe(first.id)
   })
 
+  it('takes a caller-supplied server id instead of asking again', async () => {
+    // launch() has already fetched the row to decide whether a cloud archive
+    // exists; asking a second time inside one launch spent the per-profile
+    // rate-limit budget twice and turned a normal start into a 429.
+    const calls: string[] = []
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (url: string) => {
+      calls.push(String(url))
+      return new Response('{}', { status: 200 })
+    }) as typeof fetch
+    try {
+      const resolved = await resolveProfileDir({
+        cacheDir,
+        profileName: 'gmail',
+        key: 'adb_test',
+        server: 'https://example.invalid',
+        serverId: 'cloud-id-1',
+      })
+      expect(calls).toEqual([])
+      expect(resolved.id).toBe('cloud-id-1')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   it('never asks the server for a temporary profile', async () => {
     const calls: string[] = []
     const originalFetch = globalThis.fetch

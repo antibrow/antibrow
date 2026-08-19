@@ -328,6 +328,8 @@ def unpack_profile_cache(data: bytes, profile_dir: Path | str) -> None:
                 continue
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(zf.read(info))
+    # persona.json is in the archive, so this just overwrote it - including the
+    # kernel version of whichever generation was packed.
 
 
 def download_profile_cache(get_url: str, profile_dir: Path | str) -> bool:

@@ -120,3 +120,38 @@ describe('deviceToPersonaParts', () => {
     expect(parts.captured?.uaPlatformVersion).toBe('15.0.0')
   })
 })
+
+// A phone's font probe reports the names Android aliases (Arial, Helvetica,
+// Georgia), never the families behind them, so a capture replayed as-is leaves
+// `allow` without Roboto or the Notos. `allow` denies by default, so the three
+// CSS generics then resolve to nothing and measure identically - one number
+// where a real phone has three.
+describe('an Android capture adds to the AOSP families, it does not replace them', () => {
+  const capturedFonts = ['Arial', 'Baskerville', 'Courier New', 'Georgia', 'Helvetica', 'Verdana']
+
+  function allowFor(deviceType: 'android' | 'desktop'): string[] {
+    const persona = generatePersona(150, '150', deviceType === 'android' ? { deviceType } : undefined)
+    const config = personaToFpConfig(
+      { ...persona, deviceType, captured: { ...persona.captured, fonts: capturedFonts } },
+      { label: 'x', timezone: 'UTC' },
+    )
+    return (config.fonts as Record<string, unknown>).allow as string[]
+  }
+
+  it('keeps the families the generics point at', () => {
+    const allow = allowFor('android')
+    for (const family of ['Roboto', 'Noto Serif', 'Droid Sans Mono', 'Noto Sans Mono', 'Dancing Script']) {
+      expect(allow).toContain(family)
+    }
+    for (const family of capturedFonts) expect(allow).toContain(family)
+  })
+
+  it('does not list a family twice', () => {
+    const allow = allowFor('android')
+    expect(new Set(allow.map((f) => f.toLowerCase())).size).toBe(allow.length)
+  })
+
+  it('still replaces outright on desktop, where a capture names real files', () => {
+    expect(allowFor('desktop')).toEqual(capturedFonts)
+  })
+})

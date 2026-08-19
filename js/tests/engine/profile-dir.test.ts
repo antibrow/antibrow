@@ -205,13 +205,17 @@ describe('resolveProfileDir (server-aware)', () => {
     expect(second.dir).toBe(first.dir)
   })
 
-  it('does not cache a server-side failure', async () => {
+  // Two resolves that both exhaust the retry policy; the default 5s timeout is
+  // not enough now that a 500 is retried rather than accepted at face value.
+  it('does not cache a server-side failure', { timeout: 30_000 }, async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(mockFetch(500) as unknown as typeof fetch)
     const first = await resolveProfileDir({ cacheDir, profileName: 'gmail', key: 'adb_k', server: 'https://x.test' })
     expect(readProfileMeta(first.dir)?.serverCheckedAt).toBeUndefined()
     fetchSpy.mockClear()
     await resolveProfileDir({ cacheDir, profileName: 'gmail', key: 'adb_k', server: 'https://x.test' })
-    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    // Asks again rather than standing on the failure; the count is whatever the
+    // retry policy spends, not one.
+    expect(fetchSpy).toHaveBeenCalled()
   })
 
   it('never claims an id a sibling directory already holds', async () => {

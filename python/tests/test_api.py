@@ -137,7 +137,9 @@ class TestProfiles:
             api.get_or_create_profile("adb_k", server.url, name="fresh")
 
         assert caught.value.status == 500
-        assert [c["method"] for c in server.calls] == ["GET"]
+        # A 500 is retried, but it must never fall through to creating a row:
+        # the profile may well exist and be temporarily unreadable.
+        assert set(c["method"] for c in server.calls) == {"GET"}
 
     def test_delta_pull_passes_since_and_reports_the_server_clock(self, server):
         server.routes[("GET", "/api/v1/profiles")] = (
