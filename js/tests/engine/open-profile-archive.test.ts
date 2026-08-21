@@ -11,6 +11,14 @@ import path from 'node:path'
 const uploadSpy = vi.fn(async (_dir: string, _url: string) => undefined as string | undefined)
 const downloadSpy = vi.fn(async (_url: string, _dir: string) => true)
 
+// A launch with no proxy looks up this machine's own exit; unit tests must
+// not depend on that reaching the network.
+vi.mock('../../src/engine/geoip', () => ({
+  lookupProxyGeo: async () => null,
+  lookupDirectGeo: async () => null,
+  probeProxyExit: async () => ({ ok: false, latencyMs: 0 }),
+}))
+
 vi.mock('../../src/engine/downloader', () => ({
   defaultKernelVersion: () => ({ version: '150.0.0.0', label: 'Chrome 150', platforms: {} }),
   KERNEL_VERSIONS: [],

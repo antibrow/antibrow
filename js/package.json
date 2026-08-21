@@ -1,6 +1,6 @@
 {
   "name": "anti-detect-browser",
-  "version": "2.20.0",
+  "version": "2.21.0",
   "description": "Anti-detect browser client SDK powered by the Engine runtime, driven with the Playwright API (Windows, macOS + Linux)",
   "type": "module",
   "main": "./dist/index.cjs",

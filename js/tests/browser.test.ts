@@ -37,6 +37,14 @@ const installedKernelUpdatesSpy = vi.fn((): Array<Record<string, unknown>> => []
 const ensureKernelSpy = vi.fn(async () => 'C:/kernels/chrome.exe')
 const refreshKernelVersionsSpy = vi.fn(async () => undefined)
 
+// A launch with no proxy looks up this machine's own exit; unit tests must
+// not depend on that reaching the network.
+vi.mock('../src/engine/geoip', () => ({
+  lookupProxyGeo: async () => null,
+  lookupDirectGeo: async () => null,
+  probeProxyExit: async () => ({ ok: false, latencyMs: 0 }),
+}))
+
 vi.mock('../src/engine', async () => ({
   // The real one, not a stand-in: it is what decides whether a caller's legacy
   // full version reaches the majors-only catalogue.

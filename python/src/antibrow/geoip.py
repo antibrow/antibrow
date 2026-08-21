@@ -19,9 +19,11 @@ import socket
 import ssl
 import struct
 import time
+import urllib.request
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
+from .config import USER_AGENT
 from .proxy import ProxyLike, ProxySpec, parse_proxy
 
 GEO_HOST = "ip-api.com"
@@ -231,6 +233,28 @@ def _lookup_via_socks5(spec: ProxySpec, timeout: float) -> Optional[ProxyGeo]:
         except OSError:
             pass
     return parse_geo_response(body)
+
+
+def lookup_direct_geo(timeout: float = 4.0) -> Optional[ProxyGeo]:
+    """This machine's own exit, for launches with no proxy.
+
+    The kernel leaves the host IP alone there, so the persona has to agree with
+    it: without a public IP WebRTC falls back to being switched off, which no
+    real browser is, and the timezone stays on the persona's default while the
+    address says otherwise. Short timeout because nothing here blocks a launch -
+    a network that swallows the request must not delay every start.
+    """
+    start = time.monotonic()
+    try:
+        request = urllib.request.Request(GEO_URL, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read().decode("utf-8", "replace")
+    except Exception:
+        return None
+    geo = parse_geo_response(body)
+    if geo is not None:
+        geo.rtt_ms = (time.monotonic() - start) * 1000
+    return geo
 
 
 def lookup_proxy_geo(proxy: ProxyLike, timeout: float = DEFAULT_TIMEOUT) -> Optional[ProxyGeo]:

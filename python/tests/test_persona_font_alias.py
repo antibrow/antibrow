@@ -12,15 +12,20 @@ from __future__ import annotations
 from antibrow.persona import generate_persona, persona_to_fp_config
 
 _EXPECTED_ALIAS = {
-    "segoe ui": "Selawik",
-    "segoe ui semibold": "Selawik Semibold",
-    "segoe ui symbol": "Selawik",
-    "calibri": "Carlito",
-    "cambria": "Caladea",
-    "cambria math": "Caladea",
+    "segoe ui": "Selawia",
+    "segoe ui semibold": "Selawia",
+    "segoe ui symbol": "Selawia",
+    "calibri": "Carlina",
+    "cambria": "Caladria",
+    "cambria math": "Caladria",
+    "consolas": "Consolita",
+    "sylfaen": "Sylfano",
+    "franklin gothic medium": "Franklito",
+    "ebrima": "Ebrisa",
     "times new roman": "Liberation Serif",
     "arial": "Liberation Sans",
-    "courier new": "Liberation Mono",
+    "courier new": "Courina",
+    "georgia": "Georgina",
 }
 
 
@@ -62,6 +67,7 @@ def test_covers_the_windows_only_families_the_allowlist_offers():
     for family in (
         "segoe ui", "segoe ui symbol", "calibri", "cambria", "cambria math",
         "times new roman", "arial", "courier new",
+        "consolas", "sylfaen", "franklin gothic medium", "ebrima", "georgia",
     ):
         assert family in allow
         assert fonts["alias"][family]

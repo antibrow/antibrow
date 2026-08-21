@@ -52,6 +52,9 @@ def no_network(monkeypatch):
     monkeypatch.setattr(
         B, "lookup_proxy_geo", lambda *a, **k: pytest.fail("unexpected network call")
     )
+    monkeypatch.setattr(
+        B, "lookup_direct_geo", lambda *a, **k: pytest.fail("unexpected network call")
+    )
     refreshes = []
 
     def refresh(cache_dir, force=False, **kwargs):
@@ -220,6 +223,31 @@ def test_geoip_makes_the_timezone_follow_the_proxy(tmp_path, fake_kernel, fake_l
     assert config["timezone"] == "America/Denver"
     # WebRTC must report the proxy exit, not the real local address.
     assert config["webrtc"] == {"mode": "passthrough", "publicIp": "203.0.113.7"}
+
+
+def test_a_launch_with_no_proxy_follows_its_own_exit(tmp_path, fake_kernel, fake_license, monkeypatch):
+    # Without this the kernel is told to switch WebRTC off, which no real
+    # browser is, and the timezone stays on the persona default while the
+    # address says somewhere else.
+    monkeypatch.setattr(
+        B,
+        "lookup_direct_geo",
+        lambda *a, **k: ProxyGeo(ip="198.51.100.4", country="Germany", timezone="Europe/Berlin"),
+    )
+    plan = plan_for(tmp_path, profile="p1", geoip=True)
+    assert plan.timezone == "Europe/Berlin"
+    assert plan.public_ip == "198.51.100.4"
+
+    config = json.loads((plan.profile_dir / "fp-config.json").read_text(encoding="utf-8"))
+    assert config["webrtc"] == {"mode": "passthrough", "publicIp": "198.51.100.4"}
+
+
+def test_a_direct_lookup_that_fails_leaves_webrtc_off(tmp_path, fake_kernel, fake_license, monkeypatch):
+    monkeypatch.setattr(B, "lookup_direct_geo", lambda *a, **k: None)
+    plan = plan_for(tmp_path, profile="p1", geoip=True)
+    assert plan.public_ip is None
+    config = json.loads((plan.profile_dir / "fp-config.json").read_text(encoding="utf-8"))
+    assert config["webrtc"] == {"mode": "disable"}
 
 
 def test_a_failed_geo_lookup_does_not_block_the_launch(tmp_path, fake_kernel, fake_license, monkeypatch):

@@ -18,6 +18,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -827,6 +828,163 @@ def chmod_kernel_binaries(directory: Path) -> None:
                 pass
 
 
+# Kernel installs are serialised across processes. One cache dir is shared by
+# this package, the JS SDK and the desktop app, and two of them installing the
+# same 190-320MB kernel at once wrote the same temp zip and wiped each other's
+# half-extracted directory: the download looked stalled and either side could go
+# on to launch a mangled kernel. The lock is a file whose mtime the holder keeps
+# touching, so one that dies mid-install goes stale instead of blocking every
+# later launch. The JS SDK uses the same path and rules - changing one language
+# without the other reopens the race between them.
+KERNEL_LOCK_STALE_SECONDS = 60.0
+_KERNEL_LOCK_HEARTBEAT_SECONDS = 5.0
+_KERNEL_LOCK_POLL_SECONDS = 0.25
+_KERNEL_LOCK_MAX_WAIT_SECONDS = 30 * 60.0
+# Abandoned temp zips: unique names mean the next run no longer overwrites them.
+_KERNEL_ZIP_STALE_SECONDS = 60 * 60.0
+
+
+def kernel_lock_path(cache_dir: Path | str, version: str, plat: str) -> Path:
+    name = ".{0}-{1}.lock".format(normalize_kernel_version(version), plat)
+    return Path(cache_dir) / "kernels" / name
+
+
+class _KernelLock:
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._stop = threading.Event()
+        self._beat = threading.Thread(target=self._heartbeat, daemon=True)
+        self._beat.start()
+
+    def _heartbeat(self) -> None:
+        while not self._stop.wait(_KERNEL_LOCK_HEARTBEAT_SECONDS):
+            try:
+                os.utime(self._path, None)
+            except OSError:
+                pass  # stolen or already released
+
+    def release(self) -> None:
+        self._stop.set()
+        try:
+            self._path.unlink()
+        except OSError:
+            pass
+
+
+def _acquire_kernel_lock(
+    lock_path: Path,
+    label: str,
+    is_installed: Callable[[], bool],
+    on_wait: Callable[[], None],
+) -> Optional[_KernelLock]:
+    """None means the wait ended because another process installed it for us."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + _KERNEL_LOCK_MAX_WAIT_SECONDS
+    announced = False
+
+    while True:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            if not announced:
+                announced = True
+                on_wait()
+            try:
+                age = time.time() - lock_path.stat().st_mtime
+            except OSError:
+                continue  # released while we were looking at it
+            if age > KERNEL_LOCK_STALE_SECONDS:
+                try:
+                    lock_path.unlink()
+                except OSError:
+                    pass  # another waiter got there first
+                continue
+            if time.monotonic() > deadline:
+                raise KernelDownloadError(
+                    "Timed out waiting for another process to install kernel {0}. If no "
+                    'other AntiBrow process is running, delete "{1}" and try again.'.format(
+                        label, lock_path
+                    )
+                )
+            time.sleep(_KERNEL_LOCK_POLL_SECONDS)
+            continue
+
+        try:
+            os.write(fd, "{0}\n".format(os.getpid()).encode())
+        except OSError:
+            pass  # the file itself is the lock
+        finally:
+            os.close(fd)
+
+        # Now that the lock is ours the previous holder is done, so this is the
+        # first point where an install on disk can be trusted. Without this look
+        # every waiter would take the lock in turn and download the same kernel
+        # again.
+        if is_installed():
+            try:
+                lock_path.unlink()
+            except OSError:
+                pass
+            return None
+        return _KernelLock(lock_path)
+
+
+def _temp_kernel_zip_path(cache: Path, version: str, plat: str) -> Path:
+    """Unique per attempt: a stale-stolen lock or an older SDK must not share it."""
+    tag = "{0:x}{1:06x}".format(os.getpid(), random.getrandbits(24))
+    return cache / "kernel-{0}-{1}-{2}.zip".format(normalize_kernel_version(version), plat, tag)
+
+
+def _sweep_stale_kernel_zips(cache: Path, version: str, plat: str, keep: Path) -> None:
+    prefix = "kernel-{0}-{1}".format(normalize_kernel_version(version), plat)
+    cutoff = time.time() - _KERNEL_ZIP_STALE_SECONDS
+    try:
+        entries = list(cache.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if not entry.name.startswith(prefix) or entry.suffix != ".zip" or entry == keep:
+            continue
+        # A download in flight keeps bumping its mtime, so age is what separates
+        # an abandoned file from an older SDK still writing the legacy name.
+        try:
+            if entry.stat().st_mtime < cutoff:
+                entry.unlink()
+        except OSError:
+            pass  # raced with its owner
+
+
+def _kernel_install_in_flight(cache: Path, version: str, plat: str) -> bool:
+    """Is another process inside an install of this kernel?
+
+    An installed kernel is *not* proof that it finished: extraction writes the
+    executable well before the rest of the payload, so the lock, not the exe, is
+    what says "still working".
+    """
+    try:
+        age = time.time() - kernel_lock_path(cache, version, plat).stat().st_mtime
+    except OSError:
+        return False  # no lock, or one nobody is touching any more
+    return age <= KERNEL_LOCK_STALE_SECONDS
+
+
+def _kernel_install_satisfies(
+    cache: Path,
+    version: KernelVersion,
+    asset: KernelAsset,
+    exe_path: Path,
+    force: bool,
+) -> bool:
+    """Does what is on disk already answer *this* call?"""
+    if not exe_path.exists():
+        return False
+    # A forced call is chasing a specific rebuild, so only the matching build
+    # counts as the work already being done.
+    if not force:
+        return True
+    return bool(asset.build) and installed_kernel_build(cache, version.version) == asset.build
+
+
 def ensure_kernel(
     cache_dir: Path | str,
     kv: Optional[KernelVersion] = None,
@@ -839,7 +997,8 @@ def ensure_kernel(
 
     Idempotent: an already-installed kernel is a no-op (aside from re-applying
     +x on Linux). ``force=True`` re-downloads, which is how a rebuilt
-    same-version kernel is picked up.
+    same-version kernel is picked up. Concurrent installs of the same kernel,
+    in this process or any other, are serialised behind one lock file.
     """
     cache = Path(cache_dir)
     version = kv or default_kernel_version()
@@ -848,21 +1007,42 @@ def ensure_kernel(
     target_dir = kernel_dir(cache, version.version)
     exe_path = target_dir / asset.exe_rel_path
 
-    if not force and exe_path.exists():
+    def ready() -> Path:
         if _is_linux_asset(plat):
             chmod_kernel_binaries(exe_path.parent)
         return exe_path
 
+    if not force and exe_path.exists():
+        # Not while somebody is re-extracting it: those files are going away.
+        if not _kernel_install_in_flight(cache, version.version, plat):
+            return ready()
+
+    def announce_wait() -> None:
+        if on_progress is not None:
+            on_progress(
+                "Waiting for another process to install kernel {0}".format(version.label)
+            )
+
+    cache.mkdir(parents=True, exist_ok=True)
+    lock = _acquire_kernel_lock(
+        kernel_lock_path(cache, version.version, plat),
+        "{0} ({1})".format(version.version, plat),
+        lambda: _kernel_install_satisfies(cache, version, asset, exe_path, force),
+        announce_wait,
+    )
+    if lock is None:
+        return ready()  # someone else installed exactly what this call wanted
+
     if on_progress is not None:
         on_progress("Downloading kernel {0} ({1})".format(version.label, plat))
 
-    cache.mkdir(parents=True, exist_ok=True)
-    zip_path = cache / "kernel-{0}-{1}.zip".format(version.version, plat)
+    zip_path = _temp_kernel_zip_path(cache, version.version, plat)
     try:
         # Extract in place: on Windows a rename fails with EPERM while
         # antivirus holds the fresh binaries.
         shutil.rmtree(target_dir, ignore_errors=True)
         target_dir.mkdir(parents=True, exist_ok=True)
+        _sweep_stale_kernel_zips(cache, version.version, plat, zip_path)
 
         _download(_cache_bust(asset.download_url), zip_path, on_progress)
         if on_progress is not None:
@@ -898,6 +1078,7 @@ def ensure_kernel(
             zip_path.unlink()
         except OSError:
             pass
+        lock.release()
 
     if on_progress is not None:
         on_progress("Kernel ready: {0}".format(version.version))

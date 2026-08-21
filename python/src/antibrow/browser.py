@@ -33,7 +33,7 @@ from . import kernel as _kernel
 from . import profile_sync as _sync
 from .crypt_key import fetch_profile_crypt_key, resolve_crypt_key
 from .errors import ApiError, LicenseError, ProfileCacheError, ProxyError
-from .geoip import lookup_proxy_geo
+from .geoip import lookup_direct_geo, lookup_proxy_geo
 from .launcher import (
     DEFAULT_LAUNCH_TIMEOUT,
     _drain_output,
@@ -362,6 +362,17 @@ def prepare_launch(
         if proxy_spec is not None and geoip:
             notify("Looking up proxy geo")
             geo = lookup_proxy_geo(proxy_spec)
+            if geo is not None:
+                if geo.timezone and not timezone:
+                    resolved_timezone = geo.timezone
+                if geo.ip:
+                    public_ip = geo.ip
+        elif geoip:
+            # Traffic exits from this machine, so this machine's geo is what the
+            # persona has to agree with: no public IP means WebRTC is switched
+            # off, which no real browser is.
+            notify("Looking up exit geo")
+            geo = lookup_direct_geo()
             if geo is not None:
                 if geo.timezone and not timezone:
                     resolved_timezone = geo.timezone
@@ -937,7 +948,7 @@ class _BaseSession:
 
     @property
     def public_ip(self) -> Optional[str]:
-        """Proxy exit IP, when a geo lookup succeeded."""
+        """Exit IP - the proxy's, or this machine's when there is no proxy."""
         return self._plan.public_ip
 
     @property

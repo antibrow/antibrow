@@ -4,6 +4,25 @@ All notable changes to the `antibrow` Python SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.16.0] - 2026-08-20
+
+### Added
+
+- `lookup_direct_geo()`: this machine's exit IP, country and timezone.
+
+### Changed
+
+- A launch with no proxy now takes its timezone and WebRTC address from this
+  machine's exit instead of the persona's stored values. Pass `geoip=False` to
+  skip the lookup and keep the old behaviour.
+
+### Fixed
+
+- Windows personas now report a consistent WebGL and font profile on non-Windows
+  hosts. Nothing to change in your code.
+- Concurrent installs of the same kernel version no longer interfere with each
+  other, and a launch waits for an install already in progress.
+
 ## [0.15.0] - 2026-08-19
 
 ### Added

@@ -19,15 +19,20 @@ describe('windows font aliases follow the host', () => {
   it('ships the stand-ins on a non-Windows host', () => {
     for (const host of ['darwin', 'linux'] as NodeJS.Platform[]) {
       expect(fontsFor(windowsPersona(), host).alias).toEqual({
-        'segoe ui': 'Selawik',
-        'segoe ui semibold': 'Selawik Semibold',
-        'segoe ui symbol': 'Selawik',
-        calibri: 'Carlito',
-        cambria: 'Caladea',
-        'cambria math': 'Caladea',
+        'segoe ui': 'Selawia',
+        'segoe ui semibold': 'Selawia',
+        'segoe ui symbol': 'Selawia',
+        calibri: 'Carlina',
+        cambria: 'Caladria',
+        'cambria math': 'Caladria',
+        consolas: 'Consolita',
+        sylfaen: 'Sylfano',
+        'franklin gothic medium': 'Franklito',
+        ebrima: 'Ebrisa',
         'times new roman': 'Liberation Serif',
         arial: 'Liberation Sans',
-        'courier new': 'Liberation Mono',
+        'courier new': 'Courina',
+        georgia: 'Georgina',
       })
     }
   })
@@ -59,6 +64,7 @@ describe('windows font aliases follow the host', () => {
     for (const family of [
       'segoe ui', 'segoe ui symbol', 'calibri', 'cambria', 'cambria math',
       'times new roman', 'arial', 'courier new',
+      'consolas', 'sylfaen', 'franklin gothic medium', 'ebrima', 'georgia',
     ]) {
       expect(allow).toContain(family)
       expect(alias[family]).toBeTruthy()

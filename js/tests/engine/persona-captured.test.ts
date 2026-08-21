@@ -21,8 +21,10 @@ describe('capturedWebgl replays both GL contexts', () => {
     }
     const webgl = personaToFpConfig(persona, { label: 'x', timezone: 'UTC' }).webgl as Record<string, unknown>
     expect(webgl.version).toBe('WebGL 1.0 (OpenGL ES 2.0 Chromium)')
-    expect(webgl.version2).toBe('WebGL 2.0 (OpenGL ES 3.0 Chromium)')
-    expect(webgl.shadingLanguageVersion2).toBe('WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)')
+    // The webgl2 pair goes out unwrapped: the kernel adds the outer
+    // "WebGL 2.0 (…)" itself, and the webgl1 pair above is returned verbatim.
+    expect(webgl.version2).toBe('OpenGL ES 3.0 Chromium')
+    expect(webgl.shadingLanguageVersion2).toBe('OpenGL ES GLSL ES 3.0 Chromium')
     expect(webgl.params).toEqual({ '3379': 16384 })
     expect(webgl.shaderPrecision).toEqual({ '35632-36336': '15,15,10' })
   })
@@ -38,10 +40,16 @@ describe('capturedWebgl replays both GL contexts', () => {
     expect(webgl.extensions).toEqual({ allow: ['EXT_sRGB', 'WEBGL_debug_renderer_info'] })
   })
 
-  it('leaves the extension list alone when the capture has none', () => {
+  it('falls back to the Windows extension list when the capture has none', () => {
     const persona: Persona = { ...desktopPersona(), capturedWebgl: { params: { '3379': 16384 } } }
     const webgl = personaToFpConfig(persona, { label: 'x', timezone: 'UTC' }).webgl as Record<string, unknown>
-    expect('extensions' in webgl).toBe(false)
+    // Not "leave it unset": unset means the host GPU answers, so a capture that
+    // skipped the extension list would report macOS extensions beside D3D11
+    // parameters. The captured params still win over the baseline's.
+    const extensions = (webgl.extensions as { allow: string[] }).allow
+    expect(extensions).toContain('WEBGL_compressed_texture_s3tc')
+    expect(extensions).not.toContain('WEBGL_compressed_texture_etc')
+    expect((webgl.params as Record<string, number>)['3379']).toBe(16384)
   })
 })
 

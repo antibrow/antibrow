@@ -21,7 +21,7 @@ import secrets
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
+from typing import Any, Dict, FrozenSet, List, Literal, Optional, Sequence, Tuple
 
 from .android_devices import ANDROID_FALLBACK_DEVICES
 from .kernel import normalize_kernel_version
@@ -430,6 +430,84 @@ def chrome_major_of(kernel_version: str) -> int:
         raise ValueError("Malformed kernel version: {0!r}".format(kernel_version))
 
 
+# The capability surface a Windows Chrome answers with over D3D11. Without it
+# only the two unmasked strings are spoofed and getParameter, the shader
+# precision ranges and the extension list keep reporting the host GPU, so a
+# persona claiming D3D11 replies with Metal or Mesa numbers - one API
+# contradicting itself, which is harder evidence than any single odd value.
+#
+# Taken from 133 real Windows captures: every entry below was unanimous across
+# Intel, NVIDIA and AMD. Keys are the decimal GLenum the kernel looks up.
+_D3D11_PARAMS: Dict[str, int] = {
+    "3379": 16384, "3408": 4, "3410": 8, "3411": 8, "3412": 8, "3413": 8,
+    "3414": 24, "3415": 0, "34024": 16384, "34047": 16, "34076": 16384,
+    "34921": 16, "34930": 16, "35660": 16, "35661": 32, "36348": 30,
+    "36349": 1024,
+}
+
+# highp/mediump/lowp, vertex and fragment; "min,max,precision" per the kernel.
+_D3D11_SHADER_PRECISION: Dict[str, str] = {
+    "35632-36336": "127,127,23", "35632-36337": "127,127,23", "35632-36338": "127,127,23",
+    "35632-36339": "31,30,0", "35632-36340": "31,30,0", "35632-36341": "31,30,0",
+    "35633-36336": "127,127,23", "35633-36337": "127,127,23", "35633-36338": "127,127,23",
+    "35633-36339": "31,30,0", "35633-36340": "31,30,0", "35633-36341": "31,30,0",
+}
+
+_D3D11_EXTENSIONS = [
+    "ANGLE_instanced_arrays", "EXT_blend_minmax", "EXT_clip_control",
+    "EXT_color_buffer_half_float", "EXT_depth_clamp", "EXT_disjoint_timer_query",
+    "EXT_float_blend", "EXT_frag_depth", "EXT_polygon_offset_clamp", "EXT_sRGB",
+    "EXT_shader_texture_lod", "EXT_texture_compression_bptc",
+    "EXT_texture_compression_rgtc", "EXT_texture_filter_anisotropic",
+    "EXT_texture_mirror_clamp_to_edge", "KHR_parallel_shader_compile",
+    "OES_element_index_uint", "OES_fbo_render_mipmap", "OES_standard_derivatives",
+    "OES_texture_float", "OES_texture_float_linear", "OES_texture_half_float",
+    "OES_texture_half_float_linear", "OES_vertex_array_object",
+    "WEBGL_blend_func_extended", "WEBGL_color_buffer_float",
+    "WEBGL_compressed_texture_s3tc", "WEBGL_compressed_texture_s3tc_srgb",
+    "WEBGL_debug_renderer_info", "WEBGL_debug_shaders", "WEBGL_depth_texture",
+    "WEBGL_draw_buffers", "WEBGL_lose_context", "WEBGL_multi_draw",
+    "WEBGL_polygon_mode",
+]
+
+
+def windows_webgl_config(gpu_vendor: str) -> Dict[str, Any]:
+    """The Windows GL report for a persona with no real-device capture behind it.
+
+    A capture overrides this field by field, so a replayed machine is unaffected.
+    """
+    # MAX_VERTEX_UNIFORM_VECTORS is the one value that splits by vendor: NVIDIA
+    # reports one fewer than Intel and AMD. Pairing an NVIDIA renderer string
+    # with 4096 is a mismatch a GL-aware scanner can name.
+    params = dict(_D3D11_PARAMS)
+    params["36347"] = 4095 if "NVIDIA" in gpu_vendor else 4096
+    return {
+        "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
+        "shadingLanguageVersion": "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)",
+        # The webgl2 pair is the inner string only - see _inner_gl_string.
+        "version2": "OpenGL ES 3.0 Chromium",
+        "shadingLanguageVersion2": "OpenGL ES GLSL ES 3.0 Chromium",
+        "params": params,
+        "shaderPrecision": dict(_D3D11_SHADER_PRECISION),
+        "extensions": {"allow": list(_D3D11_EXTENSIONS)},
+    }
+
+
+def _inner_gl_string(reported: str) -> str:
+    """Strip the outer "WebGL 2.0 (...)" wrapper off a reported GL version.
+
+    The two webgl2 keys are asymmetric with their webgl1 counterparts: the
+    kernel returns ``version``/``shadingLanguageVersion`` verbatim but wraps the
+    ``2`` pair in its own prefix. A capture records what the browser reported,
+    which is the wrapped form, so passing it straight through produced
+    "WebGL 2.0 (WebGL 2.0 (OpenGL ES 3.0 Chromium))" - a string no browser emits.
+    """
+    open_paren = reported.find("(")
+    if open_paren > 0 and reported.endswith(")"):
+        return reported[open_paren + 1 : -1]
+    return reported
+
+
 def captured_webgl_config(captured: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Translate a captured ``webgl`` blob into the fields the kernel replays.
 
@@ -450,10 +528,10 @@ def captured_webgl_config(captured: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     # synthesized strings.
     version2 = captured.get("VERSION2")
     if isinstance(version2, str):
-        out["version2"] = version2
+        out["version2"] = _inner_gl_string(version2)
     shading2 = captured.get("SHADING_LANGUAGE_VERSION2")
     if isinstance(shading2, str):
-        out["shadingLanguageVersion2"] = shading2
+        out["shadingLanguageVersion2"] = _inner_gl_string(shading2)
     params = captured.get("params")
     if isinstance(params, dict):
         out["params"] = params
@@ -635,23 +713,28 @@ _ANDROID_ALLOW_FONTS: Sequence[str] = (
     "Carrois Gothic SC", "Coming Soon", "Cutive Mono", "Dancing Script",
 )
 
-# Windows-exclusive families with no stand-in. On a non-Windows host they can
-# never be rendered, so listing them says "installed" on the enumerable side
-# while the measured side says "absent" - two channels of the same browser
-# contradicting each other, which is worse than a Windows box that simply lacks
-# a few optional fonts. Membership is a property of the family, not of this
-# machine: one another desktop OS might ship (Times New Roman, Symbol) stays on,
-# even where a given host turns out not to have it.
-_WINDOWS_ONLY_FONTS = frozenset(
-    {
-        "bahnschrift", "candara", "consolas", "constantia", "corbel", "ebrima",
-        "franklin gothic medium", "gabriola", "gadugi", "ink free",
-        "javanese text", "leelawadee ui", "lucida console",
-        "lucida sans unicode", "mv boli", "marlett", "palatino linotype",
-        "segoe print", "segoe script", "segoe ui emoji", "sitka", "sylfaen",
-        "symbol",
-    }
-)
+# Families the host OS ships under the same name, lowercased. ``fonts.allow``
+# is default-deny once non-empty, so anything listed but absent from the host
+# enumerates as installed while measuring like a family nobody has - the same
+# contradiction the allowlist exists to prevent. Membership is a property of the
+# host OS, not of this machine: a font the user installed themselves is
+# deliberately not counted, since dropping one family is a weak signal and
+# claiming one that cannot be drawn is a hard tell.
+#
+# darwin is /System/Library/Fonts/Supplemental, which every macOS ships. linux
+# has no equivalent - the MS core fonts are a separate package there, so a
+# Windows persona on Linux keeps only what the kernel bundles a stand-in for.
+_HOST_FONTS: Dict[str, FrozenSet[str]] = {
+    "darwin": frozenset(
+        {
+            "andale mono", "arial", "arial black", "arial narrow",
+            "arial unicode ms", "brush script mt", "comic sans ms",
+            "courier new", "georgia", "impact", "microsoft sans serif",
+            "tahoma", "times new roman", "trebuchet ms", "verdana", "webdings",
+            "wingdings", "wingdings 2", "wingdings 3",
+        }
+    ),
+}
 
 # Metric-compatible stand-ins the kernel ships and matches behind the original
 # family name. Windows-only families do not exist on another host, so
@@ -661,27 +744,45 @@ _WINDOWS_ONLY_FONTS = frozenset(
 # enumerates. Keys must be lowercase and trimmed: that is what the kernel
 # looks up.
 _WINDOWS_FONT_ALIAS: Dict[str, str] = {
-    "segoe ui": "Selawik",
-    "segoe ui semibold": "Selawik Semibold",
-    "segoe ui symbol": "Selawik",
-    "calibri": "Carlito",
-    "cambria": "Caladea",
-    "cambria math": "Caladea",
-    # Metrically identical by design, which is what the Liberation family was
-    # drawn for. Without them the three most basic Windows families are absent
-    # on any host that lacks them, and ``serif`` collapses with them.
+    "segoe ui": "Selawia",
+    "segoe ui semibold": "Selawia",
+    "segoe ui symbol": "Selawia",
+    "calibri": "Carlina",
+    "cambria": "Caladria",
+    "cambria math": "Caladria",
+    "consolas": "Consolita",
+    "sylfaen": "Sylfano",
+    "franklin gothic medium": "Franklito",
+    "ebrima": "Ebrisa",
+    "courier new": "Courina",
+    "georgia": "Georgina",
+    # The only two whose open-source stand-in is metric-exact as published; the
+    # rest above carry advances copied from the real family, so pointing these
+    # at a same-looking substitute would be a downgrade.
     "times new roman": "Liberation Serif",
     "arial": "Liberation Sans",
-    "courier new": "Liberation Mono",
+    # Deliberately absent: MS Gothic. An English Windows does not ship it either
+    # (it arrives with the Japanese language pack), so measuring as absent is
+    # what a real machine does.
 }
 
 
-def _drop_unrenderable(fonts: Sequence[str]) -> List[str]:
-    """Drop what this host can never render; a stand-in exempts a family."""
+def _drop_unrenderable(fonts: Sequence[str], host: str) -> List[str]:
+    """Keep only what this host can actually draw; a bundled stand-in exempts a
+    family. Phrased as a whitelist because a replayed real device brings
+    whatever fonts that machine had - an open set no hand-written exclusion list
+    covers. An empty result would switch ``fonts.allow`` back to hiding nothing.
+    """
+    host_fonts = _HOST_FONTS.get(host, frozenset())
+    kept = _renderable(fonts, host_fonts)
+    return kept or _renderable(_WINDOWS_ALLOW_FONTS, host_fonts)
+
+
+def _renderable(fonts: Sequence[str], host_fonts: FrozenSet[str]) -> List[str]:
     return [
         f
         for f in fonts
-        if f.lower() not in _WINDOWS_ONLY_FONTS or f.lower() in _WINDOWS_FONT_ALIAS
+        if f.strip().lower() in _WINDOWS_FONT_ALIAS or f.strip().lower() in host_fonts
     ]
 
 
@@ -738,13 +839,15 @@ def persona_to_fp_config(
         {"vendor": gpu_vendor, "architecture": gpu_arch} if gpu_vendor else {}
     )
 
-    webgl: Dict[str, Any] = dict(
-        {
-            "unmaskedVendor": persona.gpu_vendor,
-            "unmaskedRenderer": persona.gpu_renderer,
-        },
-        **captured_webgl_config(persona.captured_webgl),
-    )
+    webgl: Dict[str, Any] = {
+        "unmaskedVendor": persona.gpu_vendor,
+        "unmaskedRenderer": persona.gpu_renderer,
+    }
+    # Android personas always arrive with a capture, so there is no synthesized
+    # OpenGL ES surface to fall back on and none is invented here.
+    if not android:
+        webgl.update(windows_webgl_config(persona.gpu_vendor))
+    webgl.update(captured_webgl_config(persona.captured_webgl))
     canvas: Dict[str, Any] = {"seed": persona.canvas_seed}
     # Written only when noise is explicitly off - the kernel already defaults it
     # on, so emitting "on" would make an unchanged profile look changed.
@@ -813,11 +916,12 @@ def persona_to_fp_config(
     # Only when the host is not the OS the persona claims: on Windows those
     # families are the real thing, aliasing them would substitute a stand-in for
     # a font that is present, and nothing needs dropping.
-    foreign_host = not android and (host_platform or sys.platform) != "win32"
+    host = host_platform or sys.platform
+    foreign_host = not android and host != "win32"
     if android:
         allow_fonts = list(_ANDROID_ALLOW_FONTS)
     elif foreign_host:
-        allow_fonts = _drop_unrenderable(_WINDOWS_ALLOW_FONTS)
+        allow_fonts = _drop_unrenderable(_WINDOWS_ALLOW_FONTS, host)
     else:
         allow_fonts = list(_WINDOWS_ALLOW_FONTS)
     fonts: Dict[str, Any] = {
@@ -940,7 +1044,7 @@ def persona_to_fp_config(
             if android:
                 config["fonts"]["allow"] = _merge_fonts(_ANDROID_ALLOW_FONTS, cap.fonts)
             elif foreign_host:
-                config["fonts"]["allow"] = _drop_unrenderable(cap.fonts)
+                config["fonts"]["allow"] = _drop_unrenderable(cap.fonts, host)
             else:
                 config["fonts"]["allow"] = list(cap.fonts)
         if cap.webgl_extensions:

@@ -67,11 +67,18 @@ const EXPECTED_FONT_GENERIC = {
 
 // Windows-exclusive and with no stand-in: unrenderable on any other host.
 const NEVER_ON_A_FOREIGN_HOST = [
-  'Bahnschrift', 'Candara', 'Consolas', 'Constantia', 'Corbel', 'Ebrima',
-  'Franklin Gothic Medium', 'Gabriola', 'Gadugi', 'Ink Free', 'Javanese Text',
-  'Leelawadee UI', 'Lucida Console', 'Lucida Sans Unicode', 'MV Boli', 'Marlett',
-  'Palatino Linotype', 'Segoe Print', 'Segoe Script', 'Segoe UI Emoji', 'Sitka',
-  'Sylfaen', 'Symbol',
+  'Bahnschrift', 'Candara', 'Constantia', 'Corbel', 'Gabriola', 'Gadugi',
+  'Ink Free', 'Javanese Text', 'Leelawadee UI', 'Lucida Console',
+  'Lucida Sans Unicode', 'MV Boli', 'Marlett', 'Palatino Linotype',
+  'Segoe Print', 'Segoe Script', 'Segoe UI Emoji', 'Sitka', 'Symbol',
+]
+
+// The families a detector expects a Windows machine to measure. Each has a
+// stand-in, so each must produce its own width rather than the one a family
+// nobody installed produces.
+const SIGNATURE_FAMILIES_WITH_A_STAND_IN = [
+  'Segoe UI', 'Calibri', 'Cambria', 'Consolas', 'Sylfaen',
+  'Franklin Gothic Medium', 'Ebrima',
 ]
 
 // Pinned rather than left to process.platform: `allow` now depends on the host,
@@ -104,7 +111,7 @@ describe('fp-config fonts block', () => {
     const allow = (configFor('darwin').fonts as Record<string, unknown>).allow as string[]
     for (const family of NEVER_ON_A_FOREIGN_HOST) expect(allow).not.toContain(family)
     // The aliased families stay: a stand-in renders them with Windows metrics.
-    for (const family of ['Segoe UI', 'Segoe UI Symbol', 'Calibri', 'Cambria', 'Cambria Math']) {
+    for (const family of [...SIGNATURE_FAMILIES_WITH_A_STAND_IN, 'Segoe UI Symbol', 'Cambria Math']) {
       expect(allow).toContain(family)
     }
     // So do the ones another desktop OS plausibly ships.
@@ -126,5 +133,55 @@ describe('fp-config fonts block', () => {
     expect(Object.keys(fonts.generic as Record<string, unknown>).sort()).toEqual(
       ['cursive', 'fantasy', 'math', 'monospace', 'sansSerif', 'serif', 'standard'].sort(),
     )
+  })
+})
+
+// A replayed real device brings an open-ended font list - whatever that machine
+// happened to have installed. The filter must hold for names nobody enumerated
+// in advance, or the profile claims families the host has no glyphs for and
+// every one of them measures as the same fallback width.
+const CAPTURED_WINDOWS_FONTS = [
+  'Arial', 'Segoe UI', 'Georgia', 'Verdana', 'Tahoma',
+  'Consolas', 'Sylfaen', 'Ebrima', 'Franklin Gothic Medium',
+  'MS Gothic', 'SimSun', 'Microsoft YaHei', 'Malgun Gothic', 'Yu Gothic',
+  'Segoe MDL2 Assets', 'HoloLens MDL2 Assets', 'Montserrat',
+]
+
+function capturedConfigFor(hostPlatform: NodeJS.Platform): Record<string, unknown> {
+  const persona = generatePersona(150, '150.0.0.0')
+  persona.captured = { fonts: CAPTURED_WINDOWS_FONTS }
+  return personaToFpConfig(persona, { label: 'profile-1', hostPlatform })
+}
+
+describe('captured font lists', () => {
+  it('drops captured families a foreign host cannot render', () => {
+    const allow = (capturedConfigFor('darwin').fonts as Record<string, unknown>).allow as string[]
+    // Stand-in fonts ship with the kernel, so these render with Windows metrics.
+    for (const family of ['Arial', 'Segoe UI']) expect(allow).toContain(family)
+    // macOS ships these under the same family name.
+    for (const family of ['Georgia', 'Verdana', 'Tahoma']) expect(allow).toContain(family)
+    // A stand-in keeps these enumerable and measurable.
+    for (const family of ['Consolas', 'Sylfaen', 'Ebrima', 'Franklin Gothic Medium']) {
+      expect(allow).toContain(family)
+    }
+    // No stand-in and no host glyphs. The CJK and icon families are the ones the
+    // hand-written Windows-only list never covered.
+    for (const family of [
+      'MS Gothic', 'SimSun', 'Microsoft YaHei', 'Malgun Gothic', 'Yu Gothic',
+      'Segoe MDL2 Assets', 'HoloLens MDL2 Assets', 'Montserrat',
+    ]) expect(allow).not.toContain(family)
+  })
+
+  it('replays the capture verbatim on a Windows host', () => {
+    const allow = (capturedConfigFor('win32').fonts as Record<string, unknown>).allow as string[]
+    expect(allow).toEqual(CAPTURED_WINDOWS_FONTS)
+  })
+
+  it('never empties allow, which would switch the kernel back to hiding nothing', () => {
+    const persona = generatePersona(150, '150.0.0.0')
+    persona.captured = { fonts: ['Sylfaen', 'Ebrima', 'MS Gothic'] }
+    const allow = (personaToFpConfig(persona, { label: 'p', hostPlatform: 'darwin' })
+      .fonts as Record<string, unknown>).allow as string[]
+    expect(allow.length).toBeGreaterThan(0)
   })
 })

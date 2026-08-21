@@ -32,8 +32,10 @@ def test_capturedwebgl_carries_the_webgl2_version_strings_through():
     }
     webgl = persona_to_fp_config(persona, label="x", timezone="UTC")["webgl"]
     assert webgl["version"] == "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
-    assert webgl["version2"] == "WebGL 2.0 (OpenGL ES 3.0 Chromium)"
-    assert webgl["shadingLanguageVersion2"] == "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)"
+    # The webgl2 pair goes out unwrapped: the kernel adds the outer
+    # "WebGL 2.0 (...)" itself, and the webgl1 pair above is returned verbatim.
+    assert webgl["version2"] == "OpenGL ES 3.0 Chromium"
+    assert webgl["shadingLanguageVersion2"] == "OpenGL ES GLSL ES 3.0 Chromium"
     assert webgl["params"] == {"3379": 16384}
     assert webgl["shaderPrecision"] == {"35632-36336": "15,15,10"}
 
@@ -125,8 +127,13 @@ def test_capturedwebgl_carries_the_extension_list_through():
     assert webgl["extensions"] == {"allow": ["EXT_sRGB", "WEBGL_debug_renderer_info"]}
 
 
-def test_capturedwebgl_leaves_extensions_alone_when_the_capture_has_none():
+def test_capturedwebgl_falls_back_to_the_windows_extension_list():
+    # Not "leave it unset": unset means the host GPU answers, so a capture that
+    # skipped the extension list would report macOS extensions beside D3D11
+    # parameters. The captured params still win over the baseline's.
     persona = desktop_persona()
     persona.captured_webgl = {"params": {"3379": 16384}}
     webgl = persona_to_fp_config(persona, label="x", timezone="UTC")["webgl"]
-    assert "extensions" not in webgl
+    assert "WEBGL_compressed_texture_s3tc" in webgl["extensions"]["allow"]
+    assert "WEBGL_compressed_texture_etc" not in webgl["extensions"]["allow"]
+    assert webgl["params"] == {"3379": 16384}

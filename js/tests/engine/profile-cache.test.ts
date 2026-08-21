@@ -524,7 +524,7 @@ describe('importProfileArchive - launcher format (.fpprofile)', () => {
     expect(persona.capturedWebgl).toEqual(captured)
 
     const cfg = personaToFpConfig(persona, { label: 'x', timezone: 'Europe/Berlin' })
-    expect(cfg.webgl).toEqual({
+    expect(cfg.webgl).toMatchObject({
       unmaskedVendor: LAUNCHER_PERSONA.gpu_vendor,
       unmaskedRenderer: LAUNCHER_PERSONA.gpu_renderer,
       version: captured.VERSION,
@@ -533,6 +533,9 @@ describe('importProfileArchive - launcher format (.fpprofile)', () => {
       // triples become "min,max,precision"; malformed entries are dropped
       shaderPrecision: { VERTEX_HIGH_FLOAT: '127,127,23' },
     })
+    // What the capture omits comes from the Windows baseline, never from the
+    // host GPU: a half-replayed report is the contradiction to avoid.
+    expect((cfg.webgl as Record<string, unknown>).version2).toBe('OpenGL ES 3.0 Chromium')
   })
 
   it('reads the profile switches (api log / canvas noise / passkey capture) off the manifest', () => {
