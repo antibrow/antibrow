@@ -4,6 +4,25 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.21.0] - 2026-08-20
+
+### Added
+
+- `lookupDirectGeo()`: this machine's exit IP, country and timezone.
+
+### Changed
+
+- A launch with no proxy now takes its timezone and WebRTC address from this
+  machine's exit instead of the persona's stored values. Pass `geoip: false` to
+  skip the lookup and keep the old behaviour.
+
+### Fixed
+
+- Windows personas now report a consistent WebGL and font profile on non-Windows
+  hosts. Nothing to change in your code.
+- Concurrent installs of the same kernel version no longer interfere with each
+  other, and a launch waits for an install already in progress.
+
 ## [2.20.0] - 2026-08-19
 
 ### Changed

@@ -93,7 +93,9 @@ def _allow_for(device_type):
     if persona.captured is None:
         persona.captured = CapturedFacts()
     persona.captured.fonts = list(_CAPTURED_FONTS)
-    config = persona_to_fp_config(persona, label="x", timezone="UTC")
+    # Pinned: ``allow`` depends on the host, so an unpinned call filters the
+    # desktop capture differently on each CI runner.
+    config = persona_to_fp_config(persona, label="x", timezone="UTC", host_platform="win32")
     return config["fonts"]["allow"]
 
 

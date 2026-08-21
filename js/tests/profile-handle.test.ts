@@ -9,6 +9,14 @@ import {
 import { uploadProfileCache, exportProfileArchiveAsync } from '../src/engine'
 
 const launchSpy = vi.hoisted(() => vi.fn(async () => ({ profileDir: '/p/shop-01' })))
+// A launch with no proxy looks up this machine's own exit; unit tests must
+// not depend on that reaching the network.
+vi.mock('../src/engine/geoip', () => ({
+  lookupProxyGeo: async () => null,
+  lookupDirectGeo: async () => null,
+  probeProxyExit: async () => ({ ok: false, latencyMs: 0 }),
+}))
+
 vi.mock('../src/browser', () => ({
   AntiDetectBrowser: class {
     launch = launchSpy

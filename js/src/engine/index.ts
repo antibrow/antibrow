@@ -19,7 +19,7 @@ import {
 } from './downloader'
 import { loadOrGeneratePersona, readPersona, writePersona, withKernelVersion, type ApiLogMode, type DeviceType, type Persona, type PersonaInit } from './persona'
 import { fetchRealDevice } from './devices'
-import { lookupProxyGeo, type ProxyGeo } from './geoip'
+import { lookupDirectGeo, lookupProxyGeo, type ProxyGeo } from './geoip'
 import { getLicenseToken } from './license'
 import { launchKernel, type KernelSession } from './launcher'
 import {
@@ -43,7 +43,7 @@ export type { Persona, ApiLogMode, DeviceType, CapturedFacts, PersonaInit } from
 export { fetchRealDevice } from './devices'
 export type { RealDevice } from './devices'
 export { getLicenseToken, fetchLicenseToken, type LicenseInfo } from './license'
-export { lookupProxyGeo as lookupEngineProxyGeo, probeProxyExit, type ProxyGeo, type ProxyProbeResult } from './geoip'
+export { lookupProxyGeo as lookupEngineProxyGeo, lookupDirectGeo, probeProxyExit, type ProxyGeo, type ProxyProbeResult } from './geoip'
 export { resolveProfileDir, resolveProfileDirSync, listProfileEntries, readProfileMeta, writeProfileMeta, isProfileEncrypted, markProfileEncrypted, unmarkProfileEncrypted, readCryptState, writeCryptState, settleCryptState, isCryptKeyPending, markCryptKeyPending, clearCryptKeyPending, profileCryptMarker, CRYPT_STATE_FILE, CRYPT_PENDING_FILE, sanitizeProfileName, profilesRoot, TEMPORARY_PROFILES_DIR } from './profile-dir'
 export type { CryptSettlement } from './profile-dir'
 export { fetchProfileCryptKey, parseCryptKeyBody, resolveCryptKey } from './crypt-key'
@@ -437,12 +437,24 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
 
   let timezone = persona.timezone
   let publicIp: string | undefined
+  let rttMs: number | undefined
   let geo: ProxyGeo | null = null
   if (opts.proxyUrl) {
     opts.onProgress?.('Looking up proxy geo')
     geo = await lookupProxyGeo(opts.proxyUrl).catch(() => null)
     if (geo?.timezone) timezone = geo.timezone
     if (geo?.ip) publicIp = geo.ip
+  } else {
+    // Traffic exits from this machine, so this machine's geo is what the
+    // persona has to agree with. Not published on the session: `geo` there
+    // means the proxy's exit, and a direct answer would read as one. Short
+    // timeout because nothing here blocks a launch - a network that swallows
+    // the request must not add ten seconds to every start.
+    opts.onProgress?.('Looking up exit geo')
+    const direct = await lookupDirectGeo(4_000).catch(() => null)
+    if (direct?.timezone) timezone = direct.timezone
+    if (direct?.ip) publicIp = direct.ip
+    rttMs = direct?.rttMs
   }
 
   opts.onProgress?.('Obtaining license token')
@@ -467,7 +479,7 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
     apiLog: opts.apiLog,
     webauthnCapture: opts.webauthnCapture,
     restoreTabs: opts.restoreTabs,
-    rttMs: geo?.rttMs,
+    rttMs: geo?.rttMs ?? rttMs,
     onProgress: opts.onProgress,
   })
   if (geo) session.geo = geo

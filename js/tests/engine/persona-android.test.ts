@@ -133,7 +133,9 @@ describe('an Android capture adds to the AOSP families, it does not replace them
     const persona = generatePersona(150, '150', deviceType === 'android' ? { deviceType } : undefined)
     const config = personaToFpConfig(
       { ...persona, deviceType, captured: { ...persona.captured, fonts: capturedFonts } },
-      { label: 'x', timezone: 'UTC' },
+      // Pinned: `allow` depends on the host, so an unpinned call filters the
+      // desktop capture differently on each CI runner.
+      { label: 'x', timezone: 'UTC', hostPlatform: 'win32' },
     )
     return (config.fonts as Record<string, unknown>).allow as string[]
   }

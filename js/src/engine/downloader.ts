@@ -608,6 +608,164 @@ export function deleteKernel(cacheDir: string, version: string): void {
 }
 
 /**
+ * Kernel installs are serialised across processes. One cache dir is shared by
+ * the SDK, the desktop app and the Python package, and two of them installing
+ * the same 190-320MB kernel at once wrote the same temp zip and wiped each
+ * other's half-extracted directory: the download looked stalled and either side
+ * could go on to launch a mangled kernel. The lock is a file whose mtime the
+ * holder keeps touching, so one that dies mid-install goes stale instead of
+ * blocking every later launch. The Python SDK follows the same path and rules -
+ * changing one language without the other reopens the race between them.
+ */
+const KERNEL_LOCK_STALE_MS = 60_000
+const KERNEL_LOCK_HEARTBEAT_MS = 5_000
+const KERNEL_LOCK_POLL_MS = 250
+const KERNEL_LOCK_MAX_WAIT_MS = 30 * 60_000
+/** Abandoned temp zips: unique names mean the next run no longer overwrites them. */
+const KERNEL_ZIP_STALE_MS = 60 * 60_000
+
+export function kernelLockPath(
+  cacheDir: string,
+  version: string,
+  platform: SupportedPlatform,
+): string {
+  return path.join(cacheDir, 'kernels', `.${normalizeKernelVersion(version)}-${platform}.lock`)
+}
+
+/** Unique per attempt: a stale-stolen lock or an older SDK must not share it. */
+function tempKernelZipPath(cacheDir: string, version: string, platform: SupportedPlatform): string {
+  const tag = `${process.pid.toString(36)}${Math.random().toString(36).slice(2, 8)}`
+  return path.join(cacheDir, `kernel-${normalizeKernelVersion(version)}-${platform}-${tag}.zip`)
+}
+
+function sweepStaleKernelZips(
+  cacheDir: string,
+  version: string,
+  platform: SupportedPlatform,
+  keep: string,
+): void {
+  const prefix = `kernel-${normalizeKernelVersion(version)}-${platform}`
+  const cutoff = Date.now() - KERNEL_ZIP_STALE_MS
+  try {
+    for (const name of fs.readdirSync(cacheDir)) {
+      if (!name.startsWith(prefix) || !name.endsWith('.zip')) continue
+      const p = path.join(cacheDir, name)
+      if (p === keep) continue
+      // A download in flight keeps bumping its mtime, so age is what separates
+      // an abandoned file from an older SDK still writing the legacy name.
+      try {
+        if (fs.statSync(p).mtimeMs < cutoff) fs.rmSync(p, { force: true })
+      } catch { /* raced with its owner */ }
+    }
+  } catch { /* best-effort */ }
+}
+
+/**
+ * True while another process is inside an install of this kernel. An installed
+ * kernel is *not* proof that it finished: extraction writes the executable well
+ * before the rest of the payload (on mac `ditto` had produced the binary while
+ * the bundle was still incomplete), so the lock, not the exe, is what says
+ * "still working".
+ */
+function kernelInstallInFlight(
+  cacheDir: string,
+  version: string,
+  platform: SupportedPlatform,
+): boolean {
+  try {
+    const age = Date.now() - fs.statSync(kernelLockPath(cacheDir, version, platform)).mtimeMs
+    return age <= KERNEL_LOCK_STALE_MS
+  } catch {
+    return false // no lock, or one nobody is touching any more
+  }
+}
+
+/** Does what is on disk already answer *this* call? */
+function kernelInstallSatisfies(
+  cacheDir: string,
+  kv: KernelVersion,
+  asset: KernelPlatformAsset,
+  exePath: string,
+  force?: boolean,
+): boolean {
+  if (!fs.existsSync(exePath)) return false
+  // A forced call is chasing a specific rebuild, so only the matching build
+  // counts as the work already being done.
+  if (!force) return true
+  return !!asset.build && installedKernelBuild(cacheDir, kv.version) === asset.build
+}
+
+interface KernelLock {
+  release(): void
+}
+
+/** Resolves to undefined when the wait ended because someone else installed it. */
+async function acquireKernelLock(
+  cacheDir: string,
+  kv: KernelVersion,
+  platform: SupportedPlatform,
+  o: { isInstalled: () => boolean; onWait: () => void },
+): Promise<KernelLock | undefined> {
+  const lockPath = kernelLockPath(cacheDir, kv.version, platform)
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true })
+  const deadline = Date.now() + KERNEL_LOCK_MAX_WAIT_MS
+  let announced = false
+
+  for (;;) {
+    let fd: number
+    try {
+      fd = fs.openSync(lockPath, 'wx')
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
+      if (!announced) {
+        announced = true
+        o.onWait()
+      }
+      let ageMs: number
+      try {
+        ageMs = Date.now() - fs.statSync(lockPath).mtimeMs
+      } catch {
+        continue // released while we looked at it
+      }
+      if (ageMs > KERNEL_LOCK_STALE_MS) {
+        try { fs.rmSync(lockPath, { force: true }) } catch { /* another waiter won */ }
+        continue
+      }
+      if (Date.now() > deadline) {
+        throw new Error(
+          `Timed out waiting for another process to install kernel ${kv.version} (${platform}). ` +
+          `If no other AntiBrow process is running, delete "${lockPath}" and try again.`,
+        )
+      }
+      await new Promise((r) => setTimeout(r, KERNEL_LOCK_POLL_MS))
+      continue
+    }
+
+    try { fs.writeSync(fd, `${process.pid}\n`) } catch { /* the file itself is the lock */ }
+    fs.closeSync(fd)
+    // Now that the lock is ours the previous holder is done, so this is the
+    // first point where an install on disk can be trusted. Without this look
+    // every waiter would take the lock in turn and download the same kernel
+    // again.
+    if (o.isInstalled()) {
+      try { fs.rmSync(lockPath, { force: true }) } catch { /* best-effort */ }
+      return undefined
+    }
+    const beat = setInterval(() => {
+      const now = new Date()
+      try { fs.utimesSync(lockPath, now, now) } catch { /* stolen or released */ }
+    }, KERNEL_LOCK_HEARTBEAT_MS)
+    beat.unref?.()
+    return {
+      release() {
+        clearInterval(beat)
+        try { fs.rmSync(lockPath, { force: true }) } catch { /* best-effort */ }
+      },
+    }
+  }
+}
+
+/**
  * Download + extract if needed; returns the executable path. `force` re-downloads
  * a rebuilt kernel published under the same version number.
  */
@@ -619,22 +777,33 @@ export async function ensureKernel(
 ): Promise<string> {
   const platform = currentPlatform()
   const asset = kernelAsset(kv, platform)
-  const exePath = path.join(kernelDir(cacheDir, kv.version), asset.exeRelPath)
-
-  if (!opts?.force && fs.existsSync(exePath)) {
+  const kDir = kernelDir(cacheDir, kv.version)
+  const exePath = path.join(kDir, asset.exeRelPath)
+  const ready = (): string => {
+    // Helper binaries need +x or the browser aborts on posix_spawn EPERM.
     if (isLinuxAsset(platform)) chmodKernelBinaries(path.dirname(exePath))
     return exePath
   }
 
+  if (!opts?.force && fs.existsSync(exePath) && !kernelInstallInFlight(cacheDir, kv.version, platform)) {
+    return ready()
+  }
+
+  const lock = await acquireKernelLock(cacheDir, kv, platform, {
+    isInstalled: () => kernelInstallSatisfies(cacheDir, kv, asset, exePath, opts?.force),
+    onWait: () => onProgress?.(`Waiting for another process to install kernel ${kv.label}`),
+  })
+  if (!lock) return ready() // someone else installed exactly what this call wanted
+
   onProgress?.(`Downloading kernel ${kv.label} (${platform})`)
-  const kDir = kernelDir(cacheDir, kv.version)
-  const zipPath = path.join(cacheDir, `kernel-${kv.version}-${platform}.zip`)
+  const zipPath = tempKernelZipPath(cacheDir, kv.version, platform)
 
   try {
     // In place, not temp-dir-then-rename: on Windows the rename hits EPERM while
     // antivirus holds a lock on the fresh binaries.
     fs.rmSync(kDir, { recursive: true, force: true })
     fs.mkdirSync(kDir, { recursive: true })
+    sweepStaleKernelZips(cacheDir, kv.version, platform, zipPath)
 
     await downloadFile(cacheBustUrl(asset.downloadUrl), zipPath, onProgress)
     onProgress?.('Extracting kernel')
@@ -650,7 +819,6 @@ export async function ensureKernel(
       )
     }
 
-    // Helper binaries need +x or the browser aborts on posix_spawn EPERM.
     if (isLinuxAsset(platform)) chmodKernelBinaries(path.dirname(exePath))
 
     // A broken seal means the extraction mangled the bundle (see
@@ -667,6 +835,7 @@ export async function ensureKernel(
     throw e
   } finally {
     fs.rmSync(zipPath, { force: true })
+    lock.release()
   }
 
   onProgress?.(`Kernel ready: ${kv.version}`)

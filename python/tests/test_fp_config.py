@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from antibrow.persona import (
+    CapturedFacts,
     generate_persona,
     load_or_generate_persona,
     persona_to_fp_config,
@@ -208,11 +209,18 @@ EXPECTED_FONT_GENERIC = {
 
 #: Windows-exclusive and with no stand-in: unrenderable on any other host.
 NEVER_ON_A_FOREIGN_HOST = [
-    "Bahnschrift", "Candara", "Consolas", "Constantia", "Corbel", "Ebrima",
-    "Franklin Gothic Medium", "Gabriola", "Gadugi", "Ink Free", "Javanese Text",
-    "Leelawadee UI", "Lucida Console", "Lucida Sans Unicode", "MV Boli",
-    "Marlett", "Palatino Linotype", "Segoe Print", "Segoe Script",
-    "Segoe UI Emoji", "Sitka", "Sylfaen", "Symbol",
+    "Bahnschrift", "Candara", "Constantia", "Corbel", "Gabriola", "Gadugi",
+    "Ink Free", "Javanese Text", "Leelawadee UI", "Lucida Console",
+    "Lucida Sans Unicode", "MV Boli", "Marlett", "Palatino Linotype",
+    "Segoe Print", "Segoe Script", "Segoe UI Emoji", "Sitka", "Symbol",
+]
+
+# The families a detector expects a Windows machine to measure. Each has a
+# stand-in, so each must produce its own width rather than the one a family
+# nobody installed produces.
+SIGNATURE_FAMILIES_WITH_A_STAND_IN = [
+    "Segoe UI", "Calibri", "Cambria", "Consolas", "Sylfaen",
+    "Franklin Gothic Medium", "Ebrima",
 ]
 
 
@@ -240,7 +248,7 @@ def test_fonts_allow_drops_what_a_foreign_host_can_never_render():
     for family in NEVER_ON_A_FOREIGN_HOST:
         assert family not in allow
     # The aliased families stay: a stand-in renders them with Windows metrics.
-    for family in ("Segoe UI", "Segoe UI Symbol", "Calibri", "Cambria", "Cambria Math"):
+    for family in (*SIGNATURE_FAMILIES_WITH_A_STAND_IN, "Segoe UI Symbol", "Cambria Math"):
         assert family in allow
     # So do the ones another desktop OS plausibly ships.
     for family in ("Arial", "Georgia", "Times New Roman", "Verdana", "Tahoma"):
@@ -297,9 +305,29 @@ def test_a_captured_webgl_report_is_replayed_verbatim():
     assert webgl["unmaskedRenderer"] == persona.gpu_renderer
 
 
-def test_a_persona_without_a_capture_adds_no_webgl_replay_fields():
+def test_a_persona_without_a_capture_falls_back_to_the_windows_gl_surface():
+    # Leaving these out spoofs the two unmasked strings and lets every limit,
+    # precision range and extension keep describing the host GPU - a persona
+    # claiming D3D11 while answering with Metal numbers.
     _, config = config_for()
-    assert set(config["webgl"]) == {"unmaskedVendor", "unmaskedRenderer"}
+    webgl = config["webgl"]
+    assert webgl["params"]["3379"] == 16384
+    assert webgl["shaderPrecision"]["35632-36336"] == "127,127,23"
+    assert "WEBGL_compressed_texture_s3tc" in webgl["extensions"]["allow"]
+    # The kernel wraps the webgl2 pair itself; sending the wrapped form back
+    # yields "WebGL 2.0 (WebGL 2.0 (...))".
+    assert webgl["version2"] == "OpenGL ES 3.0 Chromium"
+
+
+def test_max_vertex_uniform_vectors_follows_the_gpu_vendor():
+    # The one D3D11 value that splits by vendor: NVIDIA reports one fewer.
+    persona, _ = config_for()
+    persona.gpu_vendor = "Google Inc. (NVIDIA)"
+    nvidia = persona_to_fp_config(persona, label="x", timezone="UTC")["webgl"]
+    persona.gpu_vendor = "Google Inc. (AMD)"
+    amd = persona_to_fp_config(persona, label="x", timezone="UTC")["webgl"]
+    assert nvidia["params"]["36347"] == 4095
+    assert amd["params"]["36347"] == 4096
 
 
 def test_a_captured_report_survives_persona_json(tmp_path):
@@ -310,3 +338,52 @@ def test_a_captured_report_survives_persona_json(tmp_path):
     write_persona(tmp_path, persona)
 
     assert load_or_generate_persona(tmp_path, "150.0.0.0").captured_webgl == {"VERSION": "WebGL 1.0"}
+
+
+# A replayed real device brings an open-ended font list - whatever that machine
+# happened to have installed. The filter must hold for names nobody enumerated
+# in advance, or the profile claims families the host has no glyphs for and
+# every one of them measures as the same fallback width.
+CAPTURED_WINDOWS_FONTS = [
+    "Arial", "Segoe UI", "Georgia", "Verdana", "Tahoma",
+    "Consolas", "Sylfaen", "Ebrima", "Franklin Gothic Medium",
+    "MS Gothic", "SimSun", "Microsoft YaHei", "Malgun Gothic", "Yu Gothic",
+    "Segoe MDL2 Assets", "HoloLens MDL2 Assets", "Montserrat",
+]
+
+
+def captured_config_for(host_platform, fonts=None):
+    persona = generate_persona(150, "150.0.0.0")
+    persona.captured = CapturedFacts(fonts=list(fonts or CAPTURED_WINDOWS_FONTS))
+    _, config = config_for(persona, host_platform=host_platform)
+    return config
+
+
+def test_captured_fonts_drop_what_a_foreign_host_cannot_render():
+    allow = captured_config_for("darwin")["fonts"]["allow"]
+    # Stand-in fonts ship with the kernel, so these render with Windows metrics.
+    for family in ("Arial", "Segoe UI"):
+        assert family in allow
+    # macOS ships these under the same family name.
+    for family in ("Georgia", "Verdana", "Tahoma"):
+        assert family in allow
+    # A stand-in keeps these enumerable and measurable.
+    for family in ("Consolas", "Sylfaen", "Ebrima", "Franklin Gothic Medium"):
+        assert family in allow
+    # No stand-in and no host glyphs. The CJK and icon families are the ones the
+    # hand-written Windows-only list never covered.
+    for family in (
+        "MS Gothic", "SimSun", "Microsoft YaHei", "Malgun Gothic", "Yu Gothic",
+        "Segoe MDL2 Assets", "HoloLens MDL2 Assets", "Montserrat",
+    ):
+        assert family not in allow
+
+
+def test_captured_fonts_are_replayed_verbatim_on_a_windows_host():
+    assert captured_config_for("win32")["fonts"]["allow"] == CAPTURED_WINDOWS_FONTS
+
+
+def test_captured_fonts_never_empty_allow():
+    # An empty allow switches the kernel back to hiding nothing.
+    allow = captured_config_for("darwin", ["Sylfaen", "Ebrima", "MS Gothic"])["fonts"]["allow"]
+    assert allow

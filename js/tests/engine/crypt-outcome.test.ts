@@ -20,6 +20,14 @@ const launchSpy = vi.fn(async (_opts: Record<string, unknown>) => ({
   close: vi.fn(async () => undefined),
 }))
 
+// A launch with no proxy looks up this machine's own exit; unit tests must
+// not depend on that reaching the network.
+vi.mock('../../src/engine/geoip', () => ({
+  lookupProxyGeo: async () => null,
+  lookupDirectGeo: async () => null,
+  probeProxyExit: async () => ({ ok: false, latencyMs: 0 }),
+}))
+
 vi.mock('../../src/engine/downloader', () => ({
   defaultKernelVersion: () => ({ version: '151', label: 'Chrome 151', platforms: {} }),
   KERNEL_VERSIONS: [],

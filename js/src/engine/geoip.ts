@@ -217,6 +217,28 @@ export async function probeProxyExit(proxyUrl: string, timeoutMs = 10_000): Prom
   }
 }
 
+/**
+ * This machine's own exit, for launches with no proxy. The kernel leaves the
+ * host IP alone there, so the persona has to agree with it: without a public IP
+ * WebRTC falls back to being switched off, which no real browser is, and the
+ * timezone stays on the persona's default while the address says otherwise.
+ */
+export async function lookupDirectGeo(timeoutMs = 10_000): Promise<ProxyGeo | null> {
+  const start = Date.now()
+  try {
+    const data = await new Promise<string>((resolve, reject) => {
+      const req = http.get(GEO_API_URL, (res) => { readResponse(res).then(resolve, reject) })
+      req.setTimeout(timeoutMs, () => req.destroy(new Error('geo lookup timed out')))
+      req.on('error', reject)
+    })
+    const geo = parseGeoOrThrow(data)
+    geo.rttMs = Date.now() - start
+    return geo
+  } catch {
+    return null
+  }
+}
+
 /** HTTP(S)/SOCKS5/relay. Null on error; use `probeProxyExit` for the reason. */
 export async function lookupProxyGeo(proxyUrl: string, timeoutMs = 10_000): Promise<ProxyGeo | null> {
   return (await probeProxyExit(proxyUrl, timeoutMs)).geo ?? null

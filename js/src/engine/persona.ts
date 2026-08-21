@@ -233,6 +233,18 @@ function generateDesktopPersona(chromeMajor: number, kernelVersion: string): Per
 }
 
 /**
+ * The two webgl2 keys are asymmetric with their webgl1 counterparts: the kernel
+ * returns `version`/`shadingLanguageVersion` verbatim but wraps the `2` pair in
+ * its own "WebGL 2.0 (…)" prefix. A capture records what the browser reported,
+ * which is the wrapped form, so passing it straight through produced
+ * "WebGL 2.0 (WebGL 2.0 (OpenGL ES 3.0 Chromium))" - a string no browser emits.
+ */
+function innerGlString(reported: string): string {
+  const open = reported.indexOf('(')
+  return open > 0 && reported.endsWith(')') ? reported.slice(open + 1, -1) : reported
+}
+
+/**
  * Translate a captured `webgl` blob into the fields the kernel replays. Each
  * `shaderPrecision` triple becomes a "min,max,precision" string; anything
  * malformed is dropped rather than passed on.
@@ -244,8 +256,10 @@ function capturedWebglConfig(captured: Record<string, unknown> | undefined): Rec
   if (typeof captured.SHADING_LANGUAGE_VERSION === 'string') out.shadingLanguageVersion = captured.SHADING_LANGUAGE_VERSION
   // The webgl2 context reports its own version pair. Replaying only the webgl1
   // half leaves GL1 telling the truth while GL2 keeps the synthesized strings.
-  if (typeof captured.VERSION2 === 'string') out.version2 = captured.VERSION2
-  if (typeof captured.SHADING_LANGUAGE_VERSION2 === 'string') out.shadingLanguageVersion2 = captured.SHADING_LANGUAGE_VERSION2
+  if (typeof captured.VERSION2 === 'string') out.version2 = innerGlString(captured.VERSION2)
+  if (typeof captured.SHADING_LANGUAGE_VERSION2 === 'string') {
+    out.shadingLanguageVersion2 = innerGlString(captured.SHADING_LANGUAGE_VERSION2)
+  }
   if (captured.params && typeof captured.params === 'object') out.params = captured.params
   if (captured.shaderPrecision && typeof captured.shaderPrecision === 'object') {
     const precision: Record<string, string> = {}
@@ -263,6 +277,68 @@ function capturedWebglConfig(captured: Record<string, unknown> | undefined): Rec
     out.extensions = { allow: captured.extensions }
   }
   return out
+}
+
+/**
+ * The capability surface a Windows Chrome answers with over D3D11. Without it
+ * only the two unmasked strings are spoofed and `getParameter`, the shader
+ * precision ranges and the extension list keep reporting the host GPU, so a
+ * persona claiming D3D11 replies with Metal or Mesa numbers - one API
+ * contradicting itself, which is harder evidence than any single odd value.
+ *
+ * Taken from 133 real Windows captures: every entry below was unanimous across
+ * Intel, NVIDIA and AMD. Keys are the decimal GLenum the kernel looks up.
+ */
+const D3D11_PARAMS: Readonly<Record<string, number>> = {
+  3379: 16384, 3408: 4, 3410: 8, 3411: 8, 3412: 8, 3413: 8, 3414: 24, 3415: 0,
+  34024: 16384, 34047: 16, 34076: 16384, 34921: 16, 34930: 16, 35660: 16,
+  35661: 32, 36348: 30, 36349: 1024,
+}
+
+/** highp/mediump/lowp, vertex and fragment; "min,max,precision" per the kernel. */
+const D3D11_SHADER_PRECISION: Readonly<Record<string, string>> = {
+  '35632-36336': '127,127,23', '35632-36337': '127,127,23', '35632-36338': '127,127,23',
+  '35632-36339': '31,30,0', '35632-36340': '31,30,0', '35632-36341': '31,30,0',
+  '35633-36336': '127,127,23', '35633-36337': '127,127,23', '35633-36338': '127,127,23',
+  '35633-36339': '31,30,0', '35633-36340': '31,30,0', '35633-36341': '31,30,0',
+}
+
+const D3D11_EXTENSIONS = [
+  'ANGLE_instanced_arrays', 'EXT_blend_minmax', 'EXT_clip_control',
+  'EXT_color_buffer_half_float', 'EXT_depth_clamp', 'EXT_disjoint_timer_query',
+  'EXT_float_blend', 'EXT_frag_depth', 'EXT_polygon_offset_clamp', 'EXT_sRGB',
+  'EXT_shader_texture_lod', 'EXT_texture_compression_bptc',
+  'EXT_texture_compression_rgtc', 'EXT_texture_filter_anisotropic',
+  'EXT_texture_mirror_clamp_to_edge', 'KHR_parallel_shader_compile',
+  'OES_element_index_uint', 'OES_fbo_render_mipmap', 'OES_standard_derivatives',
+  'OES_texture_float', 'OES_texture_float_linear', 'OES_texture_half_float',
+  'OES_texture_half_float_linear', 'OES_vertex_array_object',
+  'WEBGL_blend_func_extended', 'WEBGL_color_buffer_float',
+  'WEBGL_compressed_texture_s3tc', 'WEBGL_compressed_texture_s3tc_srgb',
+  'WEBGL_debug_renderer_info', 'WEBGL_debug_shaders', 'WEBGL_depth_texture',
+  'WEBGL_draw_buffers', 'WEBGL_lose_context', 'WEBGL_multi_draw',
+  'WEBGL_polygon_mode',
+]
+
+/**
+ * The Windows GL report for a persona with no real-device capture behind it.
+ * A capture overrides this field by field, so a replayed machine is unaffected.
+ */
+function windowsWebglConfig(gpuVendor: string): Record<string, unknown> {
+  // MAX_VERTEX_UNIFORM_VECTORS is the one value that splits by vendor: NVIDIA
+  // reports one fewer than Intel and AMD. Pairing an NVIDIA renderer string
+  // with 4096 is a mismatch a GL-aware scanner can name.
+  const maxVertexUniformVectors = gpuVendor.includes('NVIDIA') ? 4095 : 4096
+  return {
+    version: 'WebGL 1.0 (OpenGL ES 2.0 Chromium)',
+    shadingLanguageVersion: 'WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)',
+    // The webgl2 pair is the inner string only - see innerGlString.
+    version2: 'OpenGL ES 3.0 Chromium',
+    shadingLanguageVersion2: 'OpenGL ES GLSL ES 3.0 Chromium',
+    params: { ...D3D11_PARAMS, 36347: maxVertexUniformVectors },
+    shaderPrecision: D3D11_SHADER_PRECISION,
+    extensions: { allow: D3D11_EXTENSIONS },
+  }
 }
 
 /**
@@ -404,21 +480,26 @@ const ANDROID_ALLOW_FONTS = [
 ]
 
 /**
- * Windows-exclusive families with no stand-in. On a non-Windows host they can
- * never be rendered, so listing them says "installed" on the enumerable side
- * while the measured side says "absent" - two channels of the same browser
- * contradicting each other, which is worse than a Windows box that simply
- * lacks a few optional fonts. Membership is a property of the family, not of
- * this machine: one another desktop OS might ship (Times New Roman, Symbol)
- * stays on, even where a given host turns out not to have it.
+ * Families the host OS ships under the same name, lowercased. `fonts.allow` is
+ * default-deny once non-empty, so anything listed but absent from the host
+ * enumerates as installed while measuring like a family nobody has - the same
+ * contradiction the allowlist exists to prevent. Membership is a property of
+ * the host OS, not of this machine: a font the user installed themselves is
+ * deliberately not counted, since dropping one family is a weak signal and
+ * claiming one that cannot be drawn is a hard tell.
+ *
+ * darwin is /System/Library/Fonts/Supplemental, which every macOS ships.
+ * linux has no equivalent - the MS core fonts are a separate package there, so
+ * a Windows persona on Linux keeps only what the kernel bundles a stand-in for.
  */
-const WINDOWS_ONLY_FONTS = new Set([
-  'bahnschrift', 'candara', 'consolas', 'constantia', 'corbel', 'ebrima',
-  'franklin gothic medium', 'gabriola', 'gadugi', 'ink free', 'javanese text',
-  'leelawadee ui', 'lucida console', 'lucida sans unicode', 'mv boli', 'marlett',
-  'palatino linotype', 'segoe print', 'segoe script', 'segoe ui emoji', 'sitka',
-  'sylfaen', 'symbol',
-])
+const HOST_FONTS: Partial<Record<NodeJS.Platform, ReadonlySet<string>>> = {
+  darwin: new Set([
+    'andale mono', 'arial', 'arial black', 'arial narrow', 'arial unicode ms',
+    'brush script mt', 'comic sans ms', 'courier new', 'georgia', 'impact',
+    'microsoft sans serif', 'tahoma', 'times new roman', 'trebuchet ms',
+    'verdana', 'webdings', 'wingdings', 'wingdings 2', 'wingdings 3',
+  ]),
+}
 
 /**
  * Metric-compatible stand-ins the kernel ships and matches behind the original
@@ -429,25 +510,47 @@ const WINDOWS_ONLY_FONTS = new Set([
  * Keys must be lowercase and trimmed: that is the form the kernel looks up.
  */
 const WINDOWS_FONT_ALIAS: Readonly<Record<string, string>> = {
-  'segoe ui': 'Selawik',
-  'segoe ui semibold': 'Selawik Semibold',
-  'segoe ui symbol': 'Selawik',
-  calibri: 'Carlito',
-  cambria: 'Caladea',
-  'cambria math': 'Caladea',
-  // Metrically identical by design, which is what the Liberation family was
-  // drawn for. Without them the three most basic Windows families are absent
-  // on any host that lacks them, and `serif` collapses with them.
+  'segoe ui': 'Selawia',
+  'segoe ui semibold': 'Selawia',
+  'segoe ui symbol': 'Selawia',
+  calibri: 'Carlina',
+  cambria: 'Caladria',
+  'cambria math': 'Caladria',
+  consolas: 'Consolita',
+  sylfaen: 'Sylfano',
+  'franklin gothic medium': 'Franklito',
+  ebrima: 'Ebrisa',
+  'courier new': 'Courina',
+  georgia: 'Georgina',
+  // The only two whose open-source stand-in is metric-exact as published; the
+  // rest above carry advances copied from the real family, so pointing these at
+  // a same-looking substitute would be a downgrade.
   'times new roman': 'Liberation Serif',
   arial: 'Liberation Sans',
-  'courier new': 'Liberation Mono',
+  // Deliberately absent: MS Gothic. An English Windows does not ship it either
+  // (it arrives with the Japanese language pack), so measuring as absent is
+  // what a real machine does.
 }
 
-/** Drop what this host can never render; a stand-in exempts a family. */
-function dropUnrenderable(fonts: readonly string[]): string[] {
+/**
+ * Keep only what this host can actually draw; a bundled stand-in exempts a
+ * family. Phrased as a whitelist because a replayed real device brings whatever
+ * fonts that machine had - an open set no hand-written exclusion list covers.
+ * An empty result would switch `fonts.allow` back to hiding nothing, so it
+ * falls back to the families a stand-in covers.
+ */
+function dropUnrenderable(fonts: readonly string[], host: NodeJS.Platform): string[] {
+  const hostFonts = HOST_FONTS[host] ?? EMPTY_FONT_SET
+  const kept = renderable(fonts, hostFonts)
+  return kept.length ? kept : renderable(WINDOWS_ALLOW_FONTS, hostFonts)
+}
+
+const EMPTY_FONT_SET: ReadonlySet<string> = new Set()
+
+function renderable(fonts: readonly string[], hostFonts: ReadonlySet<string>): string[] {
   return fonts.filter((f) => {
-    const key = f.toLowerCase()
-    return !WINDOWS_ONLY_FONTS.has(key) || key in WINDOWS_FONT_ALIAS
+    const key = f.trim().toLowerCase()
+    return key in WINDOWS_FONT_ALIAS || hostFonts.has(key)
   })
 }
 
@@ -498,6 +601,9 @@ export function personaToFpConfig(
   const webgl: Record<string, unknown> = {
     unmaskedVendor: persona.gpuVendor,
     unmaskedRenderer: persona.gpuRenderer,
+    // Android personas always arrive with a capture, so there is no synthesized
+    // OpenGL ES surface to fall back on and none is invented here.
+    ...(android ? {} : windowsWebglConfig(persona.gpuVendor)),
     ...capturedWebglConfig(persona.capturedWebgl),
   }
   const canvas: Record<string, unknown> = { seed: persona.canvasSeed }
@@ -562,10 +668,11 @@ export function personaToFpConfig(
   // Only when the host is not the OS the persona claims: on Windows those
   // families are the real thing, aliasing them would substitute a stand-in for
   // a font that is present, and nothing needs dropping.
-  const foreignHost = !android && (opts.hostPlatform ?? process.platform) !== 'win32'
+  const hostPlatform = opts.hostPlatform ?? process.platform
+  const foreignHost = !android && hostPlatform !== 'win32'
   const fontAlias = foreignHost ? WINDOWS_FONT_ALIAS : undefined
   const allowFonts = android ? ANDROID_ALLOW_FONTS
-    : foreignHost ? dropUnrenderable(WINDOWS_ALLOW_FONTS)
+    : foreignHost ? dropUnrenderable(WINDOWS_ALLOW_FONTS, hostPlatform)
       : WINDOWS_ALLOW_FONTS
   const config: Record<string, unknown> = {
     version: 1,
@@ -671,7 +778,7 @@ export function personaToFpConfig(
       // capture names real files, so it replaces outright.
       const fonts = config.fonts as Record<string, unknown>
       fonts.allow = android ? mergeFonts(ANDROID_ALLOW_FONTS, cap.fonts)
-        : foreignHost ? dropUnrenderable(cap.fonts)
+        : foreignHost ? dropUnrenderable(cap.fonts, hostPlatform)
           : cap.fonts
     }
     if (cap.webglExtensions?.length) webgl.extensions = { allow: cap.webglExtensions }
