@@ -26,7 +26,7 @@ Create **unlimited browser profiles on your own machine — free, forever.** No 
 
 ### Agent-ready out of the box
 
-Ships as an **MCP server** — one line (`npx anti-detect-browser --mcp`) drops a fully fingerprinted browser into Claude or any MCP client, so your agent can navigate, click, type, read and screenshot the real web. Prefer code? `launch()` returns a standard Playwright `BrowserContext` and `Page`, so your existing scripts work unchanged — only the launch line differs.
+Ships as an **MCP server** — one line (`npx -p anti-detect-browser -p @modelcontextprotocol/sdk anti-detect-browser --mcp`) drops a fully fingerprinted browser into Claude or any MCP client, so your agent can navigate, click, type, read and screenshot the real web. Prefer code? `launch()` returns a standard Playwright `BrowserContext` and `Page`, so your existing scripts work unchanged — only the launch line differs.
 
 ### Technically ahead
 
@@ -174,6 +174,11 @@ With cloud sync on, run it on the machine that used the profile last: `persona.j
 
 ## Use it from an AI agent (MCP)
 
+MCP mode needs `@modelcontextprotocol/sdk`, an **optional peer dependency** — it is
+not installed with this package, so that SDK-only users do not carry an HTTP
+server stack they never run. The `-p` flags below let `npx` fetch both; if you
+install locally instead, run `npm install anti-detect-browser @modelcontextprotocol/sdk`.
+
 Add it to your MCP client config and your agent gets a stealth browser:
 
 ```json
@@ -181,7 +186,11 @@ Add it to your MCP client config and your agent gets a stealth browser:
   "mcpServers": {
     "anti-detect-browser": {
       "command": "npx",
-      "args": ["anti-detect-browser", "--mcp"],
+      "args": [
+        "-p", "anti-detect-browser",
+        "-p", "@modelcontextprotocol/sdk",
+        "anti-detect-browser", "--mcp"
+      ],
       "env": { "ANTI_DETECT_BROWSER_KEY": "your-api-key" }
     }
   }

@@ -114,3 +114,47 @@ def test_android_allowlist_lists_no_family_twice():
 
 def test_desktop_capture_still_replaces_outright():
     assert _allow_for("desktop") == _CAPTURED_FONTS
+
+
+# The corpus is drawn from ordinary web visitors, so a row can carry the
+# collecting page's own webfont, or belong to a desktop that wore a phone UA
+# past the corpus filters. Either way the family enumerates as installed on a
+# phone that has no glyphs for it, which measures like a family nobody has.
+def _android_allow(fonts):
+    persona = generate_persona(151, "151.0.0.0", device_type="android")
+    if persona.captured is None:
+        persona.captured = CapturedFacts()
+    persona.captured.fonts = list(fonts)
+    config = persona_to_fp_config(persona, label="x", timezone="UTC", host_platform="win32")
+    return config["fonts"]["allow"]
+
+
+def test_android_capture_drops_a_page_webfont():
+    allow = _android_allow(["Arial", "Montserrat", "Source Sans Pro"])
+    assert "Montserrat" not in allow
+    assert "Source Sans Pro" not in allow
+    assert "Arial" in allow
+
+
+def test_android_capture_drops_the_desktop_set_a_spoofed_row_brings():
+    allow = _android_allow(
+        ["Arial", "DejaVu Sans", "Liberation Serif", "FreeSans", "Nimbus Roman",
+         "Cantarell", "Segoe UI", "Consolas", "Helvetica Neue", "Menlo"]
+    )
+    for family in ("DejaVu Sans", "Liberation Serif", "FreeSans", "Nimbus Roman",
+                   "Cantarell", "Segoe UI", "Consolas", "Helvetica Neue", "Menlo"):
+        assert family not in allow
+
+
+def test_android_capture_keeps_every_aosp_alias():
+    aliases = ["Arial", "Baskerville", "Courier New", "Georgia", "Helvetica",
+               "Monaco", "Palatino", "Tahoma", "Times New Roman", "Verdana"]
+    allow = _android_allow(aliases + ["Noto Sans Thai", "Roboto Flex"])
+    for family in aliases + ["Noto Sans Thai", "Roboto Flex"]:
+        assert family in allow
+
+
+def test_android_keeps_the_aosp_families_when_the_capture_is_unusable():
+    allow = _android_allow(["Montserrat", "DejaVu Sans"])
+    assert "Roboto" in allow
+    assert "Montserrat" not in allow

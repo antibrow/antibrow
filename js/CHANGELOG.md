@@ -4,17 +4,48 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [2.21.0] - 2026-08-20
+## [2.22.0] - 2026-08-21
 
 ### Added
 
-- `lookupDirectGeo()`: this machine's exit IP, country and timezone.
+- `openProfile({ getProxyUrl })`: resolves the proxy URL once the kernel is
+  ready, instead of taking it before the launch starts. It wins over `proxyUrl`
+  when both are given, and returning `undefined` launches direct. Use it for a
+  credential that does not survive a long wait, such as a per-session proxy
+  ticket on a machine whose first launch has to download a kernel.
+
+### Changed
+
+- `@modelcontextprotocol/sdk` is now an optional peer dependency instead of a
+  dependency, so `npm install anti-detect-browser` brings in 9 packages instead
+  of 102. The library API is unchanged.
+- **If you use `--mcp`**, install the SDK yourself
+  (`npm install @modelcontextprotocol/sdk`), or add
+  `-p anti-detect-browser -p @modelcontextprotocol/sdk` to the `npx` arguments in
+  your MCP client config. Running `--mcp` without it prints what to install.
+
+### Fixed
+
+- `launch({ proxyId })` now takes its managed-proxy credential after the kernel
+  is installed rather than before. A first launch on a machine with no kernel
+  yet could spend long enough downloading one that the credential was no longer
+  valid when the browser started, which showed up as a tunnel connection error
+  on every page. No API change.
+- Android profiles built on a real device no longer expose fonts an Android
+  phone cannot draw. The set is filtered to what the platform actually resolves,
+  so a family that rode in with the device record is dropped. Existing profiles
+  pick this up on their next launch; nothing to change in your code.
+- Corrects the 2.21.0 notes: this package has no `geoip` launch option and no
+  `lookupDirectGeo()` export. Use the long-standing `lookupCurrentGeo()` to read
+  this machine's exit; the lookup a proxy-less launch does cannot be turned off.
+
+## [2.21.0] - 2026-08-20
 
 ### Changed
 
 - A launch with no proxy now takes its timezone and WebRTC address from this
-  machine's exit instead of the persona's stored values. Pass `geoip: false` to
-  skip the lookup and keep the old behaviour.
+  machine's exit instead of the persona's stored values. The lookup always runs
+  and cannot be switched off.
 
 ### Fixed
 

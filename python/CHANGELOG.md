@@ -4,7 +4,7 @@ All notable changes to the `antibrow` Python SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [0.16.0] - 2026-08-20
+## [0.16.0] - 2026-08-21
 
 ### Added
 
@@ -17,6 +17,11 @@ All notable changes to the `antibrow` Python SDK. Format follows
   skip the lookup and keep the old behaviour.
 
 ### Fixed
+
+- Android profiles built on a real device no longer expose fonts an Android
+  phone cannot draw. The set is filtered to what the platform actually resolves,
+  so a family that rode in with the device record is dropped. Existing profiles
+  pick this up on their next launch; nothing to change in your code.
 
 - Windows personas now report a consistent WebGL and font profile on non-Windows
   hosts. Nothing to change in your code.

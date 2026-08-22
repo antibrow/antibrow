@@ -31,7 +31,14 @@ const fakeSession = {
     closeListeners.forEach((cb) => cb())
   }),
 }
-openProfileSpy.mockImplementation(async () => fakeSession)
+// Stands in for the real openProfile, including the one ordering that matters
+// here: the proxy URL is resolved inside the launch (after the kernel would be
+// installed), so a mock that skips it would report "no ticket was ever issued".
+const openProfileDefault = async (opts: { proxyUrl?: string; getProxyUrl?: () => Promise<string | undefined> }) => {
+  if (opts.getProxyUrl) opts.proxyUrl = await opts.getProxyUrl()
+  return fakeSession
+}
+openProfileSpy.mockImplementation(openProfileDefault)
 const licenseSpy = vi.fn(async () => ({ token: 'tok', exp: Math.floor(Date.now() / 1000) + 86400, mi: 10, sync: true }))
 const installedKernelUpdatesSpy = vi.fn((): Array<Record<string, unknown>> => [])
 const ensureKernelSpy = vi.fn(async () => 'C:/kernels/chrome.exe')
@@ -97,6 +104,7 @@ import { AntiDetectBrowser, resolveSyncMode } from '../src/browser'
 beforeEach(() => {
   closeListeners = []
   openProfileSpy.mockClear()
+  openProfileSpy.mockImplementation(openProfileDefault)
   licenseSpy.mockReset()
   licenseSpy.mockResolvedValue({ token: 'tok', exp: Math.floor(Date.now() / 1000) + 86400, mi: 10, sync: true })
   versionCheckSpy.mockReset()
@@ -652,15 +660,31 @@ describe('managed proxy ticket lifecycle', () => {
   })
 
   // Falling back to the account key here would undo the whole change, so a
-  // failed issuance has to fail the launch.
+  // failed issuance has to fail the launch, with no browser left behind.
   it('fails the launch when the ticket cannot be issued', async () => {
-    const { issueProxyTicket } = await import('../src/api')
-    const { openProfile } = await import('../src/engine')
+    const { issueProxyTicket, revokeProxyTicket } = await import('../src/api')
     ;(issueProxyTicket as any).mockRejectedValueOnce(new Error('HTTP 503'))
-    ;(openProfile as any).mockClear()
+    ;(revokeProxyTicket as any).mockClear()
     const b = new AntiDetectBrowser({ key: 'adb_secretkey' })
     await expect(b.launch({ profile: 'shop-03', proxyId: 'px1' })).rejects.toThrow(/503/)
-    expect(openProfile).not.toHaveBeenCalled()
+    expect(revokeProxyTicket).not.toHaveBeenCalled()
+  })
+
+  // The credential is single-session and a first launch on a new machine spends
+  // its first many minutes installing a kernel; taken up front, it can be dead
+  // (or revoked by this launch's own failure path) before the browser reads it.
+  it('issues the ticket from inside the launch, not before it', async () => {
+    const { issueProxyTicket } = await import('../src/api')
+    ;(issueProxyTicket as any).mockClear()
+    openProfileSpy.mockImplementationOnce(async (opts: { getProxyUrl?: () => Promise<string | undefined> }) => {
+      expect(issueProxyTicket).not.toHaveBeenCalled()
+      expect(await opts.getProxyUrl?.()).toBe('relay://px1:sec@proxy.antibrow.com')
+      return fakeSession
+    })
+
+    const b = new AntiDetectBrowser({ key: 'adb_secretkey' })
+    await b.launch({ profile: 'shop-05', proxyId: 'px1' })
+    expect(issueProxyTicket).toHaveBeenCalledTimes(1)
   })
 
   // A launch that dies after issuance (kernel download, concurrency cap, an
@@ -670,7 +694,10 @@ describe('managed proxy ticket lifecycle', () => {
     const { revokeProxyTicket } = await import('../src/api')
     const { openProfile } = await import('../src/engine')
     ;(revokeProxyTicket as any).mockClear()
-    ;(openProfile as any).mockRejectedValueOnce(new Error('kernel download failed'))
+    ;(openProfile as any).mockImplementationOnce(async (opts: { getProxyUrl?: () => Promise<string | undefined> }) => {
+      await opts.getProxyUrl?.()
+      throw new Error('kernel download failed')
+    })
 
     const b = new AntiDetectBrowser({ key: 'adb_secretkey' })
     await expect(b.launch({ profile: 'shop-04', proxyId: 'px1' }))
@@ -678,6 +705,20 @@ describe('managed proxy ticket lifecycle', () => {
     expect(revokeProxyTicket).toHaveBeenCalledWith(
       expect.objectContaining({ proxyId: 'px1', ticketId: 't1' }),
     )
+  })
+
+  // The mirror case: a launch that dies before the kernel is ready never minted
+  // anything, so there is nothing to hand back.
+  it('revokes nothing when the launch fails before the ticket exists', async () => {
+    const { revokeProxyTicket } = await import('../src/api')
+    const { openProfile } = await import('../src/engine')
+    ;(revokeProxyTicket as any).mockClear()
+    ;(openProfile as any).mockRejectedValueOnce(new Error('kernel download failed'))
+
+    const b = new AntiDetectBrowser({ key: 'adb_secretkey' })
+    await expect(b.launch({ profile: 'shop-04', proxyId: 'px1' }))
+      .rejects.toThrow(/kernel download failed/)
+    expect(revokeProxyTicket).not.toHaveBeenCalled()
   })
 
   it('issues no ticket for a user-supplied proxy', async () => {

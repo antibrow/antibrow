@@ -1,6 +1,6 @@
 {
   "name": "anti-detect-browser",
-  "version": "2.21.0",
+  "version": "2.22.0",
   "description": "Anti-detect browser client SDK powered by the Engine runtime, driven with the Playwright API (Windows, macOS + Linux)",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -23,13 +23,13 @@
     "prepublishOnly": "tsup"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.26.0",
     "adm-zip": "^0.6.0",
     "socks": "^2.8.9",
     "ws": "^8.0.0",
     "yauzl": "^3.4.0"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
     "@types/adm-zip": "^0.5.8",
     "@types/node": "^22.0.0",
     "@types/ws": "^8.0.0",
@@ -40,6 +40,7 @@
     "vitest": "^2.0.0"
   },
   "peerDependencies": {
+    "@modelcontextprotocol/sdk": ">=1.26.0",
     "playwright-core": ">=1.40.0"
   },
   "files": [
@@ -72,5 +73,10 @@
   },
   "bugs": {
     "url": "https://github.com/antibrow/antibrow/issues"
+  },
+  "peerDependenciesMeta": {
+    "@modelcontextprotocol/sdk": {
+      "optional": true
+    }
   }
 }

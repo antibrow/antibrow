@@ -713,6 +713,35 @@ _ANDROID_ALLOW_FONTS: Sequence[str] = (
     "Carrois Gothic SC", "Coming Soon", "Cutive Mono", "Dancing Script",
 )
 
+# The families AOSP's fonts.xml aliases onto sans-serif/serif/monospace,
+# lowercased. These are the only non-AOSP names a stock phone can resolve, and
+# they are exactly what a width-comparison probe reports back - which is why a
+# captured Android font list looks like a desktop's and never names Roboto (the
+# default family measures identical to the probe's own baseline).
+_ANDROID_ALIAS_FONTS: FrozenSet[str] = frozenset(
+    {
+        "arial", "helvetica", "tahoma", "verdana", "times", "times new roman",
+        "palatino", "georgia", "baskerville", "goudy", "fantasy",
+        "itc stone serif", "droid sans", "courier", "courier new", "monaco",
+    }
+)
+
+_ANDROID_FAMILY_PREFIXES = ("roboto", "noto", "droid")
+
+
+def _keep_android_fonts(fonts: Sequence[str]) -> List[str]:
+    """Android's font set is closed, so this is a whitelist rather than a list
+    of known offenders. A capture picks up whatever the collecting page had
+    loaded as a webfont, and a desktop browser wearing an Android UA gets
+    through the corpus filters now and then; either way the extra family
+    enumerates as installed on a phone that cannot have it."""
+    kept = []
+    for font in fonts:
+        key = font.strip().lower()
+        if key in _ANDROID_ALIAS_FONTS or key.split(" ")[0] in _ANDROID_FAMILY_PREFIXES:
+            kept.append(font)
+    return kept
+
 # Families the host OS ships under the same name, lowercased. ``fonts.allow``
 # is default-deny once non-empty, so anything listed but absent from the host
 # enumerates as installed while measuring like a family nobody has - the same
@@ -1042,7 +1071,9 @@ def persona_to_fp_config(
             # fallback width. A desktop capture names real files, so it
             # replaces outright.
             if android:
-                config["fonts"]["allow"] = _merge_fonts(_ANDROID_ALLOW_FONTS, cap.fonts)
+                config["fonts"]["allow"] = _merge_fonts(
+                    _ANDROID_ALLOW_FONTS, _keep_android_fonts(cap.fonts)
+                )
             elif foreign_host:
                 config["fonts"]["allow"] = _drop_unrenderable(cap.fonts, host)
             else:

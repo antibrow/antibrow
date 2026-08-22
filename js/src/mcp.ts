@@ -1,9 +1,3 @@
-import { Server } from '@modelcontextprotocol/sdk/server/index.js'
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js'
 import { AntiDetectBrowser } from './browser'
 import { listProxies, claimManagedProxy } from './api'
 import { LiveViewStream, registerLiveSession, unregisterLiveSession } from './liveview'
@@ -54,8 +48,40 @@ export function mcpRootOptions(args: Record<string, unknown> | undefined): { tem
   return { temporary: args?.temporary === true }
 }
 
+/**
+ * Loads the MCP SDK. It is an optional peer dependency, not a hard one: it
+ * pulls in a whole HTTP server stack that only `--mcp` ever touches, and
+ * making every SDK consumer install it meant ~90 transitive packages for code
+ * they never run. The import stays inside this function so the rest of the CLI
+ * keeps working without it.
+ */
+async function loadMcpSdk() {
+  try {
+    const [server, stdio, types] = await Promise.all([
+      import('@modelcontextprotocol/sdk/server/index.js'),
+      import('@modelcontextprotocol/sdk/server/stdio.js'),
+      import('@modelcontextprotocol/sdk/types.js'),
+    ])
+    return {
+      Server: server.Server,
+      StdioServerTransport: stdio.StdioServerTransport,
+      CallToolRequestSchema: types.CallToolRequestSchema,
+      ListToolsRequestSchema: types.ListToolsRequestSchema,
+    }
+  } catch {
+    throw new Error(
+      'MCP server mode needs @modelcontextprotocol/sdk, which is an optional peer dependency.\n' +
+        '  Install it:  npm install @modelcontextprotocol/sdk\n' +
+        '  Or via npx:  npx -p anti-detect-browser -p @modelcontextprotocol/sdk anti-detect-browser --mcp',
+    )
+  }
+}
+
 /** Start the MCP server over stdio. */
 export async function startMcpServer(): Promise<void> {
+  const { Server, StdioServerTransport, CallToolRequestSchema, ListToolsRequestSchema } =
+    await loadMcpSdk()
+
   const apiKey = process.env.ANTI_DETECT_BROWSER_KEY
   if (!apiKey) {
     console.error('Error: ANTI_DETECT_BROWSER_KEY environment variable is required')

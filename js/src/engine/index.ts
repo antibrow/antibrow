@@ -74,6 +74,11 @@ export interface OpenProfileOptions {
   getCryptKey?: () => Promise<string | undefined>
   /** Proxy URL: scheme://user:pass@host:port */
   proxyUrl?: string
+  /** Resolved after the kernel is in place; wins over `proxyUrl`. A managed
+   *  credential is single-session, and a first launch on a new machine spends
+   *  many minutes downloading a kernel before the browser exists - one taken
+   *  before that download can be dead by the time it is used. */
+  getProxyUrl?: () => Promise<string | undefined>
   headless?: boolean
   /** Whether the new window takes focus. Default true. */
   focusWindow?: boolean
@@ -435,13 +440,17 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
 
   if (persona.deviceType === 'android') assertAndroidKernel(kv.version)
 
+  // Deliberately after ensureKernel: everything from here to the spawn is
+  // seconds, so a credential minted now is still alive when the kernel reads it.
+  const proxyUrl = opts.getProxyUrl ? await opts.getProxyUrl() : opts.proxyUrl
+
   let timezone = persona.timezone
   let publicIp: string | undefined
   let rttMs: number | undefined
   let geo: ProxyGeo | null = null
-  if (opts.proxyUrl) {
+  if (proxyUrl) {
     opts.onProgress?.('Looking up proxy geo')
-    geo = await lookupProxyGeo(opts.proxyUrl).catch(() => null)
+    geo = await lookupProxyGeo(proxyUrl).catch(() => null)
     if (geo?.timezone) timezone = geo.timezone
     if (geo?.ip) publicIp = geo.ip
   } else {
@@ -468,7 +477,7 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
     persona,
     timezone,
     publicIp,
-    proxyUrl: opts.proxyUrl,
+    proxyUrl,
     licenseToken,
     cryptKey,
     label: opts.label ?? resolved.name,

@@ -65,6 +65,8 @@ export interface BuildOpenProfileOptionsInput {
   profileName: string
   licenseToken: string
   proxyUrl?: string
+  /** Mints the proxy URL once the kernel is ready; wins over `proxyUrl`. */
+  getProxyUrl?: () => Promise<string | undefined>
   archive: { downloadUrl?: string; uploadUrl?: string; version?: string }
   getArchivePutUrl?: () => Promise<string | undefined>
   cacheDir?: string
@@ -82,13 +84,14 @@ export interface BuildOpenProfileOptionsInput {
  * deterministic inputs and assert on the object it returns.
  */
 export function buildOpenProfileOptions(input: BuildOpenProfileOptionsInput): OpenProfileOptions {
-  const { key, server, profileName, licenseToken, proxyUrl, archive, getArchivePutUrl, cacheDir, profileDir, temporary, serverProfileId, options } = input
+  const { key, server, profileName, licenseToken, proxyUrl, getProxyUrl, archive, getArchivePutUrl, cacheDir, profileDir, temporary, serverProfileId, options } = input
   return {
     key,
     server,
     profileName,
     licenseToken,
     proxyUrl,
+    getProxyUrl,
     archiveGetUrl: archive.downloadUrl,
     archiveVersion: archive.version,
     // Presence decides whether an upload happens; the URL itself is signed
@@ -183,22 +186,30 @@ export class AntiDetectBrowser {
     const temporary = options.temporary ?? this.temporary
     const syncMode = resolveSyncMode({ temporary, sync: options.sync, licenseSync: license.sync })
 
-    let proxyUrl: string | undefined = options.proxy
+    const proxyUrl: string | undefined = options.proxy
     let ticket: { proxyId: string; ticketId: string } | undefined
+    let getProxyUrl: (() => Promise<string>) | undefined
     if (options.proxyId) {
-      // Activate first (metering + ownership check), then take a short-lived
-      // credential: the account key must never reach the command line.
+      // Activate first (metering + ownership check), so a proxy this account may
+      // not use cannot start a kernel download.
       const activation = await activateProxy({
         key: this.key, server: this.server, proxyId: options.proxyId,
       })
       if (!activation.proxy) {
         throw new Error('Proxy activation did not return proxy credentials.')
       }
-      const issued = await issueProxyTicket({
-        key: this.key, server: this.server, proxyId: activation.proxy.id, label: options.profile,
-      })
-      ticket = { proxyId: activation.proxy.id, ticketId: issued.ticketId }
-      proxyUrl = managedProxyToRelayUrl(issued.username, issued.password, this.proxyHost)
+      const proxyId = activation.proxy.id
+      // The credential itself waits for the kernel: it is single-session, and a
+      // first launch on a machine can spend many minutes installing a kernel
+      // before there is a browser to spend it on. The account key never reaches
+      // the command line either way.
+      getProxyUrl = async () => {
+        const issued = await issueProxyTicket({
+          key: this.key, server: this.server, proxyId, label: options.profile,
+        })
+        ticket = { proxyId, ticketId: issued.ticketId }
+        return managedProxyToRelayUrl(issued.username, issued.password, this.proxyHost)
+      }
     }
 
     // An explicit directory carries its own identity, and the archive is addressed
@@ -225,6 +236,7 @@ export class AntiDetectBrowser {
         profileName,
         licenseToken: license.token,
         proxyUrl,
+        getProxyUrl,
         archive,
         getArchivePutUrl: archive.uploadUrl
           ? () => getProfileArchiveUploadUrl({ key: this.key, server: this.server, name: profileName })

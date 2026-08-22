@@ -84,7 +84,7 @@ function runClearTemp(args: string[], env: NodeJS.ProcessEnv): void {
 export function runCli(args: string[], env: NodeJS.ProcessEnv = process.env): void {
   if (args.includes('--mcp')) {
     startMcpServer().catch((error) => {
-      console.error('Failed to start MCP server:', error)
+      console.error(`Failed to start MCP server: ${error instanceof Error ? error.message : error}`)
       process.exit(1)
     })
   } else if (args.includes('--clear-temp')) {
@@ -104,7 +104,8 @@ Usage:
 
 MCP server mode:
   Exposes the browser to AI agents over MCP (stdio transport). Requires the
-  ANTI_DETECT_BROWSER_KEY environment variable.
+  ANTI_DETECT_BROWSER_KEY environment variable and @modelcontextprotocol/sdk,
+  which is an optional peer dependency - install it alongside this package.
 
   Tools: launch_browser, close_browser, list_sessions, list_profiles,
          create_profile, delete_profile, list_proxies, claim_proxy,
@@ -126,7 +127,11 @@ Temporary profiles:
       "mcpServers": {
         "anti-detect-browser": {
           "command": "npx",
-          "args": ["anti-detect-browser", "--mcp"],
+          "args": [
+            "-p", "anti-detect-browser",
+            "-p", "@modelcontextprotocol/sdk",
+            "anti-detect-browser", "--mcp"
+          ],
           "env": { "ANTI_DETECT_BROWSER_KEY": "your-api-key" }
         }
       }

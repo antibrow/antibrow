@@ -480,6 +480,33 @@ const ANDROID_ALLOW_FONTS = [
 ]
 
 /**
+ * The families AOSP's fonts.xml aliases onto sans-serif/serif/monospace,
+ * lowercased. These are the only non-AOSP names a stock phone can resolve, and
+ * they are exactly what a width-comparison probe reports back - which is why a
+ * captured Android font list looks like a desktop's and never names Roboto (the
+ * default family measures identical to the probe's own baseline).
+ */
+const ANDROID_ALIAS_FONTS: ReadonlySet<string> = new Set([
+  'arial', 'helvetica', 'tahoma', 'verdana', 'times', 'times new roman',
+  'palatino', 'georgia', 'baskerville', 'goudy', 'fantasy', 'itc stone serif',
+  'droid sans', 'courier', 'courier new', 'monaco',
+])
+
+/**
+ * Android's font set is closed, so this is a whitelist rather than a list of
+ * known offenders. A capture picks up whatever the collecting page had loaded
+ * as a webfont, and a desktop browser wearing an Android UA gets through the
+ * corpus filters now and then; either way the extra family enumerates as
+ * installed on a phone that cannot have it.
+ */
+function keepAndroidFonts(fonts: readonly string[]): string[] {
+  return fonts.filter((f) => {
+    const key = f.trim().toLowerCase()
+    return ANDROID_ALIAS_FONTS.has(key) || /^(?:roboto|noto|droid)\b/.test(key)
+  })
+}
+
+/**
  * Families the host OS ships under the same name, lowercased. `fonts.allow` is
  * default-deny once non-empty, so anything listed but absent from the host
  * enumerates as installed while measuring like a family nobody has - the same
@@ -777,7 +804,7 @@ export function personaToFpConfig(
       // monospace, which then all collapse onto one fallback width. A desktop
       // capture names real files, so it replaces outright.
       const fonts = config.fonts as Record<string, unknown>
-      fonts.allow = android ? mergeFonts(ANDROID_ALLOW_FONTS, cap.fonts)
+      fonts.allow = android ? mergeFonts(ANDROID_ALLOW_FONTS, keepAndroidFonts(cap.fonts))
         : foreignHost ? dropUnrenderable(cap.fonts, hostPlatform)
           : cap.fonts
     }

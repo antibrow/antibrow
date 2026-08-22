@@ -157,3 +157,50 @@ describe('an Android capture adds to the AOSP families, it does not replace them
     expect(allowFor('desktop')).toEqual(capturedFonts)
   })
 })
+
+// The corpus is drawn from ordinary web visitors, so a row can carry the
+// collecting page's own webfont, or belong to a desktop that wore a phone UA
+// past the corpus filters. Either way the family enumerates as installed on a
+// phone that has no glyphs for it, which measures like a family nobody has.
+describe('a captured Android font list is filtered to what a phone can resolve', () => {
+  function androidAllow(fonts: string[]): string[] {
+    const persona = generatePersona(150, '150', { deviceType: 'android' })
+    const config = personaToFpConfig(
+      { ...persona, captured: { ...persona.captured, fonts } },
+      { label: 'x', timezone: 'UTC', hostPlatform: 'win32' },
+    )
+    return (config.fonts as Record<string, unknown>).allow as string[]
+  }
+
+  it('drops a webfont the collecting page had loaded', () => {
+    expect(androidAllow(['Arial', 'Montserrat', 'Source Sans Pro'])).not.toContain('Montserrat')
+    expect(androidAllow(['Arial', 'Montserrat'])).toContain('Arial')
+  })
+
+  it('drops the desktop set a spoofed capture brings', () => {
+    const allow = androidAllow([
+      'Arial', 'DejaVu Sans', 'Liberation Serif', 'FreeSans', 'Nimbus Roman',
+      'Cantarell', 'Segoe UI', 'Consolas', 'Helvetica Neue', 'Menlo',
+    ])
+    for (const family of ['DejaVu Sans', 'Liberation Serif', 'FreeSans', 'Nimbus Roman',
+      'Cantarell', 'Segoe UI', 'Consolas', 'Helvetica Neue', 'Menlo']) {
+      expect(allow).not.toContain(family)
+    }
+  })
+
+  it('keeps every name AOSP aliases, plus the Roboto and Noto families', () => {
+    const aliases = ['Arial', 'Baskerville', 'Courier New', 'Georgia', 'Helvetica',
+      'Monaco', 'Palatino', 'Tahoma', 'Times New Roman', 'Verdana']
+    const allow = androidAllow([...aliases, 'Noto Sans Thai', 'Roboto Flex'])
+    for (const family of [...aliases, 'Noto Sans Thai', 'Roboto Flex']) {
+      expect(allow).toContain(family)
+    }
+  })
+
+  it('leaves the AOSP families in place when the whole capture is unusable', () => {
+    const allow = androidAllow(['Montserrat', 'DejaVu Sans'])
+    expect(allow).toContain('Roboto')
+    expect(allow).not.toContain('Montserrat')
+  })
+
+})

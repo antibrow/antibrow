@@ -147,7 +147,7 @@ Starts the kernel and returns a handle that is ready to drive. Blocking (sync) A
 | `headless` | `bool` | `False` | Hide the window. On Windows the window is moved off-screen instead of `--headless=new`, because headless Chromium has its own detectable fingerprint. On Linux use Xvfb (see [Docker](#docker)); on macOS it has no effect yet. |
 | `proxy` | `str \| dict` | `None` | `"http://user:pass@host:port"`, `"socks5://…"`, `"https://…"`, or Playwright's `{"server": …, "username": …, "password": …}`. |
 | `proxy_id` | `str` | `None` | Use one of your **managed** proxies instead. See [Managed proxies](#managed-proxies). Mutually exclusive with `proxy`. |
-| `geoip` | `bool` | `True` | Resolve the proxy's exit IP through the proxy and make timezone + WebRTC match it. No-op without a proxy. |
+| `geoip` | `bool` | `True` | Resolve the exit IP and make timezone + WebRTC match it: through the proxy when one is set, otherwise this machine's own exit. |
 | `timezone` | `str` | `None` | Force an IANA timezone (`"Europe/Berlin"`), overriding the geo lookup. |
 | `api_key` | `str` | env / key file | AntiBrow API key. |
 | `server` | `str` | `https://antibrow.com` | License server base URL. |
@@ -768,7 +768,7 @@ No. antibrow downloads and drives its own kernel. The `playwright` pip package i
 No. The license check is compiled into the kernel binary. A free key is at [antibrow.com](https://antibrow.com), and one token covers a whole day of relaunches.
 
 **Where does my data go?**
-Profiles never leave your machine in this package. The only outbound calls are: the kernel download (`download.antibrow.com`), the token exchange (`antibrow.com`), and — only when `geoip=True` *and* a proxy is set — one request to `ip-api.com` **through your proxy** to read its exit timezone.
+Profiles never leave your machine in this package. The only outbound calls are: the kernel download (`download.antibrow.com`), the token exchange (`antibrow.com`), and — only when `geoip=True` — one request to `ip-api.com` to read the exit timezone (**through your proxy** when one is set, otherwise direct).
 
 **Can I use my own profile directory / mount it into CI?**
 Yes: `launch(profile_dir="/data/profiles/acct-17")`, or set `ANTIBROW_CACHE_DIR`. Copy the directory to move an identity between machines.
