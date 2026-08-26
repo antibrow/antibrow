@@ -4,6 +4,15 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.23.1] - 2026-08-26
+
+### Fixed
+
+- On Windows, browsers left running by a previous run were never cleaned up:
+  the check that confirms a process is one of ours compared paths without
+  allowing for `\` vs `/` or a differently cased drive letter, so it always
+  refused. Nothing reported it - the browsers simply stayed.
+
 ## [2.23.0] - 2026-08-26
 
 ### Added
