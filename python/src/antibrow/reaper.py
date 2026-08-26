@@ -13,10 +13,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Callable, List, Optional
 
 REGISTRY_FILE = "running-kernels.json"
+
+_DRIVE_LETTER = re.compile(r"^[A-Za-z]:/")
 
 
 def registry_path(cache_dir: Path | str) -> Path:
@@ -93,7 +96,7 @@ def reap_orphans(
         # profile directory proves the process is the kernel we started.
         profile_dir = str(entry.get("profileDir") or "")
         argv = describe(kernel_pid)
-        if not profile_dir or not argv or profile_dir not in argv:
+        if not profile_dir or not argv or _normalize_path(profile_dir) not in _normalize_path(argv):
             kept.append(entry)
             continue
         slay(kernel_pid)
@@ -101,6 +104,22 @@ def reap_orphans(
 
     _write(cache_dir, kept)
     return reaped
+
+
+def _normalize_path(text: str) -> str:
+    """Fold the two ways Windows writes the same path before comparing.
+
+    The registry stores whatever `str(profile_dir)` gave us - backslashed on
+    Windows - while a process command line may carry forward slashes, a
+    different case, or both. Comparing them raw makes the identity check fail
+    and a real orphan is then spared forever, with nothing reporting it.
+    """
+    folded = text.replace("\\", "/")
+    # Case folding is for Windows only - Linux profile directories that differ
+    # only by case are different directories. The drive-letter check keeps the
+    # behaviour testable from any host.
+    windows = os.name == "nt" or _DRIVE_LETTER.match(folded) is not None
+    return folded.lower() if windows else folded
 
 
 def _is_alive(pid: int) -> bool:

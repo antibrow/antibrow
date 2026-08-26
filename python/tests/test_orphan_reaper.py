@@ -100,3 +100,57 @@ def test_default_kill_reaches_the_real_process_tree_helper():
     from antibrow import launcher
 
     assert callable(launcher.kill_pid_tree)
+
+
+# --- Windows paths ------------------------------------------------------------
+# `str(profile_dir)` is backslashed on Windows while the process command line may
+# carry forward slashes, a different case, or both. A plain substring match then
+# refuses to kill a real orphan and the leak survives, silently.
+
+
+def test_matches_a_command_line_that_uses_forward_slashes(tmp_path):
+    R.register_kernel(
+        tmp_path, kernel_pid=4242, owner_pid=999, profile_dir=r"C:\Users\me\profiles\p"
+    )
+
+    killed = []
+    R.reap_orphans(
+        tmp_path,
+        is_alive=lambda pid: pid == 4242,
+        command_line=lambda pid: "C:/Users/me/profiles/p/fp-config.json --fp-license=x",
+        kill=killed.append,
+    )
+
+    assert killed == [4242]
+
+
+def test_matches_a_command_line_whose_drive_letter_is_cased_differently(tmp_path):
+    R.register_kernel(
+        tmp_path, kernel_pid=4242, owner_pid=999, profile_dir=r"C:\Users\Me\Profiles\P"
+    )
+
+    killed = []
+    R.reap_orphans(
+        tmp_path,
+        is_alive=lambda pid: pid == 4242,
+        command_line=lambda pid: r"c:\users\me\profiles\p\fp-config.json",
+        kill=killed.append,
+    )
+
+    assert killed == [4242]
+
+
+def test_still_refuses_a_command_line_for_a_different_profile(tmp_path):
+    R.register_kernel(
+        tmp_path, kernel_pid=4242, owner_pid=999, profile_dir=r"C:\Users\me\profiles\p"
+    )
+
+    killed = []
+    R.reap_orphans(
+        tmp_path,
+        is_alive=lambda pid: pid == 4242,
+        command_line=lambda pid: "C:/Users/me/profiles/other/fp-config.json",
+        kill=killed.append,
+    )
+
+    assert killed == []

@@ -88,7 +88,7 @@ export function reapOrphans(cacheDir: string, hooks: ReapHooks = {}): number[] {
     // one now may be the user's editor. Only argv naming this very profile
     // directory proves the process is the kernel we started.
     const argv = entry.profileDir ? describe(entry.kernelPid) : undefined
-    if (!argv || !argv.includes(entry.profileDir)) {
+    if (!argv || !normalizePath(argv).includes(normalizePath(entry.profileDir))) {
       kept.push(entry)
       continue
     }
@@ -97,6 +97,24 @@ export function reapOrphans(cacheDir: string, hooks: ReapHooks = {}): number[] {
   }
   write(cacheDir, kept)
   return reaped
+}
+
+const DRIVE_LETTER = /^[A-Za-z]:\//
+
+/**
+ * Fold the two ways Windows writes the same path before comparing.
+ *
+ * The registry stores the profile directory as the platform gave it to us -
+ * backslashed on Windows - while a process command line may carry forward
+ * slashes, a different case, or both. Comparing them raw makes the identity
+ * check fail and a real orphan is then spared forever, with nothing reporting
+ * it. Case folding stays Windows-only: two posix directories differing only by
+ * case are two directories.
+ */
+function normalizePath(text: string): string {
+  const folded = text.replace(/\\/g, '/')
+  const windows = process.platform === 'win32' || DRIVE_LETTER.test(folded)
+  return windows ? folded.toLowerCase() : folded
 }
 
 function isAlive(pid: number): boolean {

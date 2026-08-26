@@ -114,3 +114,64 @@ describe('the orphan kernel registry', () => {
     expect(killed).toEqual([7])
   })
 })
+
+// `profileDir` is stored backslashed on Windows while a process command line may
+// carry forward slashes, a different case, or both. Comparing them raw spares a
+// real orphan forever, and nothing reports it.
+describe('matching a Windows command line', () => {
+  it('accepts forward slashes', () => {
+    const dir = tmp()
+    registerKernel(dir, { kernelPid: 4242, ownerPid: 999, profileDir: 'C:\\Users\\me\\profiles\\p' })
+
+    const killed: number[] = []
+    reapOrphans(dir, {
+      isAlive: (pid) => pid === 4242,
+      commandLine: () => 'C:/Users/me/profiles/p/fp-config.json --fp-license=x',
+      kill: (pid) => killed.push(pid),
+    })
+
+    expect(killed).toEqual([4242])
+  })
+
+  it('accepts a differently cased drive letter', () => {
+    const dir = tmp()
+    registerKernel(dir, { kernelPid: 4242, ownerPid: 999, profileDir: 'C:\\Users\\Me\\Profiles\\P' })
+
+    const killed: number[] = []
+    reapOrphans(dir, {
+      isAlive: (pid) => pid === 4242,
+      commandLine: () => 'c:\\users\\me\\profiles\\p\\fp-config.json',
+      kill: (pid) => killed.push(pid),
+    })
+
+    expect(killed).toEqual([4242])
+  })
+
+  it('still refuses a command line for a different profile', () => {
+    const dir = tmp()
+    registerKernel(dir, { kernelPid: 4242, ownerPid: 999, profileDir: 'C:\\Users\\me\\profiles\\p' })
+
+    const killed: number[] = []
+    reapOrphans(dir, {
+      isAlive: (pid) => pid === 4242,
+      commandLine: () => 'C:/Users/me/profiles/other/fp-config.json',
+      kill: (pid) => killed.push(pid),
+    })
+
+    expect(killed).toEqual([])
+  })
+
+  it('does not fold case for a posix path - those directories are distinct', () => {
+    const dir = tmp()
+    registerKernel(dir, { kernelPid: 4242, ownerPid: 999, profileDir: '/home/me/profiles/P' })
+
+    const killed: number[] = []
+    reapOrphans(dir, {
+      isAlive: (pid) => pid === 4242,
+      commandLine: () => '/home/me/profiles/p/fp-config.json',
+      kill: (pid) => killed.push(pid),
+    })
+
+    expect(killed).toEqual([])
+  })
+})
