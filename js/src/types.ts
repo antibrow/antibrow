@@ -84,6 +84,28 @@ export interface LaunchOptions {
    * somewhere else, and the site sees them.
    */
   restoreTabs?: boolean
+  /**
+   * Leave the kernel running after this process exits.
+   *
+   * Off by default: a browser nobody closes keeps a whole Chromium resident and
+   * holds a slot against the license's concurrency cap. Turn it on only if you
+   * reconnect to the session later and take responsibility for closing it.
+   */
+  /**
+   * Extra Chromium switches, appended after everything this SDK sets. Cross-origin
+   * iframes are not exposed as debugger targets, so Playwright cannot reach inside
+   * one; pass `['--fp-cdp-attach-iframes']` on the rare page that needs it.
+   */
+  args?: string[]
+  detached?: boolean
+  /**
+   * Total budget for the launch in milliseconds (default 120000). Covers
+   * preparation as well as the browser coming up: the license call, the cloud
+   * archive probe, the proxy geo lookup. Downloading a kernel or transferring an
+   * archive does not draw on it - those stop only if they stall outright, so a
+   * first install on a slow line still works. 0 or negative means no limit.
+   */
+  timeoutMs?: number
   /** Overrides the constructor's `temporary`. Temporary profiles are local-only. */
   temporary?: boolean
   /**

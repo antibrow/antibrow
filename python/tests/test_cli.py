@@ -142,3 +142,29 @@ def test_clear_temp_rejects_negative_or_non_finite_older_than(value, capsys):
     err = capsys.readouterr().err
     assert "invalid" in err.lower()
     assert "--older-than" in err
+
+
+class TestReap:
+    def test_reports_that_nothing_was_left_behind(self, capsys):
+        assert main(["reap"]) == 0
+        assert "no orphan" in capsys.readouterr().out.lower()
+
+    def test_kills_a_kernel_whose_owner_is_gone(self, tmp_path, monkeypatch, capsys):
+        from antibrow import cli, reaper
+
+        cache = tmp_path / "cache"
+        reaper.register_kernel(
+            cache, kernel_pid=4242, owner_pid=999, profile_dir=cache / "p", cdp_port=1
+        )
+        killed = []
+        monkeypatch.setattr(
+            cli._reaper,
+            "reap_orphans",
+            lambda cache_dir, **k: (killed.append(cache_dir), [4242])[1],
+        )
+
+        assert main(["reap"]) == 0
+
+        out = capsys.readouterr().out
+        assert "4242" in out
+        assert killed == [cache]

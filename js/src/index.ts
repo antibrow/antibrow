@@ -155,6 +155,8 @@ export {
   type PortableProfileMeta,
   type ImportedProfileMeta,
   type SetProfileKernelVersionOptions,
+  LaunchTimeoutError,
+  StallTimeoutError,
 } from './engine'
 
 export { managedProxyDisplayName, managedProxyShortId } from './proxy-display'

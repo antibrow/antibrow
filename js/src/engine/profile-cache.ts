@@ -4,6 +4,7 @@ import path from 'node:path'
 import { defaultKernelVersion, kernelsForPlatform, normalizeKernelVersion } from './downloader'
 import { generatePersona, readPersona, withKernelVersion, writePersona, type ApiLogMode, type CapturedFacts, type DeviceType, type Persona } from './persona'
 import { CRYPT_STATE_FILE, isProfileEncrypted, writeCryptState } from './profile-dir'
+import { readAllWithStall } from './stall'
 
 // Browser state items stored under <profileDir>/user-data/
 const USER_DATA_ITEMS = ['Default', 'GrShaderCache', 'Local State', 'Variations'] as const
@@ -772,13 +773,31 @@ function importLauncherArchive(zip: AdmZip, manifest: LauncherManifest, profileD
   }
 }
 
+/**
+ * Seconds of silence that end an archive transfer. Not a wall-clock cap - an
+ * archive is as big as the browsing history in it - so the launch budget does
+ * not cover this either.
+ */
+export const ARCHIVE_STALL_MS = 60_000
+/** Upload has no body to watch arriving, so it gets an absolute ceiling. */
+export const ARCHIVE_UPLOAD_TIMEOUT_MS = 10 * 60_000
+
 /** Download from a presigned GET URL and unpack. False when there was nothing
  *  to restore, so the caller knows not to record a generation. */
-export async function downloadProfileCache(getUrl: string, profileDir: string): Promise<boolean> {
-  const res = await fetch(getUrl)
+export async function downloadProfileCache(
+  getUrl: string,
+  profileDir: string,
+  stallMs: number = ARCHIVE_STALL_MS,
+): Promise<boolean> {
+  const res = await fetch(getUrl, { signal: AbortSignal.timeout(stallMs) })
   if (res.status === 404 || res.status === 403) return false
   if (!res.ok) throw new Error(`Failed to download profile cache: HTTP ${res.status}`)
-  unpackProfileCache(Buffer.from(await res.arrayBuffer()), profileDir)
+  if (!res.body) return false
+  // Drained by hand rather than with arrayBuffer(): a body that opens and then
+  // goes quiet would otherwise hold the launch open with no upper bound.
+  const body = await readAllWithStall(res.body as unknown as AsyncIterable<Uint8Array>, stallMs)
+  if (body.length === 0) return false
+  unpackProfileCache(body, profileDir)
   return true
 }
 
@@ -791,6 +810,7 @@ export async function uploadProfileCache(profileDir: string, putUrl: string): Pr
     method: 'PUT',
     body: buf,
     headers: { 'Content-Type': 'application/zip' },
+    signal: AbortSignal.timeout(ARCHIVE_UPLOAD_TIMEOUT_MS),
   })
   if (!res.ok) throw new Error(`Failed to upload profile cache: HTTP ${res.status}`)
   return normalizeArchiveVersion(res.headers.get('etag'))

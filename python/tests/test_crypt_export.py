@@ -130,7 +130,15 @@ class TestExportingAnEncryptedProfile:
         assert called == []
 
     def test_needs_a_key_no_key_no_export_never_a_silent_plain_pack(self, tmp_path, monkeypatch):
+        # "No key" means from anywhere: clearing the env var alone still falls
+        # through to ~/.antibrow/license.key, so on a developer machine this
+        # reached the real server instead of testing the no-key path.
         monkeypatch.delenv("ANTIBROW_API_KEY", raising=False)
+        monkeypatch.delenv("ANTI_DETECT_BROWSER_KEY", raising=False)
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
         src = seed(tmp_path / "src", encrypted=True)
         called = []
 

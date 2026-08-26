@@ -33,6 +33,18 @@ class LaunchError(AntibrowError):
     """The kernel process failed to start or never exposed a CDP endpoint."""
 
 
+class LaunchTimeout(LaunchError):
+    """The launch ran past its total budget.
+
+    ``step`` names what was in flight when the budget ran out - the difference
+    between "it hung" and "the proxy never answered".
+    """
+
+    def __init__(self, message: str, *, step: Optional[str] = None) -> None:
+        super().__init__(message)
+        self.step = step
+
+
 class ConcurrencyLimitError(LaunchError):
     """The license's concurrent-instance cap (``mi``) is already in use.
 

@@ -3,6 +3,7 @@ import path from 'node:path'
 import https from 'node:https'
 import http from 'node:http'
 import { execFile, spawnSync } from 'node:child_process'
+import { StallTimeoutError } from './stall'
 
 /** Only linux is split by arch: mac is universal, windows is x64 only. */
 export type SupportedPlatform = 'win32' | 'linux' | 'linux-arm64' | 'darwin'
@@ -858,30 +859,52 @@ function cacheBustUrl(url: string): string {
   return `${url}${sep}_cb=${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
 }
 
-function downloadFile(
+/**
+ * Silence that ends a kernel download. Deliberately not a wall-clock cap: the
+ * packages are ~200-320MB and a first install on a slow line legitimately takes
+ * many minutes. Until this existed there was no timeout of any kind here, so a
+ * connection that opened and then said nothing hung the launch indefinitely.
+ */
+export const KERNEL_STALL_MS = 60_000
+
+export function downloadFile(
   url: string,
   destPath: string,
   onProgress?: (message: string) => void,
+  stallMs: number = KERNEL_STALL_MS,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(destPath)
     let downloaded = 0
+    let settled = false
+
+    const fail = (err: Error) => {
+      if (settled) return
+      settled = true
+      file.close()
+      fs.rmSync(destPath, { force: true })
+      reject(err)
+    }
 
     const noCache = { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }
     const doGet = (targetUrl: string) => {
       const mod = targetUrl.startsWith('https://') ? https : http
-      mod.get(targetUrl, { headers: noCache }, (res) => {
+      const request = mod.get(targetUrl, { headers: noCache }, (res) => {
         if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           file.close()
           doGet(res.headers.location)
           return
         }
         if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
-          file.close()
-          fs.rmSync(destPath, { force: true })
-          reject(new Error(`Download failed: HTTP ${res.statusCode} from ${targetUrl}`))
+          fail(new Error(`Download failed: HTTP ${res.statusCode} from ${targetUrl}`))
           return
         }
+        // An idle timeout on the socket, so it measures the gap between chunks
+        // rather than the length of the transfer.
+        res.setTimeout(stallMs, () => {
+          res.destroy()
+          fail(new StallTimeoutError(stallMs))
+        })
         const total = parseInt(res.headers['content-length'] ?? '0', 10)
         res.on('data', (chunk: Buffer) => {
           downloaded += chunk.length
@@ -890,16 +913,19 @@ function downloadFile(
           }
         })
         res.pipe(file)
-        file.on('finish', () => file.close(() => resolve()))
-        file.on('error', (err) => {
-          fs.rmSync(destPath, { force: true })
-          reject(err)
+        file.on('finish', () => {
+          if (settled) return
+          settled = true
+          file.close(() => resolve())
         })
-      }).on('error', (err) => {
-        file.close()
-        fs.rmSync(destPath, { force: true })
-        reject(err)
+        file.on('error', fail)
       })
+      // Covers the half of the transfer the response object cannot see: a
+      // connect that never completes and headers that never arrive.
+      request.setTimeout(stallMs, () => {
+        request.destroy(new StallTimeoutError(stallMs))
+      })
+      request.on('error', fail)
     }
 
     doGet(url)

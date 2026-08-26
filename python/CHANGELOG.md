@@ -4,6 +4,34 @@ All notable changes to the `antibrow` Python SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.17.0] - 2026-08-26
+
+### Added
+
+- `launch(timeout=)` is now a budget for the whole launch, not just for the
+  browser coming up. Timing out raises `LaunchTimeout`, whose `step` names what
+  was in flight. `0` or a negative number means no limit.
+- `python -m antibrow reap` kills browsers a previous run left running.
+
+### Changed
+
+- **A browser no longer outlives the process that launched it.** Normal exit, an
+  uncaught exception, Ctrl-C and SIGTERM all close it - the cloud archive still
+  gets saved; anything a previous run left behind (SIGKILL, a crash, a power
+  cut) is killed at the start of the next launch.
+- **Cross-origin iframes are no longer exposed as debugger targets**, so
+  Playwright cannot reach inside one. Same-origin iframes are unaffected, as is
+  everything in the main frame. Pass
+  `args=["--fp-cdp-attach-iframes"]` on the rare page that needs it.
+- Kernel downloads and profile archive transfers now fail after their stall
+  window with no data received, instead of raising a bare socket timeout. They
+  are excluded from `timeout=`, so a slow first install still works.
+
+### Fixed
+
+- A stalled profile archive download no longer aborts the launch. Cloud sync is
+  best-effort; it now reports and carries on, as every other sync failure does.
+
 ## [0.16.0] - 2026-08-21
 
 ### Added

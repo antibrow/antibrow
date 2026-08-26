@@ -9,7 +9,16 @@
  * its cloud profile never written.
  */
 
+import { LaunchTimeoutError, remainingBudget } from './engine/deadline'
+
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504])
+
+/**
+ * Ceiling for one attempt. There used to be none at all: a server that accepts
+ * the connection and then says nothing held a launch open indefinitely, with
+ * the caller's own `timeout` covering only the kernel spawn.
+ */
+export const DEFAULT_REQUEST_TIMEOUT_MS = 20_000
 
 /** Attempts including the first. */
 export const RETRY_MAX_ATTEMPTS = 3
@@ -44,9 +53,20 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 export async function retryFetch(url: string, init?: RequestInit): Promise<Response> {
   let spent = 0
   for (let attempt = 1; ; attempt++) {
+    // Re-read per attempt: a retry after a 60s backoff gets what is left then,
+    // not what was left when the call started.
+    const budget = remainingBudget(DEFAULT_REQUEST_TIMEOUT_MS)
+    if (budget === undefined) {
+      throw new LaunchTimeoutError('Launch timed out before the request could be sent')
+    }
+    // A caller that brought its own signal owns the cancellation.
+    const attemptInit: RequestInit = init?.signal
+      ? init
+      : { ...init, signal: AbortSignal.timeout(budget) }
+
     let response: Response | undefined
     try {
-      response = await fetch(url, init)
+      response = await fetch(url, attemptInit)
       if (!RETRYABLE_STATUS.has(response.status)) return response
     } catch (error) {
       if (attempt >= RETRY_MAX_ATTEMPTS) throw error

@@ -30,6 +30,9 @@ import {
   clearArchiveVersion,
 } from './profile-cache'
 import { resolveProfileDir, resolveProfileDirSync, readProfileMeta, settleCryptState, type ProfileRootOptions } from './profile-dir'
+import { guardSession } from './exit-hooks'
+import { Deadline, withDeadline } from './deadline'
+import { killPidTree, registerKernel, reapOrphans, unregisterKernel } from './reaper'
 import { fetchProfileCryptKey, resolveCryptKey } from './crypt-key'
 
 export { KERNEL_VERSIONS, DEFAULT_KERNEL_VERSION, defaultKernelVersion, ensureKernel, isKernelInstalled, findKernelVersion, findKernelVersionStrict, normalizeKernelVersion, migrateLegacyKernelDirs, listInstalledKernels, kernelDirSize, deleteKernel, kernelDir, kernelAvailableOnPlatform, kernelsForPlatform, allKernelVersions, registerKernelVersions, fetchRemoteKernelVersions, refreshKernelVersions, loadCachedKernelVersions, KERNEL_MANIFEST_URL, KERNEL_MANIFEST_TTL_MS, KERNEL_VERSION_CACHE_FILE, currentPlatform, installedKernelBuild, writeInstalledKernelBuild, kernelUpdateStatus, installedKernelUpdates, kernelSupportsAndroid, kernelReadsAppLocaleFromConfig, kernelVersionAtLeast, androidCapableKernels, resolveAndroidKernel, ANDROID_MIN_KERNEL_VERSION, APP_LOCALE_MIN_KERNEL_VERSION, APP_LOCALE_MIN_KERNEL_BUILD } from './downloader'
@@ -50,6 +53,9 @@ export { fetchProfileCryptKey, parseCryptKeyBody, resolveCryptKey } from './cryp
 export { exportProfileArchiveAsync, runCryptRekey, buildRekeyArgs, parseRekeyCode, CryptRekeyError, NO_CRYPT_KEY, REKEY_TIMEOUT_CODE } from './crypt-rekey'
 export type { ExportProfileArchiveOptions, CryptRekeyOptions, RekeyRequest, RekeyRunner } from './crypt-rekey'
 export type { ProfileEntry, ProfileMeta, ResolvedProfile, ProfileRootOptions } from './profile-dir'
+
+export { LaunchTimeoutError } from './deadline'
+export { StallTimeoutError } from './stall'
 
 export function defaultCacheDir(): string {
   return path.join(os.homedir(), '.anti-detect-browser')
@@ -116,6 +122,25 @@ export interface OpenProfileOptions {
   onProgress?: (message: string) => void
   /** `download` runs before launch, `upload` after openProfile has returned. */
   onArchiveSync?: (e: ArchiveSyncEvent) => void
+  /**
+   * Leave the kernel running when this process exits, and keep it out of the
+   * orphan registry. For callers that reconnect to it later (the MCP server);
+   * for everyone else this would be the leak, not the feature.
+   */
+  detached?: boolean
+  /**
+   * Total budget for the whole launch, not just the kernel spawn: the license
+   * call, the archive probe and the proxy geo lookup all draw on it. Kernel
+   * downloads and archive transfers are excluded - those are bounded by a stall
+   * timeout instead, since a first install is legitimately hundreds of MB.
+   */
+  timeoutMs?: number
+  /**
+   * Extra Chromium switches, appended after everything this SDK sets. Cross-origin
+   * iframes are not exposed as debugger targets, so Playwright cannot reach inside
+   * one; pass `['--fp-cdp-attach-iframes']` on the rare page that needs it.
+   */
+  args?: string[]
 }
 
 export interface ArchiveSyncEvent {
@@ -330,12 +355,28 @@ export async function reconcileKernelVersion(opts: {
  * Restore the archive, load the persona, download the kernel it requires, look
  * up the proxy timezone, launch over CDP, and upload the archive on exit.
  */
+export const DEFAULT_LAUNCH_TIMEOUT_MS = 120_000
+
 export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfile> {
+  const budget = new Deadline(opts.timeoutMs ?? DEFAULT_LAUNCH_TIMEOUT_MS)
+  // Published for the whole call, so every HTTP request inside shrinks to fit
+  // what is left rather than each carrying its own unrelated timeout.
+  return withDeadline(budget, () => openProfileWithin(opts, budget))
+}
+
+async function openProfileWithin(opts: OpenProfileOptions, budget: Deadline): Promise<OpenedProfile> {
   const cacheDir = opts.cacheDir ?? defaultCacheDir()
+  // Kill whatever the last run leaked before adding one more kernel to it.
+  try {
+    reapOrphans(cacheDir)
+  } catch {
+    // Housekeeping never fails a launch.
+  }
   // An explicit directory wins: callers that keep their own profile registry
   // (the desktop app) already know which directory this profile owns. Its own
   // record still names it, though - that record is the directory's identity,
   // and the archive is addressed by name.
+  budget.check('resolving the profile directory')
   const resolved = opts.profileDir
     ? {
         dir: opts.profileDir,
@@ -361,8 +402,11 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
       opts.onProgress?.('Profile archive already current; skipping restore')
     } else {
       opts.onProgress?.('Restoring profile archive')
+      budget.check('restoring the cloud archive')
       opts.onArchiveSync?.({ phase: 'download', state: 'start' })
-      await downloadProfileCache(opts.archiveGetUrl, profileDir).then(
+      // Outside the budget: an archive is as big as the browsing history in it,
+      // and the transfer has a stall timeout of its own.
+      await budget.paused(() => downloadProfileCache(opts.archiveGetUrl as string, profileDir)).then(
         (restored) => {
           if (restored && opts.archiveVersion) writeArchiveVersion(profileDir, opts.archiveVersion)
           opts.onArchiveSync?.({ phase: 'download', state: 'done' })
@@ -397,6 +441,7 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
   // Versions newer than this release exist only in the manifest, so resolve the
   // catalogue first. `updateKernelBeforeLaunch` acts on the published build, so
   // it cannot read a cached one.
+  budget.check('refreshing the kernel catalogue')
   await refreshKernelVersions(cacheDir, { force: opts.updateKernelBeforeLaunch })
 
   const personaInit = await resolvePersonaInit(profileDir, opts)
@@ -431,12 +476,15 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
     const status = kernelUpdateStatus(cacheDir, kv.version)
     if (status?.updateAvailable) {
       opts.onProgress?.(`Updating kernel ${kv.label} to the latest build`)
-      await ensureKernel(cacheDir, kv, opts.onProgress, { force: true })
+      await budget.paused(() => ensureKernel(cacheDir, kv, opts.onProgress, { force: true }))
     }
   }
 
   opts.onProgress?.(`Ensuring kernel ${kv.label}`)
-  const exePath = await ensureKernel(cacheDir, kv, opts.onProgress)
+  budget.check('installing the browser kernel')
+  // Outside the budget too: a first install is ~200-320MB and waiting on another
+  // process's install has its own 30 minute cap.
+  const exePath = await budget.paused(() => ensureKernel(cacheDir, kv, opts.onProgress))
 
   if (persona.deviceType === 'android') assertAndroidKernel(kv.version)
 
@@ -450,6 +498,7 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
   let geo: ProxyGeo | null = null
   if (proxyUrl) {
     opts.onProgress?.('Looking up proxy geo')
+    budget.check('looking up the proxy exit geo')
     geo = await lookupProxyGeo(proxyUrl).catch(() => null)
     if (geo?.timezone) timezone = geo.timezone
     if (geo?.ip) publicIp = geo.ip
@@ -467,10 +516,12 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
   }
 
   opts.onProgress?.('Obtaining license token')
+  budget.check('obtaining the license token')
   const licenseToken =
     opts.licenseToken ?? (await getLicenseToken({ key: opts.key, server: opts.server })).token
 
   opts.onProgress?.('Launching kernel browser')
+  budget.check('starting the kernel')
   const session: OpenedProfile = await launchKernel({
     exePath,
     profileDir,
@@ -489,9 +540,30 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
     webauthnCapture: opts.webauthnCapture,
     restoreTabs: opts.restoreTabs,
     rttMs: geo?.rttMs ?? rttMs,
+    cdpTimeoutMs: budget.budget(DEFAULT_LAUNCH_TIMEOUT_MS),
+    extraArgs: opts.args,
     onProgress: opts.onProgress,
   })
   if (geo) session.geo = geo
+
+  // Two guards, because they fail differently: the hook closes this session on
+  // every exit Node sees, and the registry row is what a *later* run uses to
+  // clean up after the exits it does not - SIGKILL, OOM, a power cut.
+  let guard: { release(): void } | undefined
+  if (!opts.detached && session.pid !== undefined) {
+    const pid = session.pid
+    registerKernel(cacheDir, { kernelPid: pid, profileDir, cdpPort: undefined })
+    guard = guardSession({
+      closeAsync: () => session.close(),
+      // `exit` handlers are synchronous, so this is all that path can do: the
+      // kernel dies, but the archive upload does not get to run.
+      closeSync: () => killPidTree(pid),
+    })
+    session.onExit(() => {
+      guard?.release()
+      unregisterKernel(cacheDir, pid)
+    })
+  }
 
   // Decided at launch so the hook exists before the browser can exit; the URL
   // is resolved inside it.

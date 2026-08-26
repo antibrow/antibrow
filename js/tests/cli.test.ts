@@ -202,3 +202,32 @@ describe('isDirectInvocation', () => {
     expect(isDirectInvocation(missing, moduleUrl())).toBe(false)
   })
 })
+
+describe('--reap', () => {
+  it('reports when nothing was left behind', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-reap-'))
+
+    runCli(['--reap'], { ANTIBROW_CACHE_DIR: dir } as NodeJS.ProcessEnv)
+
+    expect(log.mock.calls.flat().join(' ')).toMatch(/no orphan/i)
+    log.mockRestore()
+  })
+
+  it('names each browser it killed', async () => {
+    const { registryPath } = await import('../src/engine/reaper')
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-reap-'))
+    // An owner pid that cannot be alive, and argv proof we will never obtain -
+    // so this row is dropped, not killed. The kernel pid is equally dead.
+    fs.writeFileSync(
+      registryPath(dir),
+      JSON.stringify([{ kernelPid: 999999, ownerPid: 999998, profileDir: path.join(dir, 'p') }]),
+    )
+
+    runCli(['--reap'], { ANTIBROW_CACHE_DIR: dir } as NodeJS.ProcessEnv)
+
+    expect(JSON.parse(fs.readFileSync(registryPath(dir), 'utf8'))).toEqual([])
+    log.mockRestore()
+  })
+})

@@ -109,3 +109,31 @@ describe('shutdownKernel', () => {
     expect(Date.now() - start).toBeLessThan(500)
   })
 })
+
+describe('closing a session twice', () => {
+  it('shuts the kernel down once, however many callers ask', async () => {
+    const { onceAsync } = await import('../../src/engine/launcher')
+    let runs = 0
+    const close = onceAsync(async () => {
+      runs++
+    })
+
+    await Promise.all([close(), close(), close()])
+    await close()
+
+    expect(runs).toBe(1)
+  })
+
+  it('reports the same failure to every caller', async () => {
+    const { onceAsync } = await import('../../src/engine/launcher')
+    let runs = 0
+    const close = onceAsync(async () => {
+      runs++
+      throw new Error('kernel already gone')
+    })
+
+    await expect(close()).rejects.toThrow('kernel already gone')
+    await expect(close()).rejects.toThrow('kernel already gone')
+    expect(runs).toBe(1)
+  })
+})

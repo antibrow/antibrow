@@ -29,10 +29,15 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence,
 from . import api as _api
 from . import config as _config
 from . import devices as _devices
+from . import exit_hooks as _exit_hooks
 from . import kernel as _kernel
 from . import profile_sync as _sync
+from . import reaper as _reaper
 from .crypt_key import fetch_profile_crypt_key, resolve_crypt_key
+from .deadline import Deadline
 from .errors import ApiError, LicenseError, ProfileCacheError, ProxyError
+from .geoip import DEFAULT_TIMEOUT as _GEO_TIMEOUT
+from .geoip import DIRECT_TIMEOUT as _DIRECT_GEO_TIMEOUT
 from .geoip import lookup_direct_geo, lookup_proxy_geo
 from .launcher import (
     DEFAULT_LAUNCH_TIMEOUT,
@@ -150,6 +155,9 @@ class LaunchPlan:
     license: LicenseInfo
     public_ip: Optional[str] = None
     proxy: Optional[ProxySpec] = None
+    #: Cache root this launch used. `profile_dir` cannot stand in for it: an
+    #: explicit `profile_dir=` may sit anywhere on disk.
+    cache_dir: Optional[Path] = None
     #: None when this profile is local-only (free plan, ``sync=False``, offline).
     archive: Optional[ArchivePlan] = None
     #: The short-lived managed-proxy credential this launch minted, if any. Handed
@@ -208,6 +216,7 @@ def prepare_launch(
     temporary: bool = False,
     on_sync: Optional[SyncCallback] = None,
     on_progress: Optional[ProgressCallback] = None,
+    deadline: Optional[Deadline] = None,
 ) -> LaunchPlan:
     """Do every blocking step of a launch except starting the process.
 
@@ -215,6 +224,7 @@ def prepare_launch(
     can inspect the exact command line without a browser.
     """
     notify = on_progress or (lambda _message: None)
+    budget = deadline or Deadline(None)
 
     # Checked before anything is created or fetched: temporary+sync=True is a
     # pure contradiction that never needs a license or a directory to detect,
@@ -226,6 +236,7 @@ def prepare_launch(
     # cloud archive to restore, and because rejecting an unsupported plan has to
     # happen before the profile directory exists.
     notify("Obtaining license token")
+    budget.check("obtaining license token")
     license_info = get_license_token(
         api_key,
         server,
@@ -244,6 +255,7 @@ def prepare_launch(
         # the default server are the documented setup, and forwarding the raw
         # arguments would silently skip the lookup and strand this profile on a
         # local id the Node SDK never resolves to.
+        budget.check("resolving the profile directory")
         resolved = resolve_profile_dir(
             profile,
             root,
@@ -254,18 +266,22 @@ def prepare_launch(
         directory, resolved_name = resolved.dir, resolved.name
     directory.mkdir(parents=True, exist_ok=True)
 
-    archive = _restore_archive(
-        profile_name=resolved_name,
-        directory=directory,
-        api_key=api_key,
-        server=server,
-        license_info=license_info,
-        sync=sync,
-        temporary=temporary,
-        on_sync=on_sync,
-        notify=notify,
-        on_progress=on_progress,
-    )
+    budget.check("restoring the cloud archive")
+    # Outside the budget: an archive is as big as the browsing history in it.
+    # The transfer is bounded by its own stall timeout instead.
+    with budget.paused():
+        archive = _restore_archive(
+            profile_name=resolved_name,
+            directory=directory,
+            api_key=api_key,
+            server=server,
+            license_info=license_info,
+            sync=sync,
+            temporary=temporary,
+            on_sync=on_sync,
+            notify=notify,
+            on_progress=on_progress,
+        )
 
     # After the restore, before the kernel install: crypt-state.json rides in the
     # archive, so on a second machine the restore is what tells us this profile's
@@ -286,6 +302,7 @@ def prepare_launch(
     # has to happen before the version below is resolved even when update_kernel is
     # set, or the Android pin resolves against an empty catalogue. `update_kernel`
     # acts on the published build, so it cannot read a cached manifest.
+    budget.check("refreshing the kernel catalogue")
     _kernel.refresh_kernel_versions(root, force=update_kernel)
 
     init_device_type, init_device = _resolve_persona_init(
@@ -329,10 +346,15 @@ def prepare_launch(
         status = _kernel.kernel_update_status(root, kv.version)
         if status is not None and status.update_available:
             notify("Updating kernel {0} to the latest build".format(kv.label))
-            _kernel.ensure_kernel(root, kv, on_progress, force=True)
+            with budget.paused():
+                _kernel.ensure_kernel(root, kv, on_progress, force=True)
 
     notify("Ensuring kernel {0}".format(kv.label))
-    exe_path = _kernel.ensure_kernel(root, kv, on_progress)
+    budget.check("installing the browser kernel")
+    # Outside the budget too: a first install is ~1GB compressed, and waiting on
+    # another process's install has its own 30 minute cap.
+    with budget.paused():
+        exe_path = _kernel.ensure_kernel(root, kv, on_progress)
 
     if persona.device_type == "android":
         _assert_android_kernel(kv.version)
@@ -344,6 +366,7 @@ def prepare_launch(
     # Last, so that everything able to reject this launch - the license, the sync
     # mode, the kernel install - has already run. A ticket minted before those
     # would stay live for its whole lifetime with no session to revoke it.
+    budget.check("resolving the managed proxy")
     proxy, ticket = _resolve_managed_proxy(
         proxy=proxy,
         proxy_id=proxy_id,
@@ -361,7 +384,8 @@ def prepare_launch(
         geo = None
         if proxy_spec is not None and geoip:
             notify("Looking up proxy geo")
-            geo = lookup_proxy_geo(proxy_spec)
+            budget.check("looking up the proxy exit geo")
+            geo = lookup_proxy_geo(proxy_spec, timeout=budget.budget(_GEO_TIMEOUT))
             if geo is not None:
                 if geo.timezone and not timezone:
                     resolved_timezone = geo.timezone
@@ -372,7 +396,8 @@ def prepare_launch(
             # persona has to agree with: no public IP means WebRTC is switched
             # off, which no real browser is.
             notify("Looking up exit geo")
-            geo = lookup_direct_geo()
+            budget.check("looking up this machine's exit geo")
+            geo = lookup_direct_geo(timeout=budget.budget(_DIRECT_GEO_TIMEOUT))
             if geo is not None:
                 if geo.timezone and not timezone:
                     resolved_timezone = geo.timezone
@@ -437,6 +462,7 @@ def prepare_launch(
         proxy=proxy_spec,
         archive=archive,
         proxy_ticket=ticket,
+        cache_dir=root,
     )
 
 
@@ -914,7 +940,14 @@ def _restore_archive(
 class _BaseSession:
     """Shared state/reporting for the sync and async browser handles."""
 
-    def __init__(self, plan: LaunchPlan, process: subprocess.Popen, endpoint: str) -> None:
+    def __init__(
+        self,
+        plan: LaunchPlan,
+        process: subprocess.Popen,
+        endpoint: str,
+        *,
+        detached: bool = False,
+    ) -> None:
         self._plan = plan
         self._process = process
         self._endpoint = endpoint
@@ -922,6 +955,28 @@ class _BaseSession:
         self._uploaded = False
         self._sync_error: Optional[str] = None
         self._live_view: Optional[LiveViewSession] = None
+        self._exit_token: Optional[int] = None
+        self._detached = detached
+        if not detached:
+            # Two guards, because they fail differently: the hook closes this
+            # session properly (archive upload included) on every exit Python
+            # sees, and the registry row is what a *later* run uses to clean up
+            # after the exits it does not - SIGKILL, OOM, a power cut.
+            if plan.cache_dir is not None and process is not None:
+                _reaper.register_kernel(
+                    plan.cache_dir,
+                    kernel_pid=process.pid,
+                    profile_dir=plan.profile_dir,
+                    cdp_port=plan.cdp_port,
+                )
+            self._exit_token = _exit_hooks.register_session(lambda: self.close())
+
+    def _release_guard(self) -> None:
+        """Stop tracking this session - it is closing, or already closed."""
+        _exit_hooks.unregister_session(self._exit_token)
+        self._exit_token = None
+        if self._plan.cache_dir is not None and self._process is not None:
+            _reaper.unregister_kernel(self._plan.cache_dir, self._process.pid)
 
     # -- introspection ----------------------------------------------------
     @property
@@ -1110,6 +1165,7 @@ class Antibrow(_BaseSession):
         if self._closed:
             return
         self._closed = True
+        self._release_guard()
         # Browser.close over the live CDP connection first: browser.close() only
         # drops the connection for a browser we attached to, so disconnecting
         # before asking would leave nothing to ask with.
@@ -1196,6 +1252,7 @@ class AsyncAntibrow(_BaseSession):
         if self._closed:
             return
         self._closed = True
+        self._release_guard()
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._stop_live_view)
         try:
@@ -1355,6 +1412,15 @@ async def _ensure_startup_page_async(context: Any) -> None:
             pass
 
 
+def _reap_before_launch(cache_dir: Optional[Path | str]) -> None:
+    """Kill whatever the last run leaked before adding one more kernel to it."""
+    root = Path(cache_dir).expanduser() if cache_dir else _config.default_cache_dir()
+    try:
+        _reaper.reap_orphans(root)
+    except Exception:
+        pass  # never let housekeeping stop a launch
+
+
 def _start_process(plan: LaunchPlan, timeout: float, on_progress: Optional[ProgressCallback]):
     """Spawn the kernel and block until its CDP endpoint answers."""
     notify = on_progress or (lambda _message: None)
@@ -1447,7 +1513,9 @@ def launch(
             Existing profiles keep the version frozen in their persona.
         label: Text shown in the kernel's address-bar tag. Defaults to the
             profile name - handy when several windows are open.
-        args: Extra Chromium switches.
+        args: Extra Chromium switches. Cross-origin iframes are not exposed as
+            debugger targets, so Playwright cannot reach inside one; pass
+            ``["--fp-cdp-attach-iframes"]`` on the rare page that needs it.
         proxy_auth: ``"native"`` (kernel-level, no extension) or ``"extension"``
             (legacy MV3 fallback for HTTP proxies).
         license_token: Use a pre-minted token instead of calling the server.
@@ -1504,58 +1572,68 @@ def launch(
     """
     from playwright.sync_api import sync_playwright
 
-    plan = prepare_launch(
-        profile,
-        headless=headless,
-        focus_window=focus_window,
-        proxy=proxy,
-        geoip=geoip,
-        timezone=timezone,
-        api_key=api_key,
-        server=server,
-        cache_dir=cache_dir,
-        profile_dir=profile_dir,
-        kernel_version=kernel_version,
-        label=label,
-        args=args,
-        proxy_auth=proxy_auth,
-        license_token=license_token,
-        license_provider=license_provider,
-        crypt_key=crypt_key,
-        get_crypt_key=get_crypt_key,
-        proxy_id=proxy_id,
-        proxy_host=proxy_host,
-        canvas_noise=canvas_noise,
-        api_log=api_log,
-        update_kernel=update_kernel,
-        webauthn_capture=webauthn_capture,
-        restore_tabs=restore_tabs,
-        device_type=device_type,
-        real_fingerprint=real_fingerprint,
-        sync=sync,
-        temporary=temporary,
-        on_sync=on_sync,
-        on_progress=on_progress,
-    )
-    process, endpoint = _start_process(plan, timeout, on_progress)
+    # One budget for the whole launch. Activated here rather than inside
+    # `prepare_launch` so every HTTP call it makes shrinks to fit what is left.
+    budget = Deadline(timeout)
+    _reap_before_launch(cache_dir)
+    with budget.active():
+        plan = prepare_launch(
+            profile,
+            headless=headless,
+            focus_window=focus_window,
+            proxy=proxy,
+            geoip=geoip,
+            timezone=timezone,
+            api_key=api_key,
+            server=server,
+            cache_dir=cache_dir,
+            profile_dir=profile_dir,
+            kernel_version=kernel_version,
+            label=label,
+            args=args,
+            proxy_auth=proxy_auth,
+            license_token=license_token,
+            license_provider=license_provider,
+            crypt_key=crypt_key,
+            get_crypt_key=get_crypt_key,
+            proxy_id=proxy_id,
+            proxy_host=proxy_host,
+            canvas_noise=canvas_noise,
+            api_log=api_log,
+            update_kernel=update_kernel,
+            webauthn_capture=webauthn_capture,
+            restore_tabs=restore_tabs,
+            device_type=device_type,
+            real_fingerprint=real_fingerprint,
+            sync=sync,
+            temporary=temporary,
+            on_sync=on_sync,
+            on_progress=on_progress,
+            deadline=budget,
+        )
+        budget.check("starting the kernel")
+        process, endpoint = _start_process(plan, budget.budget(timeout), on_progress)
 
-    playwright = sync_playwright().start()
-    try:
-        browser = playwright.chromium.connect_over_cdp(endpoint, timeout=timeout * 1000)
-        contexts = list(browser.contexts)
-        context = contexts[0] if contexts else browser.new_context()
-        # Order matters: the guard runs first so a kernel that did open the
-        # locale tab has it closed, then we make sure exactly one page is left.
-        _close_stray_locale_tab(context, plan)
-        _ensure_startup_page(context)
-    except BaseException:
+        playwright = sync_playwright().start()
         try:
-            playwright.stop()
-        except Exception:
-            pass
-        kill_process_tree(process)
-        _revoke_ticket(plan.proxy_ticket)
-        raise
+            budget.check("connecting to CDP")
+            browser = playwright.chromium.connect_over_cdp(
+                endpoint, timeout=budget.budget(timeout) * 1000
+            )
+            contexts = list(browser.contexts)
+            context = contexts[0] if contexts else browser.new_context()
+            # Order matters: the guard runs first so a kernel that did open the
+            # locale tab has it closed, then we make sure exactly one page is left.
+            _close_stray_locale_tab(context, plan)
+            _ensure_startup_page(context)
+        except BaseException:
+            try:
+                playwright.stop()
+            except Exception:
+                pass
+            kill_process_tree(process)
+            _revoke_ticket(plan.proxy_ticket)
+            raise
     session = Antibrow(plan, process, endpoint, playwright, browser, context, reuse_initial_page)
     session._live_view = _start_live_view(
         context,
@@ -1622,7 +1700,16 @@ async def launch_async(
 
     loop = asyncio.get_running_loop()
 
+    budget = Deadline(timeout)
+    _reap_before_launch(cache_dir)
+
     def _prepare() -> LaunchPlan:
+        # Activated inside the worker thread: the budget is thread-local, and
+        # this is the thread that will make the calls.
+        with budget.active():
+            return _prepare_in_thread()
+
+    def _prepare_in_thread() -> LaunchPlan:
         return prepare_launch(
             profile,
             headless=headless,
@@ -1655,16 +1742,21 @@ async def launch_async(
             temporary=temporary,
             on_sync=on_sync,
             on_progress=on_progress,
+            deadline=budget,
         )
 
     plan = await loop.run_in_executor(None, _prepare)
+    budget.check("starting the kernel")
     process, endpoint = await loop.run_in_executor(
-        None, _start_process, plan, timeout, on_progress
+        None, _start_process, plan, budget.budget(timeout), on_progress
     )
 
     playwright = await async_playwright().start()
     try:
-        browser = await playwright.chromium.connect_over_cdp(endpoint, timeout=timeout * 1000)
+        budget.check("connecting to CDP")
+        browser = await playwright.chromium.connect_over_cdp(
+            endpoint, timeout=budget.budget(timeout) * 1000
+        )
         contexts = list(browser.contexts)
         context = contexts[0] if contexts else await browser.new_context()
         await _close_stray_locale_tab_async(context, plan)

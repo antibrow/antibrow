@@ -4,6 +4,39 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.23.0] - 2026-08-26
+
+### Added
+
+- `launch({ timeoutMs })` and `openProfile({ timeoutMs })`: a budget for the
+  whole launch, not just for the browser coming up. Default 120000; `0` or a
+  negative number means no limit. Timing out raises `LaunchTimeoutError`, whose
+  `step` names what was in flight.
+- `launch({ args })` and `openProfile({ args })`: extra Chromium switches,
+  appended after everything the SDK sets, so yours win. Matches `args=` in the
+  Python SDK. Repeated `--enable-features` / `--disable-features` are merged
+  rather than overwritten, so passing your own no longer drops ours.
+- `launch({ detached: true })` keeps the browser running after your process
+  exits. Off by default - see below.
+- `anti-detect-browser --reap` kills browsers a previous run left running.
+
+### Changed
+
+- **A browser no longer outlives the process that launched it.** Normal exit, an
+  uncaught exception, Ctrl-C and SIGTERM all close it; anything a previous run
+  left behind (SIGKILL, a crash, a power cut) is killed at the start of the next
+  launch. Pass `detached: true` if you were relying on the old behaviour.
+- **Cross-origin iframes are no longer exposed as debugger targets**, so
+  `frameLocator()` and `page.frames()` cannot reach into one. Same-origin iframes
+  are unaffected, as is everything in the main frame. Pass
+  `args: ['--fp-cdp-attach-iframes']` on the rare page that needs it.
+- Every API call now has a timeout (20s, shortened to fit the launch budget).
+  There was none before, so an unresponsive server could hang a launch
+  indefinitely.
+- Kernel downloads and profile archive transfers now fail after 60s with no data
+  received. They are excluded from `timeoutMs`, so a slow first install still
+  works.
+
 ## [2.22.0] - 2026-08-21
 
 ### Added

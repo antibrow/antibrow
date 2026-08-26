@@ -15,6 +15,7 @@ import platform as _platform
 import random
 import re
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -71,7 +72,11 @@ KERNEL_MANIFEST_URL = "https://download.antibrow.com/fp-browser-versions.json"
 #: Filename of the build marker written inside an installed kernel directory.
 BUILD_MARKER = ".fp-build"
 
-_DOWNLOAD_TIMEOUT = 60
+#: Seconds of complete silence that end a transfer. Not a wall-clock cap: a
+#: first install is ~1GB and slow-but-moving has to survive. Applies per socket
+#: operation, so it is the gap between bytes that counts, never the total.
+_DOWNLOAD_STALL_TIMEOUT = 60
+_DOWNLOAD_TIMEOUT = _DOWNLOAD_STALL_TIMEOUT
 _MANIFEST_TIMEOUT = 15
 
 
@@ -729,8 +734,22 @@ def _download(url: str, dest: Path, on_progress: Optional[ProgressCallback] = No
                             last_report = percent
                             on_progress("Downloading {0}%".format(percent))
     except urllib.error.HTTPError as exc:
+        dest.unlink(missing_ok=True)
         raise KernelDownloadError("Download failed: HTTP {0} from {1}".format(exc.code, url)) from exc
+    except socket.timeout as exc:
+        # A read timeout means no bytes at all for the stall window - a dead
+        # connection, not a slow one. Raised bare by the socket layer, so it has
+        # to be caught before URLError to become the SDK's own error type.
+        dest.unlink(missing_ok=True)
+        raise KernelDownloadError(
+            "Download stalled: no data for {0}s from {1}".format(_DOWNLOAD_STALL_TIMEOUT, url)
+        ) from exc
     except urllib.error.URLError as exc:
+        dest.unlink(missing_ok=True)
+        if isinstance(exc.reason, socket.timeout):
+            raise KernelDownloadError(
+                "Download stalled: no data for {0}s from {1}".format(_DOWNLOAD_STALL_TIMEOUT, url)
+            ) from exc
         raise KernelDownloadError("Download failed: {0} ({1})".format(exc.reason, url)) from exc
 
 

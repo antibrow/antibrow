@@ -19,6 +19,7 @@ import urllib.request
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 from .config import USER_AGENT, default_server
+from .deadline import remaining_budget
 
 DEFAULT_TIMEOUT = 20.0
 
@@ -74,6 +75,13 @@ def send(
     means. Only an unreachable server yields :data:`UNREACHABLE`, and the body
     is then empty.
     """
+    # A launch in progress caps every call it makes: without this the retry
+    # budget alone (90s) can outlast the caller's whole timeout.
+    budget = remaining_budget(timeout)
+    if budget is None:
+        return UNREACHABLE, ""
+    timeout = budget
+
     headers: Dict[str, str] = {"User-Agent": USER_AGENT}
     if api_key:
         headers["Authorization"] = "Bearer {0}".format(api_key)

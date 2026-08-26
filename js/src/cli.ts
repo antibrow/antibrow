@@ -2,6 +2,8 @@ import { realpathSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { startMcpServer } from './mcp'
 import { SDK_VERSION } from './version'
+import { reapOrphans } from './engine/reaper'
+import { defaultCacheDir } from './engine/index'
 import { clearTemporaryProfiles } from './temporary-profiles'
 
 export interface ClearTempArgs {
@@ -81,6 +83,19 @@ function runClearTemp(args: string[], env: NodeJS.ProcessEnv): void {
   console.log(`${cleared.length} temporary profile(s), ${mb} MB${parsed.dryRun ? ' (dry run)' : ''}`)
 }
 
+/**
+ * Kill browsers a previous run left running. Every launch already does this;
+ * the command exists for when the next launch is not what you want to run next.
+ */
+function runReap(env: NodeJS.ProcessEnv): void {
+  const killed = reapOrphans(resolveClearTempCacheDir(env) ?? defaultCacheDir())
+  if (killed.length === 0) {
+    console.log('no orphan browsers found')
+    return
+  }
+  for (const pid of killed) console.log(`killed orphan browser pid ${pid}`)
+}
+
 export function runCli(args: string[], env: NodeJS.ProcessEnv = process.env): void {
   if (args.includes('--mcp')) {
     startMcpServer().catch((error) => {
@@ -89,6 +104,8 @@ export function runCli(args: string[], env: NodeJS.ProcessEnv = process.env): vo
     })
   } else if (args.includes('--clear-temp')) {
     runClearTemp(args, env)
+  } else if (args.includes('--reap')) {
+    runReap(env)
   } else if (args.includes('--version') || args.includes('-v')) {
     console.log(`anti-detect-browser v${SDK_VERSION}`)
   } else if (args.includes('--help') || args.includes('-h')) {
@@ -99,6 +116,7 @@ Usage:
   anti-detect-browser --mcp      Start as an MCP server (for AI agents)
   anti-detect-browser --clear-temp
                                  Delete temporary profiles (--older-than=<days>, --dry-run)
+  anti-detect-browser --reap     Kill browsers a previous run left running
   anti-detect-browser --help     Show this help
   anti-detect-browser --version  Show version
 

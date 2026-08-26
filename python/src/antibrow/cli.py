@@ -15,6 +15,7 @@ from . import __version__
 from . import config as _config
 from . import kernel as _kernel
 from . import license as _license
+from . import reaper as _reaper
 from .errors import AntibrowError
 from .persona import read_persona
 
@@ -221,6 +222,22 @@ def cmd_login(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_reap(args: argparse.Namespace) -> int:
+    """Kill kernels a previous run left behind.
+
+    Every launch already does this; the command exists for the case where the
+    next launch is not the thing you want to run next.
+    """
+    cache_dir = Path(args.cache_dir).expanduser() if args.cache_dir else _config.default_cache_dir()
+    reaped = _reaper.reap_orphans(cache_dir)
+    if not reaped:
+        print("no orphan browsers found")
+        return 0
+    for pid in reaped:
+        print("killed orphan browser pid {0}".format(pid))
+    return 0
+
+
 def cmd_version(args: argparse.Namespace) -> int:
     print("antibrow {0}".format(__version__))
     default_kv = _kernel.default_kernel_version()
@@ -259,6 +276,10 @@ def build_parser() -> argparse.ArgumentParser:
     login.add_argument("--key", help="API key (prompted for when omitted)")
     login.add_argument("--server", help="license server base URL")
     login.set_defaults(func=cmd_login)
+
+    reap = sub.add_parser("reap", help="kill browsers a previous run left running")
+    reap.add_argument("--cache-dir", help="override the cache directory")
+    reap.set_defaults(func=cmd_reap)
 
     version = sub.add_parser("version", help="show SDK and default kernel versions")
     version.set_defaults(func=cmd_version)

@@ -8,6 +8,7 @@ import { SocksClient } from 'socks'
 import { personaToFpConfig, API_LOG_FILE, type FpConfigSettings, type Persona } from './persona'
 import { writeWindowIcon } from './icon'
 import { readProfileMeta } from './profile-dir'
+import { killPidTree } from './reaper'
 
 /** Portable passkey store, kept at the profile root so exports carry it. */
 export const PASSKEYS_FILE = 'passkeys.json'
@@ -38,6 +39,10 @@ export interface KernelLaunchOptions extends Omit<FpConfigSettings, 'apiLogPath'
   webauthnCapture?: boolean
   /** Reopen the previous session's tabs. Default true. */
   restoreTabs?: boolean
+  /** How long to wait for the CDP endpoint. Callers pass what the launch budget has left. */
+  cdpTimeoutMs?: number
+  /** Extra Chromium switches, appended after everything this SDK sets. */
+  extraArgs?: string[]
   onProgress?: (message: string) => void
 }
 
@@ -53,6 +58,20 @@ export interface ExitLatch {
  * so the next machine restores a stale copy. Latch the exit at spawn time and
  * replay it to whoever subscribes later.
  */
+/**
+ * Run an async step at most once, whoever asks.
+ *
+ * Shutting a kernel down twice is not harmless: the second `Browser.close` has
+ * no connection left to send on, so it falls through to the kill path and the
+ * session that was exiting politely gets SIGKILLed instead - the exact outcome
+ * asking politely exists to avoid. Two callers is the normal case now that a
+ * signal reaches both the exit guard and whatever the host app installed.
+ */
+export function onceAsync<T>(fn: () => Promise<T>): () => Promise<T> {
+  let started: Promise<T> | undefined
+  return () => (started ??= fn())
+}
+
 export function exitLatch(child: { once(event: 'exit', cb: () => void): unknown }): ExitLatch {
   let exited = false
   const waiting: Array<() => void> = []
@@ -102,6 +121,8 @@ export interface KernelSession {
   context: BrowserContext
   wsEndpoint: string
   profileDir: string
+  /** The kernel process. Undefined only if the spawn produced no pid. */
+  pid?: number
   onExit(cb: () => void): void
   close(): Promise<void>
 }
@@ -292,13 +313,7 @@ function startSocks5LocalProxy(
 
 function killProcessTree(pid: number | undefined): void {
   if (!pid) return
-  if (process.platform === 'win32') {
-    execFile('taskkill', ['/pid', String(pid), '/T', '/F'], () => {})
-  } else {
-    // The child leads its own process group, so -pid kills every sub-process.
-    try { process.kill(-pid, 'SIGKILL') } catch {}
-    try { process.kill(pid, 'SIGKILL') } catch {}
-  }
+  killPidTree(pid)
 }
 
 function killByUserDataDir(profileDir: string): Promise<void> {
@@ -326,6 +341,8 @@ function killByUserDataDir(profileDir: string): Promise<void> {
 }
 
 export interface BuildLaunchArgsOptions {
+  /** Extra Chromium switches, appended after everything derived from the profile. */
+  extraArgs?: string[]
   fpConfigPath: string
   licenseToken: string
   /** Per-profile encryption key. Whether it belongs on this launch is decided
@@ -439,7 +456,59 @@ export function buildLaunchArgs(opts: BuildLaunchArgsOptions): string[] {
   args.push(`--fp-webauthn-store=${path.join(opts.profileDir, PASSKEYS_FILE)}`)
   if (opts.webauthnCapture === false) args.push('--fp-webauthn-create=choose')
 
-  return args
+  if (opts.extraArgs?.length) args.push(...opts.extraArgs)
+
+  // Last, so a caller's own --disable-features cannot shadow ours.
+  return mergeFeatureSwitches(args)
+}
+
+/**
+ * Join the caller's switches onto ours and collapse the feature switches.
+ *
+ * Separate from `buildLaunchArgs` because the window icon and the proxy are
+ * pushed after it returns; appending here is what gives a caller's
+ * `--proxy-server` the same precedence the Python SDK gives it.
+ */
+export function finalizeLaunchArgs(args: string[], extraArgs?: string[]): string[] {
+  return mergeFeatureSwitches(extraArgs?.length ? [...args, ...extraArgs] : args)
+}
+
+/** Switches Chromium collapses to their LAST occurrence rather than merging. */
+const FEATURE_SWITCHES = ['--enable-features=', '--disable-features='] as const
+
+/**
+ * Collapse repeated `--enable-features` / `--disable-features` into one each.
+ *
+ * Chromium keeps only the last occurrence of these two, so a caller passing its
+ * own would silently drop ours. Losing `--disable-features=DeviceBoundSessions`
+ * that way re-arms the cross-machine sign-out this SDK exists to prevent, and
+ * nothing anywhere reports it. The merged switch keeps the position of the first
+ * occurrence so the rest of the command line stays in order.
+ */
+export function mergeFeatureSwitches(args: string[]): string[] {
+  const merged: string[] = []
+  const values = new Map<string, string[]>(FEATURE_SWITCHES.map((p) => [p, []]))
+  const slots = new Map<string, number>()
+
+  for (const arg of args) {
+    const prefix = FEATURE_SWITCHES.find((p) => arg.startsWith(p))
+    if (!prefix) {
+      merged.push(arg)
+      continue
+    }
+    if (!slots.has(prefix)) {
+      slots.set(prefix, merged.length)
+      merged.push(prefix) // placeholder, filled in below
+    }
+    for (const raw of arg.slice(prefix.length).split(',')) {
+      const value = raw.trim()
+      const seen = values.get(prefix)!
+      if (value && !seen.includes(value)) seen.push(value)
+    }
+  }
+
+  for (const [prefix, index] of slots) merged[index] = prefix + values.get(prefix)!.join(',')
+  return merged
 }
 
 /**
@@ -632,7 +701,11 @@ export async function launchKernel(opts: KernelLaunchOptions): Promise<KernelSes
   // left the browser window created but never shown (WS_VISIBLE never set), CDP
   // still connected fine. chrome.exe has no console window to hide in the first
   // place, so this option never did anything useful here.
-  const child = spawn(exePath, args, {
+  // Last, after the icon and the proxy: the caller's switches must be able to
+  // override ours, and the feature switches have to be merged across the join.
+  const finalArgs = finalizeLaunchArgs(args, opts.extraArgs)
+
+  const child = spawn(exePath, finalArgs, {
     detached: !isWin,
     stdio: ['ignore', 'pipe', 'pipe'],
   }) as unknown as ChildProcessWithoutNullStreams
@@ -648,7 +721,13 @@ export async function launchKernel(opts: KernelLaunchOptions): Promise<KernelSes
 
   let wsEndpoint: string
   try {
-    wsEndpoint = await waitForDevToolsPort(child, cdpPort, 120_000, () => kernelOut, onProgress)
+    wsEndpoint = await waitForDevToolsPort(
+      child,
+      cdpPort,
+      opts.cdpTimeoutMs ?? 120_000,
+      () => kernelOut,
+      onProgress,
+    )
   } catch (err) {
     killProcessTree(child.pid)
     const out = kernelOut.trim()
@@ -679,10 +758,11 @@ export async function launchKernel(opts: KernelLaunchOptions): Promise<KernelSes
     context,
     wsEndpoint,
     profileDir,
+    pid: child.pid,
     onExit(cb) {
       exit.onExit(cb)
     },
-    async close() {
+    close: onceAsync(async () => {
       // Browser.close first, over the live CDP connection -- pw.close() only
       // drops the connection for a browser we attached to, so disconnecting
       // before asking would leave nothing to ask with.
@@ -698,6 +778,6 @@ export async function launchKernel(opts: KernelLaunchOptions): Promise<KernelSes
       localProxyClose?.()
       if (outcome === 'killed') opts.onProgress?.('Browser did not exit in time; killed')
       await killByUserDataDir(userDataDir)
-    },
+    }),
   }
 }

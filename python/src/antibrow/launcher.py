@@ -400,11 +400,13 @@ def shutdown_kernel(
     return "killed"
 
 
-def kill_process_tree(process: Optional[subprocess.Popen]) -> None:
-    """Kill the kernel and every process it spawned."""
-    if process is None or process.poll() is not None:
-        return
-    pid = process.pid
+def kill_pid_tree(pid: int) -> None:
+    """Kill a kernel we only have the pid of - the orphan reaper's case.
+
+    `spawn_kernel` makes the kernel its own process-group leader, so the group
+    id equals the pid and one signal takes the renderers and the GPU process
+    with it. That is also why an orphan survives its owner in the first place.
+    """
     if sys.platform.startswith("win"):
         try:
             subprocess.run(
@@ -414,15 +416,26 @@ def kill_process_tree(process: Optional[subprocess.Popen]) -> None:
                 check=False,
             )
         except OSError:
-            process.kill()
-    else:
+            pass
+        return
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
         try:
-            os.killpg(os.getpgid(pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
-            try:
-                process.kill()
-            except OSError:
-                pass
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
+def kill_process_tree(process: Optional[subprocess.Popen]) -> None:
+    """Kill the kernel and every process it spawned."""
+    if process is None or process.poll() is not None:
+        return
+    kill_pid_tree(process.pid)
+    try:
+        process.kill()
+    except OSError:
+        pass
     try:
         process.wait(timeout=10)
     except Exception:

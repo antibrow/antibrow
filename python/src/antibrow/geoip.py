@@ -235,7 +235,10 @@ def _lookup_via_socks5(spec: ProxySpec, timeout: float) -> Optional[ProxyGeo]:
     return parse_geo_response(body)
 
 
-def lookup_direct_geo(timeout: float = 4.0) -> Optional[ProxyGeo]:
+DIRECT_TIMEOUT = 4.0
+
+
+def lookup_direct_geo(timeout: float = DIRECT_TIMEOUT) -> Optional[ProxyGeo]:
     """This machine's own exit, for launches with no proxy.
 
     The kernel leaves the host IP alone there, so the persona has to agree with

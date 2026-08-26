@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import os
+import socket
 import urllib.error
 import urllib.request
 import zipfile
@@ -346,6 +347,10 @@ def download_profile_cache(get_url: str, profile_dir: Path | str) -> bool:
         if error.code in (403, 404):
             return False
         raise ProfileCacheError("Failed to download profile cache: HTTP {0}".format(error.code))
+    except socket.timeout:
+        raise ProfileCacheError(
+            "Failed to download profile cache: no data for {0}s".format(_REQUEST_TIMEOUT)
+        )
     except urllib.error.URLError as error:
         raise ProfileCacheError("Failed to download profile cache: {0}".format(error.reason))
 
@@ -382,5 +387,9 @@ def upload_profile_cache(profile_dir: Path | str, put_url: str) -> Optional[str]
             return normalize_archive_version(response.headers.get("ETag"))
     except urllib.error.HTTPError as error:
         raise ProfileCacheError("Failed to upload profile cache: HTTP {0}".format(error.code))
+    except socket.timeout:
+        raise ProfileCacheError(
+            "Failed to upload profile cache: no data for {0}s".format(_REQUEST_TIMEOUT)
+        )
     except urllib.error.URLError as error:
         raise ProfileCacheError("Failed to upload profile cache: {0}".format(error.reason))
