@@ -26,6 +26,7 @@ const fakeSession = {
   },
   wsEndpoint: 'ws://127.0.0.1/devtools/browser/abc',
   profileDir: 'D:/profiles/amazon-us',
+  kernelVersion: '152',
   onExit: vi.fn(),
   close: vi.fn(async () => {
     closeListeners.forEach((cb) => cb())
@@ -78,9 +79,11 @@ const cloudProfile = { id: 'profile-1', name: 'amazon-us', config: null }
 const getProfileSpy = vi.fn(async () => cloudProfile)
 const getProfileArchiveUrlsSpy = vi.fn(async () => ({ downloadUrl: 'https://r2/get', uploadUrl: 'https://r2/put' }))
 const getProfileArchiveUploadUrlSpy = vi.fn(async () => 'https://r2/put-fresh' as string | undefined)
+const updateProfileSpy = vi.fn(async () => cloudProfile)
 vi.mock('../src/api', () => ({
   getOrCreateProfile: (...args: unknown[]) => getOrCreateProfileSpy(...(args as [])),
   getProfile: (...args: unknown[]) => getProfileSpy(...(args as [])),
+  updateProfile: (...args: unknown[]) => updateProfileSpy(...(args as [])),
   activateProxy: vi.fn(async () => ({ proxy: { id: 'px1', protocol: 'http', host: 'proxy.local', port: 8080, username: 'u', password: 'p' } })),
   managedProxyToRelayUrl: vi.fn((proxyId: string, secret: string) => `relay://${proxyId}:${secret}@proxy.antibrow.com`),
   issueProxyTicket: vi.fn(async () => ({
@@ -116,6 +119,7 @@ beforeEach(() => {
   getProfileSpy.mockClear()
   getProfileArchiveUrlsSpy.mockClear()
   getProfileArchiveUploadUrlSpy.mockClear()
+  updateProfileSpy.mockClear()
 })
 
 /** Let the fire-and-forget kernel-update check settle. */
@@ -353,6 +357,7 @@ describe('launch sync behaviour', () => {
     getProfileSpy.mockClear()
     getOrCreateProfileSpy.mockClear()
     getProfileArchiveUrlsSpy.mockClear()
+    updateProfileSpy.mockClear()
   })
 
   it('never creates a server row for an unknown profile name', async () => {
@@ -372,6 +377,36 @@ describe('launch sync behaviour', () => {
     expect(getProfileSpy).toHaveBeenCalledTimes(1)
     expect(getOrCreateProfileSpy).not.toHaveBeenCalled()
     expect(getProfileArchiveUrlsSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('stamps the launched kernel version onto the cloud row', async () => {
+    // The row is created before the persona is read, so creation cannot know
+    // this. Left unwritten, every consumer that has not opened the profile has
+    // to invent a version to display.
+    const ab = new AntiDetectBrowser({ key: 'adb_test' })
+    await ab.launch({ profile: 'amazon-us' })
+
+    expect(updateProfileSpy).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'profile-1', config: { kernelVersion: '152' },
+    }))
+  })
+
+  it('does not rewrite a row that already names that kernel', async () => {
+    getProfileSpy.mockResolvedValueOnce({
+      id: 'profile-1', name: 'amazon-us', config: { kernelVersion: '152' },
+    } as unknown as typeof cloudProfile)
+    const ab = new AntiDetectBrowser({ key: 'adb_test' })
+    await ab.launch({ profile: 'amazon-us' })
+
+    expect(updateProfileSpy).not.toHaveBeenCalled()
+  })
+
+  it('never touches the cloud row for a local-only launch', async () => {
+    getProfileSpy.mockRejectedValueOnce(new Error('Failed to get profile: HTTP 404. '))
+    const ab = new AntiDetectBrowser({ key: 'adb_test' })
+    await ab.launch({ profile: 'brand-new' })
+
+    expect(updateProfileSpy).not.toHaveBeenCalled()
   })
 
   it('creates the server row when sync is explicit', async () => {

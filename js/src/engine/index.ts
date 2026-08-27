@@ -153,6 +153,9 @@ export interface ArchiveSyncEvent {
 export interface OpenedProfile extends KernelSession {
   /** Proxy exit geo from this launch; the same lookup that set the timezone. */
   geo?: ProxyGeo
+  /** The kernel major this launch settled on, after the archive restore and any
+   *  version reconciliation. The caller's requested version is not it. */
+  kernelVersion: string
   /** The exit-triggered upload; prefer `onArchiveSync` over polling it. */
   archiveUpload?: Promise<void>
 }
@@ -522,7 +525,7 @@ async function openProfileWithin(opts: OpenProfileOptions, budget: Deadline): Pr
 
   opts.onProgress?.('Launching kernel browser')
   budget.check('starting the kernel')
-  const session: OpenedProfile = await launchKernel({
+  const session = (await launchKernel({
     exePath,
     profileDir,
     persona,
@@ -543,7 +546,8 @@ async function openProfileWithin(opts: OpenProfileOptions, budget: Deadline): Pr
     cdpTimeoutMs: budget.budget(DEFAULT_LAUNCH_TIMEOUT_MS),
     extraArgs: opts.args,
     onProgress: opts.onProgress,
-  })
+  })) as OpenedProfile
+  session.kernelVersion = persona.kernelVersion
   if (geo) session.geo = geo
 
   // Two guards, because they fail differently: the hook closes this session on

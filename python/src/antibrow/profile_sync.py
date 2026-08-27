@@ -109,6 +109,7 @@ def ensure_server_profile(
     tags: Optional[Sequence[str]] = None,
     create: bool = True,
     probe_status: Optional[List[int]] = None,
+    config_out: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """Whether the server knows this profile, creating it when ``create``.
 
@@ -116,15 +117,20 @@ def ensure_server_profile(
     the profile local instead of failing the launch. ``probe_status``, when
     given, gets the GET status appended (200/404/0-unreachable), so a caller
     can tell "confirmed absent" apart from "could not ask" without a second
-    round trip.
+    round trip. ``config_out`` is filled with the row's config the same way, so
+    a caller can reconcile a field on it without asking twice.
     """
     base = (server or default_server()).rstrip("/")
     quoted = encode_path_segment(name)
 
-    status, _ = _request("GET", "{0}{1}/{2}".format(base, PROFILES_PATH, quoted), api_key)
+    status, body = _request("GET", "{0}{1}/{2}".format(base, PROFILES_PATH, quoted), api_key)
     if probe_status is not None:
         probe_status.append(status)
     if status == 200:
+        if config_out is not None:
+            config = body.get("config")
+            if isinstance(config, dict):
+                config_out.update(config)
         return True
     if status != 404 or not create:
         return False
@@ -135,3 +141,34 @@ def ensure_server_profile(
     status, _ = _request("POST", base + PROFILES_PATH, api_key, payload)
     # 409: another process created it between the GET and the POST.
     return status in (200, 201, 409)
+
+
+def push_kernel_version(
+    api_key: str,
+    server: Optional[str] = None,
+    *,
+    name: str,
+    kernel_version: str,
+    config: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Record on the cloud row which kernel this profile runs.
+
+    A row that never carries it says nothing at all, and every consumer that has
+    not opened the profile - another machine's list, the desktop app - is left
+    inventing a version to display. ``config`` is the row's current config: the
+    server replaces the whole object, so the merge has to happen here.
+
+    Returns False and writes nothing when the row already agrees, or on any
+    failure - this runs with a browser already starting and must never take a
+    launch down with it.
+    """
+    if not kernel_version:
+        return False
+    current = dict(config or {})
+    if current.get("kernelVersion") == kernel_version:
+        return False
+    current["kernelVersion"] = kernel_version
+    base = (server or default_server()).rstrip("/")
+    url = "{0}{1}/{2}".format(base, PROFILES_PATH, encode_path_segment(name))
+    status, _ = _request("PUT", url, api_key, {"config": current})
+    return status == 200

@@ -5,8 +5,8 @@ import {
   getProfileArchiveUploadUrl, proxyConfigToUrl, swapManagedProxy, syncPullUserProxies, updateProfile,
 } from './api'
 import {
-  exportProfileArchiveAsync, getLicenseToken, readProfileMeta, resolveProfileDirSync, uploadProfileCache,
-  writeProfileMeta, type ProfileMeta,
+  exportProfileArchiveAsync, getLicenseToken, readPersona, readProfileMeta, resolveProfileDirSync,
+  uploadProfileCache, writeProfileMeta, type ProfileMeta,
 } from './engine'
 import { ensureCacheDir } from './profile'
 import type { AntiDetectBrowserOptions, LaunchOptions, LaunchResult, SyncedProfile } from './types'
@@ -211,10 +211,20 @@ export class ProfileHandle {
     if (!sameStringArray(created.tags ?? [], this.tags)) {
       await updateProfile({ key: this.options.key, server: this.options.server, id: this.id, tags: this.tags })
     }
-    if ((created.config?.group ?? undefined) !== this.group) {
+    // The kernel goes up with the group in one PUT. A row that never carries it
+    // leaves every machine that has not opened the profile guessing at the
+    // version, and this is the one promotion path with no launch behind it.
+    const kernelVersion = readPersona(this.dir)?.kernelVersion
+    const groupChanged = (created.config?.group ?? undefined) !== this.group
+    const kernelChanged = !!kernelVersion && created.config?.kernelVersion !== kernelVersion
+    if (groupChanged || kernelChanged) {
       await updateProfile({
         key: this.options.key, server: this.options.server, id: this.id,
-        config: { ...(created.config ?? {}), group: this.group },
+        config: {
+          ...(created.config ?? {}),
+          ...(groupChanged ? { group: this.group } : {}),
+          ...(kernelChanged ? { kernelVersion } : {}),
+        },
       })
     }
 

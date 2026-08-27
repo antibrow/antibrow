@@ -115,6 +115,9 @@ class ArchivePlan:
     #: The cloud archive's generation, from the server. Equal to the local
     #: marker means this machine already holds it and the restore is skipped.
     version: Optional[str] = None
+    #: The cloud row's config as the existence probe found it. Kept so a field
+    #: on it can be reconciled after the launch without a second GET.
+    config: Dict[str, Any] = field(default_factory=dict)
 
     def emit(self, phase: str, state: str, error: Optional[str] = None) -> None:
         if self.on_event is not None:
@@ -447,6 +450,13 @@ def prepare_launch(
         _revoke_ticket(ticket)
         raise
 
+    # After the kernel is settled, not at row-creation time: the version a
+    # profile actually runs comes from its persona (which arrives inside the
+    # archive) and from the Android rules, neither of which the probe above
+    # knows. Best-effort - the kernel is already starting.
+    if archive is not None:
+        _push_kernel_version(archive, api_key, server, kv.version)
+
     return LaunchPlan(
         exe_path=Path(exe_path),
         args=launch_args,
@@ -464,6 +474,22 @@ def prepare_launch(
         proxy_ticket=ticket,
         cache_dir=root,
     )
+
+
+def _push_kernel_version(
+    archive: ArchivePlan, api_key: Optional[str], server: Optional[str], kernel_version: str
+) -> None:
+    """Keep the cloud row's ``kernelVersion`` equal to what this launch runs."""
+    key = resolve_api_key(api_key)
+    if not key:
+        return
+    try:
+        if _sync.push_kernel_version(
+            key, server, name=archive.profile, kernel_version=kernel_version, config=archive.config
+        ):
+            archive.config["kernelVersion"] = kernel_version
+    except Exception:  # pragma: no cover - metadata only, never fails a launch
+        pass
 
 
 def _resolve_managed_proxy(
@@ -882,8 +908,10 @@ def _restore_archive(
     # mints a name per task would fill the account's sync quota with profiles
     # nobody asked to keep.
     probe_status: List[int] = []
+    row_config: Dict[str, Any] = {}
     known = _sync.ensure_server_profile(
-        key, server, name=profile_name, create=sync is True, probe_status=probe_status
+        key, server, name=profile_name, create=sync is True, probe_status=probe_status,
+        config_out=row_config,
     )
     if not known:
         # A confirmed 404 (not a dropped connection) on a default launch means
@@ -917,6 +945,7 @@ def _restore_archive(
         sign_upload=lambda: _sync.get_profile_archive_upload_url(key, server, name=profile_name),
         on_event=on_sync,
         version=urls.version,
+        config=row_config,
     )
 
     if urls.download_url:

@@ -4,6 +4,20 @@ All notable changes to the `antibrow` Python SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.18.0] - 2026-08-26
+
+### Added
+
+- `push_kernel_version()` records on a cloud profile which kernel it runs.
+- `ensure_server_profile(config_out=)` hands back the profile's stored settings
+  from the lookup it already makes.
+
+### Fixed
+
+- A cloud-synced profile now records which kernel it runs. Profiles created by
+  the SDK left that field empty, so anything listing them without opening them -
+  another machine, the desktop app - fell back to a version they were not on.
+
 ## [0.17.0] - 2026-08-26
 
 ### Added

@@ -3,10 +3,12 @@ import type {
   LaunchOptions,
   LaunchResult,
   LiveViewStreamOptions,
+  ProfileConfig,
 } from './types'
 import {
   getProfile,
   getOrCreateProfile,
+  updateProfile,
   activateProxy,
   managedProxyToRelayUrl,
   issueProxyTicket,
@@ -27,6 +29,7 @@ import {
   readProfileMeta,
   type EngineSession,
   type KernelUpdateStatus,
+  type OpenedProfile,
   type OpenProfileOptions,
 } from './engine'
 import { LiveViewStream, registerLiveSession, unregisterLiveSession, heartbeatLiveSession } from './liveview'
@@ -141,6 +144,9 @@ export class AntiDetectBrowser {
   private syncedProfiles: Map<string, boolean> = new Map()
   /** Cloud row id per name, so the engine does not GET the same profile again. */
   private cloudProfileIds: Map<string, string> = new Map()
+  /** Cloud config per name, so `config.kernelVersion` can be reconciled after a
+   *  launch without a second GET. Rewritten on every PUT this class makes. */
+  private cloudProfileConfigs: Map<string, ProfileConfig> = new Map()
   private kernelUpdateChecked = false
   /** Local-only notice already printed for this name, so a relaunch loop prints it once. */
   private localOnlyNotified: Set<string> = new Set()
@@ -223,7 +229,7 @@ export class AntiDetectBrowser {
       : options.profile
 
     let archive: { downloadUrl?: string; uploadUrl?: string; version?: string } = {}
-    let session: EngineSession
+    let session: OpenedProfile
     try {
       if (syncMode !== 'off' && await this.hasCloudProfile(profileName, syncMode, options.tags, options.group)) {
         archive = await getProfileArchiveUrls({
@@ -259,6 +265,11 @@ export class AntiDetectBrowser {
       }
       throw error
     }
+    // After the launch, not before it: the version a profile actually runs is
+    // settled by its persona (which arrives inside the archive) and by the
+    // Android/reconcile rules, none of which the row-creating call above knows.
+    await this.pushKernelVersion(profileName, session.kernelVersion)
+
     const { context } = session
     const page = context.pages()[0] ?? await context.newPage()
 
@@ -328,12 +339,14 @@ export class AntiDetectBrowser {
           config: group !== undefined ? { group } : undefined,
         })
         if (row.id) this.cloudProfileIds.set(name, row.id)
+        this.cloudProfileConfigs.set(name, row.config ?? {})
         // A created row is one the server now knows, so the default mode has to
         // stop answering "no" for this name.
         this.syncedProfiles.set(`existing:${name}`, true)
       } else {
         const row = await getProfile({ key: this.key, server: this.server, name })
         if (row.id) this.cloudProfileIds.set(name, row.id)
+        this.cloudProfileConfigs.set(name, row.config ?? {})
       }
       this.syncedProfiles.set(cacheKey, true)
       return true
@@ -356,6 +369,26 @@ export class AntiDetectBrowser {
       this.notifyUnreachable(name, error)
       return false
     }
+  }
+
+  /**
+   * Keep `config.kernelVersion` on the cloud row equal to the version this
+   * launch ran. Without it the row says nothing at all, and every consumer that
+   * has never opened the profile - another machine's list, the desktop app -
+   * has to invent a version to display.
+   *
+   * Best-effort on purpose: a browser is already running by the time this is
+   * called, so a failed metadata write must not take the session down with it.
+   */
+  private async pushKernelVersion(name: string, kernelVersion: string | undefined): Promise<void> {
+    const id = this.cloudProfileIds.get(name)
+    const config = this.cloudProfileConfigs.get(name)
+    if (!id || !config || !kernelVersion || config.kernelVersion === kernelVersion) return
+    const next: ProfileConfig = { ...config, kernelVersion }
+    try {
+      await updateProfile({ key: this.key, server: this.server, id, config: next })
+      this.cloudProfileConfigs.set(name, next)
+    } catch { /* metadata only - never fails a launch */ }
   }
 
   /** Once per name per process, same as the local-only notice. */

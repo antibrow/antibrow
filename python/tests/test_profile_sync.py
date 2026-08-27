@@ -39,6 +39,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     do_GET = _respond  # noqa: N815 - BaseHTTPRequestHandler API
     do_POST = _respond  # noqa: N815
+    do_PUT = _respond  # noqa: N815
 
     def log_message(self, *args):
         pass
@@ -184,3 +185,57 @@ def test_ensure_reports_failure_instead_of_raising(api):
     api.routes = {("GET", "/api/v1/profiles/p1"): (500, {"error": "boom"})}
 
     assert S.ensure_server_profile("adb_key", api.base, name="p1") is False
+
+
+def test_ensure_hands_back_the_row_config_it_already_fetched(api):
+    api.routes = {("GET", "/api/v1/profiles/p1"): (200, {"name": "p1", "config": {"group": "asia"}})}
+    config = {}
+
+    assert S.ensure_server_profile("adb_key", api.base, name="p1", config_out=config) is True
+    assert config == {"group": "asia"}
+
+
+def test_ensure_leaves_the_config_alone_when_the_row_has_none(api):
+    api.routes = {("GET", "/api/v1/profiles/p1"): (200, {"name": "p1", "config": None})}
+    config = {}
+
+    assert S.ensure_server_profile("adb_key", api.base, name="p1", config_out=config) is True
+    assert config == {}
+
+
+# -- recording which kernel a profile runs ------------------------------
+
+
+def test_push_kernel_version_merges_rather_than_replacing_the_config(api):
+    # The server writes the config object whole, so anything not sent here is
+    # dropped from the row.
+    api.routes = {("PUT", "/api/v1/profiles/p1"): (200, {"name": "p1"})}
+
+    assert S.push_kernel_version(
+        "adb_key", api.base, name="p1", kernel_version="152", config={"group": "asia"}
+    ) is True
+    assert json.loads(api.requests[0]["body"]) == {
+        "config": {"group": "asia", "kernelVersion": "152"}
+    }
+
+
+def test_push_kernel_version_writes_nothing_when_the_row_already_agrees(api):
+    api.routes = {("PUT", "/api/v1/profiles/p1"): (200, {"name": "p1"})}
+
+    assert S.push_kernel_version(
+        "adb_key", api.base, name="p1", kernel_version="152", config={"kernelVersion": "152"}
+    ) is False
+    assert api.requests == []
+
+
+def test_push_kernel_version_encodes_the_name(api):
+    api.routes = {("PUT", "/api/v1/profiles/a@b.com"): (200, {"name": "a@b.com"})}
+
+    S.push_kernel_version("adb_key", api.base, name="a@b.com", kernel_version="152")
+    assert api.requests[0]["path"] == "/api/v1/profiles/a@b.com"
+
+
+def test_push_kernel_version_reports_failure_instead_of_raising(api):
+    api.routes = {("PUT", "/api/v1/profiles/p1"): (403, {"error": "free plan"})}
+
+    assert S.push_kernel_version("adb_key", api.base, name="p1", kernel_version="152") is False

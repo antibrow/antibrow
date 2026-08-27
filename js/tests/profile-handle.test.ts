@@ -40,10 +40,12 @@ vi.mock('../src/browser', () => ({
 const resolveProfileDirSyncSpy = vi.hoisted(() =>
   vi.fn(() => ({ dir: '/p/shop-01', id: 'local-1', name: 'shop-01' })))
 const readProfileMetaSpy = vi.hoisted(() => vi.fn(() => undefined as unknown))
+const readPersonaSpy = vi.hoisted(() => vi.fn(() => undefined as { kernelVersion?: string } | undefined))
 const writeProfileMetaSpy = vi.hoisted(() => vi.fn())
 vi.mock('../src/engine', () => ({
   resolveProfileDirSync: resolveProfileDirSyncSpy,
   readProfileMeta: readProfileMetaSpy,
+  readPersona: readPersonaSpy,
   writeProfileMeta: writeProfileMetaSpy,
   getLicenseToken: vi.fn(async () => ({ token: 't', exp: 0, mi: 10, sync: true })),
   uploadProfileCache: vi.fn(async () => 'etag-1' as string | undefined),
@@ -77,6 +79,7 @@ beforeEach(() => {
   getOrCreateProfileSpy.mockClear()
   writeProfileMetaSpy.mockClear()
   readProfileMetaSpy.mockReturnValue(undefined)
+  readPersonaSpy.mockReturnValue(undefined)
   // Individually reset (not vi.clearAllMocks(), which would also wipe the
   // factory's other base implementations) - a persistent override set by one
   // test (e.g. `getProfile.mockResolvedValue(...)`) must not leak into the
@@ -464,6 +467,32 @@ describe('sync switches', () => {
     // Never through ProfileConfig.tags - that field belongs to the desktop app.
     const tagsCall = vi.mocked(updateProfile).mock.calls.find((c) => c[0].tags !== undefined)![0]
     expect(tagsCall.config).toBeUndefined()
+  })
+
+  it('enableSync stamps the local kernel version on the new cloud row', async () => {
+    // Without it the row says nothing about which kernel the profile runs, and
+    // a machine that has never opened it has to invent a version to show.
+    readPersonaSpy.mockReturnValue({ kernelVersion: '152' })
+    getOrCreateProfileSpy.mockResolvedValueOnce({ id: 'srv-1', name: 'shop-01', config: null, tags: [] })
+    const p = await profile({ key: 'k', name: 'shop-01', sync: false })
+    await p.enableSync()
+
+    expect(updateProfile).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'srv-1', config: expect.objectContaining({ kernelVersion: '152' }),
+    }))
+  })
+
+  it('enableSync leaves the row alone when it already carries that kernel', async () => {
+    readPersonaSpy.mockReturnValue({ kernelVersion: '152' })
+    getOrCreateProfileSpy.mockResolvedValueOnce({
+      id: 'srv-1', name: 'shop-01', config: { kernelVersion: '152' }, tags: [],
+    })
+    const p = await profile({ key: 'k', name: 'shop-01', sync: false })
+    await p.enableSync()
+
+    // Only the proxy write persistBinding always makes - no second PUT just to
+    // restate a version the row already holds.
+    expect(vi.mocked(updateProfile)).toHaveBeenCalledTimes(1)
   })
 
   it('dangerousDisconnectSync deletes the cloud row and keeps the local dir', async () => {

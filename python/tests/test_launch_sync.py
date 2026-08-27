@@ -60,11 +60,11 @@ def free_license(monkeypatch):
 @pytest.fixture
 def server_stub(monkeypatch):
     """Record archive calls and hand out presigned URLs."""
-    calls = {"ensure": [], "sign": [], "sign_upload": []}
+    calls = {"ensure": [], "sign": [], "sign_upload": [], "push_kernel": []}
 
     # `create` is False on a default launch: a launch only looks the profile up,
     # it never spends a cloud-sync slot on a name nobody asked to keep.
-    def ensure(api_key, server=None, *, name, tags=None, create=True, probe_status=None):
+    def ensure(api_key, server=None, *, name, tags=None, create=True, probe_status=None, config_out=None):
         calls["ensure"].append(name)
         if probe_status is not None:
             probe_status.append(200)
@@ -78,9 +78,17 @@ def server_stub(monkeypatch):
         calls["sign_upload"].append(name)
         return "https://r2/put"
 
+    def push_kernel(api_key, server=None, *, name, kernel_version, config=None):
+        # Copied: the caller stamps the accepted version onto the same dict.
+        calls["push_kernel"].append(
+            {"name": name, "kernel_version": kernel_version, "config": dict(config or {})}
+        )
+        return True
+
     monkeypatch.setattr(B._sync, "ensure_server_profile", ensure)
     monkeypatch.setattr(B._sync, "get_profile_archive_urls", sign)
     monkeypatch.setattr(B._sync, "get_profile_archive_upload_url", sign_upload)
+    monkeypatch.setattr(B._sync, "push_kernel_version", push_kernel)
     return calls
 
 
@@ -128,6 +136,31 @@ def test_the_restored_persona_is_the_one_the_launch_uses(tmp_path, fake_kernel, 
     assert plan.persona.seed == "restored-seed"
     assert plan.archive is not None and plan.archive.restored is True
     assert server_stub["ensure"] == ["p1"]
+
+
+def test_the_cloud_row_is_told_which_kernel_the_launch_ran(tmp_path, fake_kernel, paid_license, server_stub):
+    # The row is created before the persona is read, so creation cannot know it.
+    # Left unwritten, a machine that never opened this profile has to invent a
+    # version to display.
+    plan = plan_for(tmp_path)
+
+    assert server_stub["push_kernel"] == [
+        {"name": "p1", "kernel_version": plan.kernel_version, "config": {}}
+    ]
+
+
+def test_a_local_only_launch_never_writes_the_cloud_row(tmp_path, fake_kernel, paid_license, monkeypatch, server_stub):
+    def ensure(api_key, server=None, *, name, tags=None, create=True, probe_status=None, config_out=None):
+        if probe_status is not None:
+            probe_status.append(404)
+        return False
+
+    monkeypatch.setattr(B._sync, "ensure_server_profile", ensure)
+
+    plan = plan_for(tmp_path)
+
+    assert plan.archive is None
+    assert server_stub["push_kernel"] == []
 
 
 def test_a_free_plan_stays_entirely_local(tmp_path, fake_kernel, free_license, monkeypatch):
@@ -185,7 +218,7 @@ def test_a_failed_restore_does_not_break_the_launch(tmp_path, fake_kernel, paid_
 
 
 def _unknown_name(monkeypatch) -> None:
-    def ensure(api_key, server=None, *, name, tags=None, create=True, probe_status=None):
+    def ensure(api_key, server=None, *, name, tags=None, create=True, probe_status=None, config_out=None):
         if probe_status is not None:
             probe_status.append(404)
         return False
@@ -223,7 +256,7 @@ def test_an_on_progress_caller_gets_it_there_instead_of_stdout(tmp_path, fake_ke
 
 
 def _unreachable(monkeypatch, status: int) -> None:
-    def ensure(api_key, server=None, *, name, tags=None, create=True, probe_status=None):
+    def ensure(api_key, server=None, *, name, tags=None, create=True, probe_status=None, config_out=None):
         if probe_status is not None:
             probe_status.append(status)
         return False

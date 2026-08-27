@@ -27,7 +27,7 @@ def _license(sync: bool) -> LicenseInfo:
 
 
 def _restore(tmp_path, *, sync, temporary, license_sync=True, calls=None, exists=True, status=None, on_progress=None):
-    def _ensure(api_key, server=None, *, name, tags=None, create=True, probe_status=None):
+    def _ensure(api_key, server=None, *, name, tags=None, create=True, probe_status=None, config_out=None):
         if calls is not None:
             calls.append({"name": name, "create": create})
         if probe_status is not None:

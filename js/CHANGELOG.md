@@ -4,6 +4,19 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.24.0] - 2026-08-26
+
+### Added
+
+- `openProfile()` results carry `kernelVersion`: the kernel major that launch
+  actually settled on, after any archive restore.
+
+### Fixed
+
+- A cloud-synced profile now records which kernel it runs. Profiles created by
+  the SDK left that field empty, so anything listing them without opening them -
+  another machine, the desktop app - fell back to a version they were not on.
+
 ## [2.23.1] - 2026-08-26
 
 ### Fixed

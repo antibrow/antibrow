@@ -20,7 +20,7 @@ See https://antibrow.com and the project README for the full API.
 
 from __future__ import annotations
 
-__version__ = "0.17.0"
+__version__ = "0.18.0"
 
 from .api import (
     DEFAULT_RELAY_HOST,
@@ -212,6 +212,7 @@ from .profile_sync import (
     ensure_server_profile,
     get_profile_archive_upload_url,
     get_profile_archive_urls,
+    push_kernel_version,
 )
 from .proxy import ProxySpec, parse_proxy
 from .temporary_profiles import (
@@ -295,6 +296,7 @@ __all__ = [
     "get_profile_archive_upload_url",
     "get_profile_archive_urls",
     "ensure_server_profile",
+    "push_kernel_version",
     "pack_profile_cache",
     "pack_profile_cache_with_report",
     "last_profile_pack_report",
