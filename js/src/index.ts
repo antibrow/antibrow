@@ -95,6 +95,7 @@ export {
   readPersona,
   writePersona,
   withKernelVersion,
+  sanitizePersonaGpu,
   setProfileKernelVersion,
   reconcileKernelVersion,
   reportRestoredKernelChange,
@@ -158,6 +159,45 @@ export {
   LaunchTimeoutError,
   StallTimeoutError,
 } from './engine'
+
+export {
+  runRecipe,
+  runRecipeSource,
+  runRecipeOnPage,
+  temporaryRecipeProfileName,
+  DEFAULT_RECIPE_TIMEOUT_MS,
+  type RunRecipeOptions,
+  type RecipeLaunchOptions,
+  type RunRecipeOnPageInput,
+} from './recipe/runtime'
+export { fanoutRecipe, type FanoutRecipeOptions } from './recipe/fanout'
+export {
+  updateRecipes,
+  loadRegistry,
+  loadCachedRegistry,
+  findRecipe,
+  ensureRecipeSource,
+  assertRunnable,
+  readRecipeLock,
+  recipeRegistryUrl,
+  recipeLockPath,
+  recipesDir,
+  RECIPE_REGISTRY_URL,
+  type RecipeLock,
+  type UpdateRecipesResult,
+} from './recipe/registry'
+export { readMeta, validateMeta, coerceArgs, resolveEntry } from './recipe/source'
+export { applyFilter, parseFilter } from './recipe/select'
+export { runRecipeCli } from './recipe/cli'
+export type {
+  RecipeArg,
+  RecipeMeta,
+  RecipeEntry,
+  RecipeIdentity,
+  RecipeRegistry,
+  RecipeRunResult,
+  FanoutRecipeResult,
+} from './recipe/types'
 
 export { managedProxyDisplayName, managedProxyShortId } from './proxy-display'
 export { profile, ProfileHandle, type ProfileOptions, type SessionOptions } from './profile-handle'

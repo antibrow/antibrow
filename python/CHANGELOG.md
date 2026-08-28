@@ -4,6 +4,51 @@ All notable changes to the `antibrow` Python SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.20.0] - 2026-08-27
+
+### Added
+
+- Recipes: task-level site adapters that return structured JSON, so a site does
+  not have to be driven click by click. `python -m antibrow recipe list|info|run`,
+  and `recipe fanout` to run one recipe across several profiles at once - each
+  with its own identity, cookies and exit IP.
+- `run_recipe()`, `run_recipe_async()`, `fanout_recipe()`, `run_recipe_on_page()`,
+  `update_recipes()`, `load_registry()` and `apply_filter()` for the same thing
+  from code.
+- Recipes are published in their own repository and shared with the Node SDK:
+  the same recipe produces the same output from either. They are pinned by
+  SHA-256 and may only reach the hosts they declare - a request to any other
+  host is blocked. A recipe nobody has reviewed runs only on a temporary
+  profile, and only with `--allow-unreviewed`.
+- `recipe scaffold` and `recipe test` to write and try a new recipe locally;
+  `recipe guide` prints the authoring guide. `recipe test` reads the argument
+  declarations out of your working copy, so `--args` behaves the same as for a
+  published recipe.
+- A recipe's `meta.entry` may interpolate its arguments
+  (``…/search?q={query}``), so a command can open a page that only exists per
+  query. The host stays literal and is still checked against ``meta.domains``.
+  ``resolve_entry()`` is exported for callers building their own runner.
+- A recipe survives the entry page redirecting once underneath it, which is what
+  several sites do right after load.
+
+### Changed
+
+- `python -m antibrow` reports a bad argument as an error message instead of a
+  traceback.
+
+## [0.19.0] - 2026-08-27
+
+### Fixed
+
+- Some Android profiles carried a GPU identity that certain bot checks never
+  clear. Affected profiles are corrected in place on the next launch; nothing
+  else about the identity changes.
+
+### Added
+
+- `sanitize_persona_gpu()` applies the same correction to a persona you manage
+  yourself.
+
 ## [0.18.0] - 2026-08-26
 
 ### Added

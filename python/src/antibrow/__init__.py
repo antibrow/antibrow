@@ -20,7 +20,7 @@ See https://antibrow.com and the project README for the full API.
 
 from __future__ import annotations
 
-__version__ = "0.18.0"
+__version__ = "0.20.0"
 
 from .api import (
     DEFAULT_RELAY_HOST,
@@ -167,6 +167,7 @@ from .persona import (
     load_or_generate_persona,
     persona_to_fp_config,
     read_persona,
+    sanitize_persona_gpu,
     with_kernel_version,
     write_persona,
 )
@@ -215,6 +216,26 @@ from .profile_sync import (
     push_kernel_version,
 )
 from .proxy import ProxySpec, parse_proxy
+from .recipe import (
+    RECIPE_REGISTRY_URL,
+    FanoutResult,
+    FanoutRow,
+    RecipeEntry,
+    RecipeError,
+    RecipeLaunch,
+    RecipeMeta,
+    RecipeRunResult,
+    apply_filter,
+    fanout_recipe,
+    load_registry,
+    run_recipe,
+    run_recipe_async,
+    run_recipe_on_page,
+    run_recipe_on_page_async,
+    run_recipe_source,
+    run_recipe_source_async,
+    update_recipes,
+)
 from .temporary_profiles import (
     ClearedTemporaryProfile,
     clear_temporary_profiles,
@@ -269,6 +290,7 @@ __all__ = [
     "generate_persona",
     "load_or_generate_persona",
     "read_persona",
+    "sanitize_persona_gpu",
     "write_persona",
     "with_kernel_version",
     "reconcile_kernel_version",
@@ -395,6 +417,25 @@ __all__ = [
     "ProxyGeo",
     "lookup_direct_geo",
     "lookup_proxy_geo",
+    # recipes
+    "RECIPE_REGISTRY_URL",
+    "FanoutResult",
+    "FanoutRow",
+    "RecipeEntry",
+    "RecipeError",
+    "RecipeLaunch",
+    "RecipeMeta",
+    "RecipeRunResult",
+    "apply_filter",
+    "fanout_recipe",
+    "load_registry",
+    "run_recipe",
+    "run_recipe_async",
+    "run_recipe_on_page",
+    "run_recipe_on_page_async",
+    "run_recipe_source",
+    "run_recipe_source_async",
+    "update_recipes",
     # licensing
     "LicenseInfo",
     "get_license_token",

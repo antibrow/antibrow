@@ -184,6 +184,29 @@ export function deviceToPersonaParts(
   } as Partial<Persona>
 }
 
+/**
+ * Cloudflare's managed challenge never clears for a profile whose ANGLE vendor
+ * token reads "Imagination Technologies" - it neither passes nor serves a block
+ * page. On a bench of throwaway profiles behind one exit IP, swapping the GPU
+ * model, the screen, the cores, the memory and the whole captured GL table each
+ * left it at challenge 2/2; moving only this token to ARM passed. The model
+ * stays: the captured extension list and precision table belong to it, and the
+ * profiles repaired here are already wearing it behind a live cookie jar.
+ */
+const BLOCKED_GPU_VENDOR = 'Imagination Technologies'
+const GPU_VENDOR_SUBSTITUTE = 'ARM'
+
+/** Returns the very same object when there is nothing to repair, so callers can
+ *  tell a repair happened by identity. */
+export function sanitizePersonaGpu<T extends Persona>(persona: T): T {
+  const swap = (value: unknown): unknown =>
+    typeof value === 'string' ? value.replaceAll(BLOCKED_GPU_VENDOR, GPU_VENDOR_SUBSTITUTE) : value
+  const gpuVendor = swap(persona.gpuVendor) as string
+  const gpuRenderer = swap(persona.gpuRenderer) as string
+  if (gpuVendor === persona.gpuVendor && gpuRenderer === persona.gpuRenderer) return persona
+  return { ...persona, gpuVendor, gpuRenderer }
+}
+
 export interface PersonaInit {
   deviceType?: DeviceType
   /** A device row from the library; absent means use the bundled table. */
@@ -203,7 +226,7 @@ export function generatePersona(chromeMajor = 149, kernelVersion = '149', init?:
     for (const [key, value] of Object.entries(parts)) {
       if (value !== undefined) (base as unknown as Record<string, unknown>)[key] = value
     }
-    return base
+    return sanitizePersonaGpu(base)
   }
   return generateDesktopPersona(chromeMajor, kernelVersion)
 }
@@ -860,7 +883,11 @@ export function loadOrGeneratePersona(profileDir: string, defaultKernelVersion?:
   const fallback = normalizeKernelVersion(defaultKernelVersion) || '149'
   if (fs.existsSync(file)) {
     try {
-      const p = JSON.parse(fs.readFileSync(file, 'utf8')) as Persona
+      const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as Persona
+      // Repaired before kernelVersion is normalized, so the write keeps whatever
+      // version string the file already had - see readPersona.
+      const p = sanitizePersonaGpu(raw)
+      if (p !== raw) fs.writeFileSync(file, JSON.stringify(p, null, 2))
       if (!p.kernelVersion) {
         p.kernelVersion = fallback
         fs.writeFileSync(file, JSON.stringify(p, null, 2))

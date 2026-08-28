@@ -83,6 +83,36 @@ other, with the identical fingerprint.
 - **Standard Playwright.** You get a normal `BrowserContext` over CDP. No proprietary API to
   learn, and existing scripts port over by changing how the browser is launched.
 - **MCP server mode**, so an AI agent can drive a profile directly.
+- **Recipes: task-level site adapters.** Ask for `reddit/hot` and get JSON, instead of a
+  browser handle and a scraping problem. See below.
+
+## Recipes
+
+One command per site, published in a separate repository
+([antibrow/recipes](https://github.com/antibrow/recipes)) and shared by both SDKs, so
+adding a site is a pull request there rather than a release here.
+
+```bash
+anti-detect-browser recipe run google/search --profile shopper-01 --jq '.items[].title'
+anti-detect-browser recipe fanout amazon/search --profiles 'shopper-*' --concurrency 4
+```
+
+```python
+from antibrow import run_recipe, fanout_recipe
+
+print(run_recipe("reddit/hot", temporary=True, args={"limit": 5}).value)
+```
+
+Covered today: Google, Amazon, Walmart, Reddit, X, Medium, Yelp, Indeed, Hacker News,
+DuckDuckGo, GitHub, PyPI, npm, plus exit-IP and fingerprint checks. Several of those answer
+a plain scraper with a captcha, which is the point: a recipe runs inside a profile with its
+own identity and its own exit IP, and `fanout` runs the same command on N of them at once.
+Recipes are pinned by SHA-256, only reviewed ones run by default, and each one may only
+reach the hosts it declares - a request to any other host is blocked.
+
+**Want a platform that is not there yet?** Sites behind Cloudflare, DataDome, PerimeterX or
+Akamai are the ones this layer exists for. Open an issue on the recipes repo, or write one
+from its `GUIDE.md` - the format is a single file with no dependencies.
 
 ## Docs and examples
 

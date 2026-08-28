@@ -19,7 +19,7 @@ import random
 import re
 import secrets
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, List, Literal, Optional, Sequence, Tuple
 
@@ -256,6 +256,31 @@ class Persona:
         return cls(**kwargs)
 
 
+BLOCKED_GPU_VENDOR = "Imagination Technologies"
+GPU_VENDOR_SUBSTITUTE = "ARM"
+
+
+def sanitize_persona_gpu(persona: Persona) -> Persona:
+    """Move a profile off the ANGLE vendor token Cloudflare refuses to clear.
+
+    Its managed challenge never resolves for a profile reporting "Imagination
+    Technologies" - it neither passes nor serves a block page. On a bench of
+    throwaway profiles behind one exit IP, swapping the GPU model, the screen,
+    the cores, the memory and the whole captured GL table each left it at
+    challenge 2/2; moving only this token to ARM passed. The model stays: the
+    captured extension list and precision table belong to it, and the profiles
+    repaired here already wear it behind a live cookie jar.
+
+    Returns the very same object when there is nothing to repair, so callers can
+    tell a repair happened by identity.
+    """
+    vendor = persona.gpu_vendor.replace(BLOCKED_GPU_VENDOR, GPU_VENDOR_SUBSTITUTE)
+    renderer = persona.gpu_renderer.replace(BLOCKED_GPU_VENDOR, GPU_VENDOR_SUBSTITUTE)
+    if vendor == persona.gpu_vendor and renderer == persona.gpu_renderer:
+        return persona
+    return replace(persona, gpu_vendor=vendor, gpu_renderer=renderer)
+
+
 def _generate_desktop_persona(
     chrome_major: int, kernel_version: str, rng: Optional[random.Random] = None
 ) -> Persona:
@@ -418,7 +443,7 @@ def generate_persona(
     for key, value in parts.items():
         if value is not None:
             setattr(persona, key, value)
-    return persona
+    return sanitize_persona_gpu(persona)
 
 
 def chrome_major_of(kernel_version: str) -> int:
@@ -1122,7 +1147,12 @@ def load_or_generate_persona(
     fallback = normalize_kernel_version(default_kernel_version) or "149"
     if path.exists():
         try:
-            persona = Persona.from_dict(json.loads(path.read_text(encoding="utf-8")))
+            raw = Persona.from_dict(json.loads(path.read_text(encoding="utf-8")))
+            # Repaired before the version is normalized, so the write keeps
+            # whatever version string the file already had -- see read_persona.
+            persona = sanitize_persona_gpu(raw)
+            if persona is not raw:
+                write_persona(directory, persona)
             if not persona.kernel_version:
                 # Backfill for profiles written before kernelVersion existed.
                 persona.kernel_version = fallback

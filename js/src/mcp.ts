@@ -11,6 +11,10 @@ import {
   refreshKernelVersions,
   ANDROID_MIN_KERNEL_VERSION,
 } from './engine'
+import { loadRegistry } from './recipe/registry'
+import { runRecipe } from './recipe/runtime'
+import { fanoutRecipe } from './recipe/fanout'
+import { applyFilter } from './recipe/select'
 import { rmSync } from 'node:fs'
 import type { McpSession } from './types'
 
@@ -307,6 +311,48 @@ export async function startMcpServer(): Promise<void> {
           required: ['sessionId'],
         },
       },
+      {
+        name: 'list_recipes',
+        description: 'List the published recipes: task-level site adapters that return structured JSON, so a site does not have to be driven click by click. Each row carries the arguments it takes, the hosts it may reach and whether a maintainer has reviewed it.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            site: { type: 'string', description: 'Only recipes for this site, e.g. "reddit"' },
+            query: { type: 'string', description: 'Substring match over id and summary' },
+          },
+        },
+      },
+      {
+        name: 'run_recipe',
+        description: 'Run one recipe and get its JSON. Use temporary: true for an anonymous throwaway identity, or profile for a persistent one that stays signed in. The recipe can only reach the hosts it declares.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            id: { type: 'string', description: 'Recipe id, e.g. "reddit/hot". See list_recipes.' },
+            args: { type: 'object', description: 'Recipe arguments, as declared by list_recipes' },
+            profile: { type: 'string', description: 'Profile to run on. Omit together with temporary: true.' },
+            temporary: { type: 'boolean', description: 'Run on a throwaway local profile instead of a named one.' },
+            jq: { type: 'string', description: 'Trim the result before it is returned: .items[].title, .items[0], length, keys, joined with |. Saves reading a whole payload into context.' },
+            allowUnreviewed: { type: 'boolean', description: 'Run a recipe nobody has reviewed. Only allowed together with temporary: true.' },
+          },
+          required: ['id'],
+        },
+      },
+      {
+        name: 'fanout_recipe',
+        description: 'Run one recipe across several profiles at once. Each profile is a separate identity with its own fingerprint, cookies and exit IP, so the same task runs N times without any of the runs sharing an account. Concurrency is capped by the plan.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            id: { type: 'string', description: 'Recipe id, e.g. "reddit/hot"' },
+            args: { type: 'object', description: 'Recipe arguments, the same for every profile' },
+            profiles: { type: 'array', items: { type: 'string' }, description: 'Profile names to run on' },
+            concurrency: { type: 'number', description: 'How many browsers at once. Lowered to what the plan allows.' },
+            jq: { type: 'string', description: 'Applied to each profile\'s result' },
+          },
+          required: ['id', 'profiles'],
+        },
+      },
     ],
   }))
 
@@ -564,6 +610,65 @@ export async function startMcpServer(): Promise<void> {
           }
           return {
             content: [{ type: 'text' as const, text: `Live view stopped for session ${session.id}` }],
+          }
+        }
+
+        case 'list_recipes': {
+          const registry = await loadRegistry({ cacheDir: resolvedCacheDir })
+          const site = args?.site as string | undefined
+          const query = (args?.query as string | undefined)?.toLowerCase()
+          const rows = registry.recipes
+            .filter((r) => !site || r.id.split('/')[0] === site)
+            .filter((r) => !query || `${r.id} ${r.summary}`.toLowerCase().includes(query))
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify(rows, null, 2) }],
+          }
+        }
+
+        case 'run_recipe': {
+          const run = await runRecipe({
+            id: args?.id as string,
+            args: args?.args as Record<string, unknown> | undefined,
+            key: apiKey,
+            server,
+            cacheDir,
+            profile: args?.profile as string | undefined,
+            temporary: args?.temporary === true,
+            allowUnreviewed: args?.allowUnreviewed === true,
+            onLog: (message) => console.error(message),
+          })
+          const jq = args?.jq as string | undefined
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({
+                ...run,
+                value: jq ? applyFilter(run.value, jq) : run.value,
+              }, null, 2),
+            }],
+          }
+        }
+
+        case 'fanout_recipe': {
+          const jq = args?.jq as string | undefined
+          const result = await fanoutRecipe({
+            id: args?.id as string,
+            args: args?.args as Record<string, unknown> | undefined,
+            key: apiKey,
+            server,
+            cacheDir,
+            profiles: (args?.profiles as string[] | undefined) ?? [],
+            concurrency: args?.concurrency as number | undefined,
+            notify: (message) => console.error(message),
+          })
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({
+                ...result,
+                results: result.results.map((r) => (r.ok && jq ? { ...r, value: applyFilter(r.value, jq) } : r)),
+              }, null, 2),
+            }],
           }
         }
 

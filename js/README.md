@@ -197,9 +197,94 @@ Add it to your MCP client config and your agent gets a stealth browser:
 }
 ```
 
-**Tools:** `launch_browser`, `navigate`, `click`, `fill`, `screenshot`, `evaluate`, `get_content`, `list_profiles`, `create_profile`, `list_proxies`, `claim_proxy`, `start_live_view`, and more.
+**Tools:** `launch_browser`, `navigate`, `click`, `fill`, `screenshot`, `evaluate`, `get_content`, `list_profiles`, `create_profile`, `list_proxies`, `claim_proxy`, `start_live_view`, `list_recipes`, `run_recipe`, `fanout_recipe`, and more.
+
+The three recipe tools are the shortcut: instead of driving a site click by
+click, the agent asks for `reddit/hot` and gets JSON. All three take a `jq`
+filter, so it can ask for two fields instead of a whole payload. See
+[Recipes](#recipes).
 
 `launch_browser` and `create_profile` both take `deviceType` (`"desktop"` / `"android"`) and `realFingerprint`, so an agent can ask for a phone profile in the same call that starts it.
+
+## Recipes
+
+A recipe is one file that turns one site into one command: ask for `reddit/hot`
+and get JSON back instead of a browser handle and a scraping problem. Recipes
+are published in their own repository
+([antibrow/recipes](https://github.com/antibrow/recipes)) and shared with the
+Python SDK, so the same recipe produces the same output from either.
+
+```bash
+anti-detect-browser recipe update                                # pull the registry
+anti-detect-browser recipe list
+anti-detect-browser recipe info reddit/hot                       # args, hosts, identity
+anti-detect-browser recipe run reddit/hot --temporary --json
+anti-detect-browser recipe run reddit/hot --profile shopper-01 --jq '.items[].title'
+```
+
+From code:
+
+```js
+import { runRecipe, fanoutRecipe } from 'anti-detect-browser'
+
+const { value } = await runRecipe({
+  id: 'reddit/hot',
+  key: process.env.ANTI_DETECT_BROWSER_KEY,
+  temporary: true,
+  args: { limit: 5 },
+})
+```
+
+The part a single-browser tool cannot do: **the same command on N isolated
+identities.**
+
+```bash
+anti-detect-browser recipe fanout ipify/exit-ip --profiles 'shopper-*' --concurrency 4
+```
+
+```js
+const { results } = await fanoutRecipe({
+  id: 'reddit/hot',
+  key: process.env.ANTI_DETECT_BROWSER_KEY,
+  profiles: ['shopper-01', 'shopper-02', 'shopper-03'],
+  concurrency: 3,
+})
+```
+
+Three profiles, three personas, three cookie jars, three exit IPs. Concurrency
+is capped by your plan's limit, and read before anything is queued rather than
+discovered by launching into a refusal.
+
+### What a recipe may do
+
+`run()` executes inside the page the runtime opened, so a relative fetch carries
+that profile's session for that site. `meta.entry` may interpolate the recipe's
+arguments (`…/search?q={query}`) for a page that only exists per query - the
+host stays literal, so it is still the declared one.
+
+Two rules make community recipes safe to run in a profile that holds live
+logins:
+
+- **`meta.domains` is enforced at the network layer.** A request to a host the
+  recipe did not declare is blocked, so a Reddit recipe cannot reach your mail.
+  Blocked hosts come back in the result.
+- **Recipes are pinned by SHA-256, and only reviewed ones run by default.**
+  `--allow-unreviewed` opts in, and only on a `--temporary` profile - a
+  temporary profile is local-only, so nothing it collects travels anywhere.
+
+`--jq` trims the output before you read it: `.items[].title`, `.items[0]`,
+`.items[1:3]`, `length`, `keys`, joined with `|`.
+
+### Writing one
+
+```bash
+anti-detect-browser recipe guide                      # the authoring guide
+anti-detect-browser recipe scaffold mysite/list       # skeleton
+anti-detect-browser recipe test mysite/list --args '{"limit":5}'
+```
+
+Explore the site from a throwaway profile, not your own account - that is what
+`--temporary` is for.
 
 ## Running automation at scale
 

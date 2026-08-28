@@ -1,6 +1,7 @@
 import { realpathSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { startMcpServer } from './mcp'
+import { runRecipeCli } from './recipe/cli'
 import { SDK_VERSION } from './version'
 import { reapOrphans } from './engine/reaper'
 import { defaultCacheDir } from './engine/index'
@@ -97,7 +98,16 @@ function runReap(env: NodeJS.ProcessEnv): void {
 }
 
 export function runCli(args: string[], env: NodeJS.ProcessEnv = process.env): void {
-  if (args.includes('--mcp')) {
+  if (args[0] === 'recipe') {
+    runRecipeCli(args.slice(1), env)
+      .then((code) => {
+        if (code !== 0) process.exitCode = code
+      })
+      .catch((error: unknown) => {
+        console.error(error instanceof Error ? error.message : String(error))
+        process.exitCode = 1
+      })
+  } else if (args.includes('--mcp')) {
     startMcpServer().catch((error) => {
       console.error(`Failed to start MCP server: ${error instanceof Error ? error.message : error}`)
       process.exit(1)
@@ -110,10 +120,13 @@ export function runCli(args: string[], env: NodeJS.ProcessEnv = process.env): vo
     console.log(`anti-detect-browser v${SDK_VERSION}`)
   } else if (args.includes('--help') || args.includes('-h')) {
     console.log(`
-anti-detect-browser v${SDK_VERSION} — anti-detect browser SDK + MCP server
+anti-detect-browser v${SDK_VERSION} - anti-detect browser SDK + MCP server
 
 Usage:
   anti-detect-browser --mcp      Start as an MCP server (for AI agents)
+  anti-detect-browser recipe <command>
+                                 Task-level site adapters: run one command,
+                                 get JSON. \`recipe help\` for the subcommands.
   anti-detect-browser --clear-temp
                                  Delete temporary profiles (--older-than=<days>, --dry-run)
   anti-detect-browser --reap     Kill browsers a previous run left running
@@ -128,7 +141,7 @@ MCP server mode:
   Tools: launch_browser, close_browser, list_sessions, list_profiles,
          create_profile, delete_profile, list_proxies, claim_proxy,
          navigate, screenshot, evaluate, click, fill, get_content,
-         start_live_view
+         start_live_view, list_recipes, run_recipe, fanout_recipe
 
   Environment variables:
     ANTI_DETECT_BROWSER_KEY        API key (required)

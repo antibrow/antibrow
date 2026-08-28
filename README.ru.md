@@ -86,6 +86,36 @@ await session.close()
   проприетарного API учить не нужно, а существующие скрипты переносятся заменой одной
   строки запуска.
 - **Режим MCP-сервера**, чтобы AI-агент мог управлять профилем напрямую.
+- **Рецепты: адаптеры сайтов уровня задачи.** Запрашиваете `reddit/hot` и получаете JSON, а
+  не хэндл браузера и задачу по парсингу. Подробнее ниже.
+
+## Рецепты
+
+Одна команда на сайт. Рецепты живут в отдельном репозитории
+([antibrow/recipes](https://github.com/antibrow/recipes)) и общие для обоих SDK, поэтому
+добавить сайт - это pull request там, а не релиз здесь.
+
+```bash
+anti-detect-browser recipe run google/search --profile shopper-01 --jq '.items[].title'
+anti-detect-browser recipe fanout amazon/search --profiles 'shopper-*' --concurrency 4
+```
+
+```python
+from antibrow import run_recipe, fanout_recipe
+
+print(run_recipe("reddit/hot", temporary=True, args={"limit": 5}).value)
+```
+
+Сейчас покрыты: Google, Amazon, Walmart, Reddit, X, Medium, Yelp, Indeed, Hacker News,
+DuckDuckGo, GitHub, PyPI, npm, плюс проверки выходного IP и отпечатка. Часть из них
+отвечает обычному скрейперу капчей - в этом и смысл: рецепт выполняется внутри профиля со
+своей личностью и своим выходным IP, а `fanout` запускает одну команду сразу на N таких
+профилях. Рецепты закреплены по SHA-256, по умолчанию запускаются только проверенные, и
+каждый может обращаться только к объявленным хостам - запрос к любому другому блокируется.
+
+**Нужной платформы ещё нет?** Сайты за Cloudflare, DataDome, PerimeterX и Akamai - это как
+раз то, для чего слой существует. Откройте issue в репозитории рецептов или напишите свой
+по его `GUIDE.md`: формат - один файл без зависимостей.
 
 ## Документация и примеры
 

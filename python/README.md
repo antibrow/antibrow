@@ -42,6 +42,7 @@ That is a real Chromium — with a real device's fingerprint, its own persistent
   - [Managed proxies](#managed-proxies) · [Your own proxy library](#your-own-proxy-library)
 - [Managing cloud profiles](#managing-cloud-profiles)
 - [Live View](#live-view)
+- [Recipes](#recipes)
 - [Framework integrations](#framework-integrations)
   - [Playwright](#playwright) · [Puppeteer / Node](#coming-from-puppeteer-or-the-node-sdk) · [browser-use](#browser-use) · [crawl4ai](#crawl4ai) · [Scrapling](#scrapling) · [MCP](#ai-agents-and-mcp) · [Selenium](#selenium)
 - [Running automation at scale](#running-automation-at-scale)
@@ -466,6 +467,81 @@ The stream stops and the session is released on `close()`. A live view that
 cannot be registered or connected is reported through `on_progress` and the
 browser runs anyway — a browser you cannot watch still works.
 
+## Recipes
+
+A recipe is one file that turns one site into one command: an agent asks for
+`reddit/hot` and gets JSON back instead of a browser handle and a scraping
+problem. Recipes are published in their own repository
+([antibrow/recipes](https://github.com/antibrow/recipes)) and shared with the
+Node SDK, so the same recipe produces the same output from either.
+
+```bash
+python -m antibrow recipe update                                  # pull the registry
+python -m antibrow recipe list
+python -m antibrow recipe info reddit/hot                         # args, hosts, identity
+python -m antibrow recipe run reddit/hot --temporary --json
+python -m antibrow recipe run reddit/hot --profile shopper-01 --jq '.items[].title'
+```
+
+From code:
+
+```python
+from antibrow import run_recipe
+
+result = run_recipe("reddit/hot", temporary=True, args={"limit": 5})
+print(result.value)
+```
+
+The part a single-browser tool cannot do: **the same command on N isolated
+identities.**
+
+```bash
+python -m antibrow recipe fanout ipify/exit-ip --profiles 'shopper-*' --concurrency 4
+```
+
+```python
+from antibrow import fanout_recipe
+
+result = fanout_recipe("reddit/hot", ["shopper-01", "shopper-02"], concurrency=2)
+for row in result.rows:
+    print(row.profile, row.value if row.ok else row.error)
+```
+
+Four profiles, four personas, four cookie jars, four exit IPs. Concurrency is
+capped by your plan's limit, and read before anything is queued rather than
+discovered by launching into a refusal.
+
+### What a recipe may do
+
+`run()` executes inside the page the runtime opened, so a relative fetch carries
+that profile's session for that site. `meta.entry` may interpolate the recipe's
+arguments (`…/search?q={query}`) for a page that only exists per query - the
+host stays literal, so it is still the declared one.
+
+Two rules make community recipes safe to run in a profile that holds live
+logins:
+
+- **`meta.domains` is enforced at the network layer.** A request to a host the
+  recipe did not declare is blocked, so a Reddit recipe cannot reach your mail.
+  Blocked hosts come back in the result.
+- **Recipes are pinned by SHA-256, and only reviewed ones run by default.**
+  `--allow-unreviewed` opts in, and only on a `--temporary` profile - a
+  temporary profile is local-only, so nothing it collects travels anywhere.
+
+`--jq` trims the output before you read it: `.items[].title`, `.items[0]`,
+`.items[1:3]`, `length`, `keys`, joined with `|`.
+
+### Writing one
+
+```bash
+python -m antibrow recipe guide                       # the authoring guide
+python -m antibrow recipe scaffold mysite/list        # skeleton
+python -m antibrow recipe test mysite/list --args '{"limit":5}'
+```
+
+Explore the site from a throwaway profile, not your own account - that is what
+`--temporary` is for.
+
 ## Framework integrations
 
 Every integration works the same way: antibrow starts the browser, and you hand its **CDP endpoint** to whatever wants to drive it.
@@ -677,6 +753,7 @@ python -m antibrow info                                           # kernels, pro
 python -m antibrow login [--key ab_live_…]                        # store an API key
 python -m antibrow clear-temp [--older-than 7] [--dry-run]        # delete temporary profiles
 python -m antibrow version                                        # SDK + default kernel
+python -m antibrow recipe list|run|fanout|...                     # see Recipes
 ```
 
 `antibrow …` works too (console script). `info` is the first thing to run when something is wrong: it prints the cache directory, every kernel version with install/update status, all profiles with their pinned kernel, and where your API key was found.
@@ -689,6 +766,7 @@ python -m antibrow version                                        # SDK + defaul
 | `ANTIBROW_LICENSE_TOKEN` | Pre-minted license token; skips the server call entirely |
 | `ANTIBROW_CACHE_DIR` | Kernel + profile root (default `~/.anti-detect-browser`) |
 | `ANTIBROW_SERVER` | License server base URL |
+| `ANTIBROW_RECIPES_URL` | Recipe registry url, for a fork or a local mirror |
 
 ## Platform support
 

@@ -4,6 +4,44 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.26.0] - 2026-08-27
+
+### Added
+
+- Recipes: task-level site adapters that return structured JSON, so a site does
+  not have to be driven click by click. `anti-detect-browser recipe list|info|run`,
+  and `recipe fanout` to run one recipe across several profiles at once - each
+  with its own identity, cookies and exit IP.
+- `runRecipe()`, `fanoutRecipe()`, `runRecipeOnPage()`, `updateRecipes()`,
+  `loadRegistry()` and `applyFilter()` for the same thing from code.
+- Three MCP tools: `list_recipes`, `run_recipe`, `fanout_recipe`. All three take
+  a `jq` filter so an agent can ask for two fields instead of a whole payload.
+- Recipes are published in their own repository, pinned by SHA-256, and may only
+  reach the hosts they declare - a request to any other host is blocked. A recipe
+  nobody has reviewed runs only on a temporary profile, and only with
+  `--allow-unreviewed`.
+- `recipe scaffold` and `recipe test` to write and try a new recipe locally;
+  `recipe guide` prints the authoring guide.
+- A recipe's `meta.entry` may interpolate its arguments (`…/search?q={query}`),
+  so a command can open a page that only exists per query. The host stays
+  literal and is still checked against `meta.domains`. `resolveEntry()` is
+  exported for callers building their own runner.
+- A recipe survives the entry page redirecting once underneath it, which is what
+  several sites do right after load.
+
+## [2.25.0] - 2026-08-27
+
+### Fixed
+
+- Some Android profiles carried a GPU identity that certain bot checks never
+  clear. Affected profiles are corrected in place on the next launch; nothing
+  else about the identity changes.
+
+### Added
+
+- `sanitizePersonaGpu()` applies the same correction to a persona you manage
+  yourself.
+
 ## [2.24.0] - 2026-08-26
 
 ### Added
