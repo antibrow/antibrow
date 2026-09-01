@@ -239,8 +239,21 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install --omit=dev
 COPY . .
-CMD ["xvfb-run", "-a", "node", "index.js"]
+RUN printf '%s\n' \
+      '#!/bin/sh' 'set -e' \
+      'Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &' \
+      'i=0; while [ ! -e /tmp/.X11-unix/X99 ] && [ $i -lt 100 ]; do i=$((i+1)); sleep 0.1; done' \
+      'export DISPLAY=:99' 'exec "$@"' \
+    > /usr/local/bin/with-xvfb && chmod +x /usr/local/bin/with-xvfb
+ENTRYPOINT ["with-xvfb"]
+CMD ["node", "index.js"]
 ```
+
+`xvfb-run` здесь намеренно не используется: он вызывает `xauth`, которого нет в
+slim-образах, а после его установки зависает в ожидании сигнала готовности
+SIGUSR1 от Xvfb - этот сигнал не приходит под PID 1 в контейнере, процесс
+остаётся в `rt_sigsuspend`, и запуск не происходит никогда. Запуск Xvfb напрямую
+с ожиданием его сокета снимает обе проблемы.
 
 Один и тот же файл собирается и под `linux/amd64`, и под `linux/arm64`.
 

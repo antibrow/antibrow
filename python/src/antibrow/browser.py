@@ -43,9 +43,11 @@ from .launcher import (
     DEFAULT_LAUNCH_TIMEOUT,
     _drain_output,
     build_launch_args,
+    clear_singleton_locks,
     is_stray_locale_tab_url,
     kill_process_tree,
     pick_free_port,
+    retry_kernel_start,
     shutdown_kernel,
     spawn_kernel,
     wait_for_cdp,
@@ -1453,19 +1455,26 @@ def _reap_before_launch(cache_dir: Optional[Path | str]) -> None:
 def _start_process(plan: LaunchPlan, timeout: float, on_progress: Optional[ProgressCallback]):
     """Spawn the kernel and block until its CDP endpoint answers."""
     notify = on_progress or (lambda _message: None)
-    notify("Spawning kernel {0} (cdp port {1})".format(plan.exe_path.name, plan.cdp_port))
-    process = spawn_kernel(plan.exe_path, plan.args)
-    output: List[str] = []
-    _drain_output(process, output)
-    try:
-        endpoint = wait_for_cdp(
-            process, plan.cdp_port, plan.user_data_dir, timeout=timeout, output=output,
-            on_progress=on_progress,
-        )
-    except BaseException:
-        kill_process_tree(process)
-        raise
-    return process, endpoint
+
+    def attempt():
+        # Per attempt, not once per profile: a crashed attempt leaves its own
+        # lock, and on shared storage the host name differs from the one there.
+        clear_singleton_locks(plan.user_data_dir)
+        notify("Spawning kernel {0} (cdp port {1})".format(plan.exe_path.name, plan.cdp_port))
+        process = spawn_kernel(plan.exe_path, plan.args)
+        output: List[str] = []
+        _drain_output(process, output)
+        try:
+            endpoint = wait_for_cdp(
+                process, plan.cdp_port, plan.user_data_dir, timeout=timeout, output=output,
+                on_progress=on_progress,
+            )
+        except BaseException:
+            kill_process_tree(process)
+            raise
+        return process, endpoint
+
+    return retry_kernel_start(attempt)
 
 
 def launch(

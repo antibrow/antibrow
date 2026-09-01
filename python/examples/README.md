@@ -24,7 +24,8 @@ ANTIBROW_PROXY="socks5://user:pass@host:1080" python examples/03_proxy_geoip.py
 
 ## Notes
 
-- **Linux/Docker:** run under `xvfb-run -a`. `headless=True` is a Windows-only
+- **Linux/Docker:** run against an Xvfb display (see the `Dockerfile`; `xvfb-run`
+  hangs under a container's PID 1). `headless=True` is a Windows-only
   trick (off-screen window); on Linux a virtual display is the honest equivalent,
   and real `--headless` is avoided because it is itself a fingerprint.
 - **Third-party APIs move.** `06`–`08` target the integrations' current APIs

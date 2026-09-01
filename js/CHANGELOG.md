@@ -4,6 +4,22 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.27.0] - 2026-08-31
+
+### Fixed
+
+- Linux: WebGL works. `canvas.getContext('webgl')` returned `null`; set
+  `ANTIBROW_DISABLE_GPU=1` if you need the previous behaviour back.
+- Linux and containers: a profile last used under a different host name opens
+  instead of being refused as in use elsewhere.
+- A browser that dies while starting is retried up to three times. Errors it
+  reports itself, such as the concurrency cap, are still raised immediately.
+
+### Changed
+
+- The Docker example in the README starts Xvfb directly instead of through
+  `xvfb-run`, which hangs in a container.
+
 ## [2.26.0] - 2026-08-27
 
 ### Added

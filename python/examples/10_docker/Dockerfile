@@ -23,8 +23,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN pip install --no-cache-dir antibrow
 
+# Not xvfb-run: it shells out to xauth (absent from the slim images) and then
+# blocks waiting for Xvfb's SIGUSR1 ready signal, which never arrives under a
+# container's PID 1 - the process sits in rt_sigsuspend and nothing starts.
+# Installing xauth fixes only the first half. Starting Xvfb and waiting for its
+# socket is deterministic, and drops the xauth dependency altogether.
+RUN printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
+      'Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &' \
+      'i=0; while [ ! -e /tmp/.X11-unix/X99 ] && [ $i -lt 100 ]; do i=$((i+1)); sleep 0.1; done' \
+      'export DISPLAY=:99' \
+      'exec "$@"' \
+    > /usr/local/bin/with-xvfb && chmod +x /usr/local/bin/with-xvfb
+
 WORKDIR /app
 COPY scrape.py .
 
-ENTRYPOINT ["xvfb-run", "-a", "--server-args=-screen 0 1920x1080x24"]
+ENTRYPOINT ["with-xvfb"]
 CMD ["python", "scrape.py"]

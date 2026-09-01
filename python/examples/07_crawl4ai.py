@@ -26,7 +26,7 @@ async def main() -> None:
     session = await launch_async(
         profile="crawler-01",
         proxy=os.environ.get("ANTIBROW_PROXY"),
-        headless=False,   # on Linux run the whole script under xvfb-run
+        headless=False,   # on Linux give it an Xvfb display (see the Dockerfile)
     )
     print("driving", session.cdp_url, "| timezone", session.timezone)
 

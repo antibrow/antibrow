@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { buildLaunchArgs, isStrayLocaleTabUrl, resolveDisplayLabel, type BuildLaunchArgsOptions } from '../../src/engine/launcher'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -14,11 +14,18 @@ const CONTAINER_SWITCHES = [
   '--no-sandbox',
   '--disable-setuid-sandbox',
   '--disable-dev-shm-usage',
-  '--disable-gpu',
-  '--disable-software-rasterizer',
+  '--use-gl=angle',
+  '--use-angle=swiftshader',
+  '--enable-unsafe-swiftshader',
   '--disable-crash-reporter',
   '--no-zygote',
 ]
+
+// What --disable-gpu used to cost: no GL context at all, so getContext('webgl')
+// returned null and every spoofed GPU string in fp-config had nothing to attach
+// to. A Chrome claiming Windows with no WebGL is a harder tell than any wrong
+// renderer string, so the container path renders in software instead.
+const NO_GPU_SWITCHES = ['--disable-gpu', '--disable-software-rasterizer']
 
 const WINDOWS_HEADLESS_SWITCHES = ['--window-position=-10000,-10000']
 
@@ -68,14 +75,14 @@ function hasSwitch(args: string[], flag: string): boolean {
 }
 
 describe('buildLaunchArgs', () => {
-  it('includes all seven container-only switches on linux', () => {
+  it('includes every container-only switch on linux', () => {
     const args = buildLaunchArgs(baseOptions('linux'))
     for (const flag of CONTAINER_SWITCHES) {
       expect(args).toContain(flag)
     }
   })
 
-  it('gates exactly the seven container-only switches on linux, nothing more', () => {
+  it('gates exactly the container-only switches on linux, nothing more', () => {
     // Derive the gated set from the argv delta (linux minus darwin) rather than
     // from CONTAINER_SWITCHES itself: filtering args down to members of a known
     // list before comparing to that same list can never catch an addition, only
@@ -86,6 +93,38 @@ describe('buildLaunchArgs', () => {
     const darwinArgs = buildLaunchArgs(baseOptions('darwin'))
     const linuxOnly = linuxArgs.filter((a) => !darwinArgs.includes(a))
     expect(linuxOnly.sort()).toEqual([...CONTAINER_SWITCHES].sort())
+  })
+
+  it('renders in software on linux instead of switching the GPU off', () => {
+    const args = buildLaunchArgs(baseOptions('linux'))
+    for (const flag of NO_GPU_SWITCHES) expect(args).not.toContain(flag)
+    // SwiftShader alone is not enough: since Chrome 137 it is refused as a WebGL
+    // backend unless this switch says otherwise, and the context comes back null.
+    expect(args).toContain('--enable-unsafe-swiftshader')
+  })
+
+  it('restores the old GPU-off behaviour when ANTIBROW_DISABLE_GPU is set', () => {
+    vi.stubEnv('ANTIBROW_DISABLE_GPU', '1')
+    try {
+      const args = buildLaunchArgs(baseOptions('linux'))
+      for (const flag of NO_GPU_SWITCHES) expect(args).toContain(flag)
+      expect(args).not.toContain('--use-angle=swiftshader')
+      expect(args).not.toContain('--enable-unsafe-swiftshader')
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('leaves the GPU switches alone on darwin and win32 whatever the env says', () => {
+    vi.stubEnv('ANTIBROW_DISABLE_GPU', '1')
+    try {
+      for (const platform of ['darwin', 'win32'] as const) {
+        const args = buildLaunchArgs(baseOptions(platform))
+        for (const flag of [...NO_GPU_SWITCHES, '--use-gl=angle']) expect(args).not.toContain(flag)
+      }
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 
   it('omits every container-only switch on darwin', () => {

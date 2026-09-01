@@ -87,7 +87,7 @@ def test_linux_gets_the_container_safe_switches_and_windows_does_not():
         "--no-sandbox",
         "--disable-setuid-sandbox",
         "--disable-dev-shm-usage",
-        "--disable-gpu",
+        "--use-angle=swiftshader",
         "--no-zygote",  # LaunchZygoteHelper aborts before FeatureList is ready
     ):
         assert expected in linux, expected
@@ -239,11 +239,43 @@ def test_linux_only_switches_are_exactly_the_seven_container_switches():
         "--no-sandbox",
         "--disable-setuid-sandbox",
         "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--disable-software-rasterizer",
+        "--use-gl=angle",
+        "--use-angle=swiftshader",
+        "--enable-unsafe-swiftshader",
         "--disable-crash-reporter",
         "--no-zygote",
     }
+
+
+# -- Linux renders in software; it does not run without a GPU backend --------
+
+
+def test_linux_keeps_a_gl_backend_instead_of_disabling_the_gpu():
+    # --disable-gpu left getContext('webgl') returning null, so every GPU string
+    # in fp-config had nothing to attach to. A Chrome claiming Windows with no
+    # WebGL context at all is a harder tell than any wrong renderer string.
+    args = args_for(platform="linux")
+    assert "--disable-gpu" not in args
+    assert "--disable-software-rasterizer" not in args
+    # From Chrome 137 SwiftShader is refused as a WebGL backend without this.
+    assert "--enable-unsafe-swiftshader" in args
+
+
+def test_disable_gpu_env_restores_the_old_switches(monkeypatch):
+    monkeypatch.setenv("ANTIBROW_DISABLE_GPU", "1")
+    args = args_for(platform="linux")
+    assert "--disable-gpu" in args
+    assert "--disable-software-rasterizer" in args
+    assert "--use-angle=swiftshader" not in args
+    assert "--enable-unsafe-swiftshader" not in args
+
+
+def test_disable_gpu_env_does_not_reach_darwin_or_windows(monkeypatch):
+    monkeypatch.setenv("ANTIBROW_DISABLE_GPU", "1")
+    for platform in ("darwin", "win32"):
+        args = args_for(platform=platform)
+        assert "--disable-gpu" not in args
+        assert "--use-gl=angle" not in args
 
 
 # -- macOS: -AppleLanguages steers ICU (Intl.*), --lang/LANG do not ----------

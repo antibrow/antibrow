@@ -192,7 +192,7 @@ function waitForDevToolsPort(
     child.once('error', (err) => done(err))
     child.once('exit', (code, signal) => {
       const diag = getDiag().trim()
-      done(new Error(
+      done(new KernelStartupCrashError(
         `Browser exited before CDP ready (code=${code ?? 'null'}, signal=${signal ?? 'null'}).` +
         (diag ? `\nKernel output:\n${diag}` : ''),
       ))
@@ -372,6 +372,66 @@ export interface BuildLaunchArgsOptions {
   androidScreen?: { width: number; height: number }
 }
 
+/** The kernel died before CDP answered, with nothing on stderr to explain it. */
+export class KernelStartupCrashError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'KernelStartupCrashError'
+  }
+}
+
+/**
+ * Run a kernel start, and start over if the process died on the way up.
+ *
+ * About one Linux start in twenty crashes in fontconfig while Chromium paints
+ * its own "unsupported command-line flag" bar. The stack sits inside the
+ * kernel's statically linked copy, so neither a newer host fontconfig nor a
+ * fuller font set changes it; a retry does. Failures the kernel explained
+ * (concurrency cap, rejected license) and hangs that ran out the timeout are
+ * deterministic, so those are re-thrown at once instead of costing three waits.
+ */
+export async function retryKernelStart<T>(
+  attempt: () => Promise<T>,
+  opts: { attempts?: number; delayMs?: number } = {},
+): Promise<T> {
+  const total = opts.attempts ?? 3
+  const delayMs = opts.delayMs ?? 300
+  for (let n = 1; ; n++) {
+    try {
+      return await attempt()
+    } catch (err) {
+      if (n >= total || !(err instanceof KernelStartupCrashError)) throw err
+      await new Promise((r) => setTimeout(r, delayMs))
+    }
+  }
+}
+
+const SINGLETON_FILES = ['SingletonLock', 'SingletonCookie', 'SingletonSocket']
+
+/**
+ * Drop the profile's singleton lock before spawning.
+ *
+ * Chromium records the owning `<hostname>-<pid>` in SingletonLock and refuses a
+ * profile whose lock names another computer - which is every start when the
+ * profile lives on shared storage and the host name changes per container, so
+ * the profile becomes permanently unopenable. Removing it trades that for the
+ * guard against two kernels writing one user-data dir at once; the SDK's own
+ * session bookkeeping is what keeps that from happening now.
+ *
+ * `force`, never a `fs.existsSync` guard: the lock is a symlink to a name that
+ * was never created, so following it reports the file as absent and a guarded
+ * delete removes nothing.
+ */
+export function clearSingletonLocks(userDataDir: string): void {
+  for (const name of SINGLETON_FILES) {
+    try {
+      fs.rmSync(path.join(userDataDir, name), { force: true, recursive: true })
+    } catch {
+      // A lock we cannot remove is the kernel's problem to report, not ours.
+    }
+  }
+}
+
 /**
  * Assemble the kernel command line (without the executable itself). Pure and
  * platform-parametrized so the linux/windows/darwin branches can be asserted
@@ -380,6 +440,7 @@ export interface BuildLaunchArgsOptions {
 export function buildLaunchArgs(opts: BuildLaunchArgsOptions): string[] {
   const isWin = opts.platform === 'win32'
   const isLinux = opts.platform === 'linux'
+  const gpuOff = process.env.ANTIBROW_DISABLE_GPU === '1'
 
   const args = [
     `--fp-config=${opts.fpConfigPath}`,
@@ -411,7 +472,16 @@ export function buildLaunchArgs(opts: BuildLaunchArgsOptions): string[] {
     // --no-zygote avoids a startup abort in the Linux builds. macOS needs none
     // of this and would only lose its sandbox.
     ...(isLinux ? ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
-        '--disable-gpu', '--disable-software-rasterizer',
+        // Software rendering, not --disable-gpu: without a GL context at all,
+        // getContext('webgl') returns null and every GPU string fp-config spoofs
+        // has nothing to attach to - a Chrome that claims Windows and cannot make
+        // a WebGL context is a worse tell than any wrong renderer string.
+        // --enable-unsafe-swiftshader is not optional: from Chrome 137 SwiftShader
+        // is refused as a WebGL backend without it and the context is null again.
+        // ANTIBROW_DISABLE_GPU=1 puts the old switches back for troubleshooting.
+        ...(gpuOff
+          ? ['--disable-gpu', '--disable-software-rasterizer']
+          : ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader']),
         '--disable-crash-reporter',
         '--no-zygote'] : []),
     // Windows headless: move the window off-screen rather than --headless=new,
@@ -692,7 +762,6 @@ export async function launchKernel(opts: KernelLaunchOptions): Promise<KernelSes
     }
   }
 
-  onProgress?.(`Spawning kernel ${path.basename(exePath)} cdp_port=${cdpPort}`)
   // No windowsHide: true here. Node implements it via STARTUPINFO's
   // wShowWindow=SW_HIDE, which on Windows overrides the *first* ShowWindow call a
   // process makes. Chromium only calls ShowWindow once when --window-size or
@@ -705,40 +774,52 @@ export async function launchKernel(opts: KernelLaunchOptions): Promise<KernelSes
   // override ours, and the feature switches have to be merged across the join.
   const finalArgs = finalizeLaunchArgs(args, opts.extraArgs)
 
-  const child = spawn(exePath, finalArgs, {
-    detached: !isWin,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  }) as unknown as ChildProcessWithoutNullStreams
-  // Latched here, before anything can await: a kernel that dies during startup
-  // must still report its exit to callers that subscribe afterwards.
-  const exit = exitLatch(child)
-  // Keep the last few KB of kernel output so a failed start can explain itself.
-  let kernelOut = ''
-  const appendOut = (chunk: Buffer) => { kernelOut = (kernelOut + chunk.toString()).slice(-4000) }
-  child.stderr?.on('data', (chunk: Buffer) => { appendOut(chunk); if (!isWin) process.stderr.write(chunk) })
-  child.stdout?.on('data', (chunk: Buffer) => { appendOut(chunk) })
-  onProgress?.(`Browser pid=${child.pid ?? 'unknown'}, waiting for CDP endpoint`)
+  const startOnce = async () => {
+    // Per attempt, not once per profile: a crashed attempt leaves its own lock,
+    // and on shared storage the host name differs from the one already there.
+    clearSingletonLocks(userDataDir)
 
-  let wsEndpoint: string
-  try {
-    wsEndpoint = await waitForDevToolsPort(
-      child,
-      cdpPort,
-      opts.cdpTimeoutMs ?? 120_000,
-      () => kernelOut,
-      onProgress,
-    )
-  } catch (err) {
-    killProcessTree(child.pid)
-    const out = kernelOut.trim()
-    if (/concurren|max.*instance|instance.*limit|license.*(limit|cap|mi\b)|too many/i.test(out)) {
-      const cap = out.match(/limit\s*\((\d+)\)/)?.[1]
-      throw new Error(
-        `Concurrency limit reached${cap ? ` (${cap})` : ''}: close a running browser or upgrade for higher concurrency.`,
+    onProgress?.(`Spawning kernel ${path.basename(exePath)} cdp_port=${cdpPort}`)
+    const child = spawn(exePath, finalArgs, {
+      detached: !isWin,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }) as unknown as ChildProcessWithoutNullStreams
+    // Latched here, before anything can await: a kernel that dies during startup
+    // must still report its exit to callers that subscribe afterwards.
+    const exit = exitLatch(child)
+    // Keep the last few KB of kernel output so a failed start can explain itself.
+    let kernelOut = ''
+    const appendOut = (chunk: Buffer) => { kernelOut = (kernelOut + chunk.toString()).slice(-4000) }
+    child.stderr?.on('data', (chunk: Buffer) => { appendOut(chunk); if (!isWin) process.stderr.write(chunk) })
+    child.stdout?.on('data', (chunk: Buffer) => { appendOut(chunk) })
+    onProgress?.(`Browser pid=${child.pid ?? 'unknown'}, waiting for CDP endpoint`)
+
+    try {
+      const wsEndpoint = await waitForDevToolsPort(
+        child,
+        cdpPort,
+        opts.cdpTimeoutMs ?? 120_000,
+        () => kernelOut,
+        onProgress,
       )
+      return { child, exit, wsEndpoint }
+    } catch (err) {
+      killProcessTree(child.pid)
+      const out = kernelOut.trim()
+      if (/concurren|max.*instance|instance.*limit|license.*(limit|cap|mi\b)|too many/i.test(out)) {
+        const cap = out.match(/limit\s*\((\d+)\)/)?.[1]
+        throw new Error(
+          `Concurrency limit reached${cap ? ` (${cap})` : ''}: close a running browser or upgrade for higher concurrency.`,
+        )
+      }
+      // A rejected token fails the same way on every attempt; only an exit the
+      // kernel never explained is worth starting over for.
+      if (/license/i.test(out)) throw new Error(String((err as Error).message))
+      throw err
     }
-    throw err
   }
+
+  const { child, exit, wsEndpoint } = await retryKernelStart(startOnce)
 
   onProgress?.(`Connecting Playwright over CDP to ${wsEndpoint}`)
   const pw = await chromium.connectOverCDP(wsEndpoint)

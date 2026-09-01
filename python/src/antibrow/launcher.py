@@ -46,6 +46,54 @@ def pick_free_port() -> int:
         return sock.getsockname()[1]
 
 
+class KernelStartupCrash(LaunchError):
+    """The kernel died before CDP answered, with nothing on stderr explaining it."""
+
+
+def retry_kernel_start(attempt, attempts: int = 3, delay: float = 0.3):
+    """Run a kernel start, and start over if the process died on the way up.
+
+    About one Linux start in twenty crashes in fontconfig while Chromium paints
+    its own "unsupported command-line flag" bar. The stack sits inside the
+    kernel's statically linked copy, so neither a newer host fontconfig nor a
+    fuller font set changes it; a retry does. Failures the kernel explained
+    (concurrency cap, rejected license) and hangs that ran out the timeout are
+    deterministic, so those are re-raised at once instead of costing three waits.
+    """
+    for n in range(1, attempts + 1):
+        try:
+            return attempt()
+        except KernelStartupCrash:
+            if n >= attempts:
+                raise
+            time.sleep(delay)
+
+
+SINGLETON_FILES = ("SingletonLock", "SingletonCookie", "SingletonSocket")
+
+
+def clear_singleton_locks(user_data_dir: Path | str) -> None:
+    """Drop the profile's singleton lock before spawning.
+
+    Chromium records the owning ``<hostname>-<pid>`` in SingletonLock and refuses
+    a profile whose lock names another computer - which is every start when the
+    profile lives on shared storage and the host name changes per container, so
+    the profile becomes permanently unopenable. Removing it trades that for the
+    guard against two kernels writing one user-data dir at once; the SDK's own
+    session bookkeeping is what keeps that from happening now.
+
+    unlink(missing_ok), never ``Path.exists()``: the lock is a symlink to a name
+    that was never created, so following it reports the file as absent and
+    nothing gets deleted.
+    """
+    root = Path(user_data_dir)
+    for name in SINGLETON_FILES:
+        try:
+            (root / name).unlink(missing_ok=True)
+        except OSError:
+            pass  # a lock we cannot remove is the kernel's error to report
+
+
 def build_launch_args(
     *,
     fp_config_path: Path | str,
@@ -114,8 +162,19 @@ def build_launch_args(
             "--no-sandbox",
             "--disable-setuid-sandbox",
             "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--disable-software-rasterizer",
+        ]
+        # Software rendering, not --disable-gpu: with the GPU off there is no GL
+        # context at all, getContext('webgl') returns null, and every GPU string
+        # fp-config spoofs has nothing to attach to. A Chrome that claims Windows
+        # and cannot make a WebGL context is a worse tell than a wrong renderer.
+        # --enable-unsafe-swiftshader is not optional: from Chrome 137 SwiftShader
+        # is refused as a WebGL backend without it and the context is null again.
+        # ANTIBROW_DISABLE_GPU=1 puts the old switches back for troubleshooting.
+        if os.environ.get("ANTIBROW_DISABLE_GPU") == "1":
+            args += ["--disable-gpu", "--disable-software-rasterizer"]
+        else:
+            args += ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"]
+        args += [
             "--disable-crash-reporter",
             # Avoids a startup abort in the Linux builds.
             "--no-zygote",
@@ -339,7 +398,9 @@ def wait_for_cdp(
                     "The browser kernel rejected the license token (exit code {0}).\n"
                     "Kernel output:\n{1}".format(exit_code, diagnostics[-2000:])
                 )
-            raise LaunchError(
+            # Subclass of LaunchError, so existing handlers are unaffected; the
+            # distinction only tells the launcher this one is worth retrying.
+            raise KernelStartupCrash(
                 "Browser exited before the CDP endpoint was ready (exit code {0}).{1}".format(
                     exit_code,
                     "\nKernel output:\n{0}".format(diagnostics[-2000:]) if diagnostics else "",
