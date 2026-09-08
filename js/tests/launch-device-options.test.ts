@@ -11,6 +11,7 @@ describe('launch options carry the device choice to the engine', () => {
       archive: {},
       cacheDir: '/tmp/cache',
       temporary: false,
+      licenseSync: true,
       options: { profile: 'p', deviceType: 'android', realFingerprint: true },
     })
     expect(built.deviceType).toBe('android')
@@ -26,6 +27,7 @@ describe('launch options carry the device choice to the engine', () => {
       archive: {},
       cacheDir: '/tmp/cache',
       temporary: false,
+      licenseSync: true,
       options: { profile: 'p', label: 'acct@shop.com' },
     })
     expect(built.label).toBe('acct@shop.com')
@@ -40,6 +42,7 @@ describe('launch options carry the device choice to the engine', () => {
       archive: {},
       cacheDir: '/tmp/cache',
       temporary: false,
+      licenseSync: true,
       options: { profile: 'p', focusWindow: false },
     })
     expect(built.focusWindow).toBe(false)
@@ -54,6 +57,7 @@ describe('launch options carry the device choice to the engine', () => {
       archive: {},
       cacheDir: '/tmp/cache',
       temporary: false,
+      licenseSync: true,
       options: { profile: 'p' },
     })
     expect(built.deviceType).toBeUndefined()
@@ -76,6 +80,7 @@ describe('per-profile kernel switches reach the engine', () => {
     archive: {},
     cacheDir: '/tmp/cache',
     temporary: false,
+    licenseSync: true,
   }
 
   it('forwards apiLog, canvasNoise and webauthnCapture', () => {

@@ -176,7 +176,7 @@ class _StoppedAfterResolve(RuntimeError):
 def test_temporary_launch_uses_the_temporary_tree(tmp_path, monkeypatch):
     seen = {}
 
-    def _resolve(name, cache_dir=None, api_key=None, server=None, *, temporary=False):
+    def _resolve(name, cache_dir=None, api_key=None, server=None, *, temporary=False, skip_server_lookup=False):
         seen["temporary"] = temporary
         directory = _browser._config.profiles_dir(cache_dir, temporary=temporary) / name
         directory.mkdir(parents=True, exist_ok=True)

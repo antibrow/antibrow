@@ -427,6 +427,10 @@ export async function resolveProfileDir(opts: {
   server?: string
   /** Skips the server entirely: a temporary profile has no cloud counterpart. */
   temporary?: boolean
+  /** Skips the server for an account that cannot own cloud profiles at all
+   *  (no sync on the plan): the route can only answer 403, and a run that
+   *  mints a name per task would spend one request per launch learning that. */
+  skipServerLookup?: boolean
   /** The row's id when the caller already fetched it, so one launch does not
    *  GET the same profile twice and spend its rate-limit budget on itself. */
   serverId?: string
@@ -437,7 +441,7 @@ export async function resolveProfileDir(opts: {
   const root = profilesRoot(opts.cacheDir, opts)
   const entries = listProfileEntries(opts.cacheDir, opts)
   const found = findByName(entries, name)
-  const lookup: ServerLookup = opts.temporary
+  const lookup: ServerLookup = opts.temporary || opts.skipServerLookup
     ? { checked: false }
     : opts.serverId
       ? { id: opts.serverId, checked: true }

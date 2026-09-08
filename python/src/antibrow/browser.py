@@ -251,6 +251,7 @@ def prepare_launch(
     _reject_unsynced_plan(sync, license_info.sync)
 
     root = Path(cache_dir).expanduser() if cache_dir else _config.default_cache_dir()
+    server_denied = False
     if profile_dir:
         directory = Path(profile_dir).expanduser()
         meta = read_profile_meta(directory)
@@ -267,8 +268,13 @@ def prepare_launch(
             api_key=resolve_api_key(api_key),
             server=server or _config.default_server(),
             temporary=temporary,
+            # Without sync on the plan there are no cloud rows to align with,
+            # so the lookup can only 403. `sync=False` is not the same thing:
+            # that is per launch, and the row it declines to upload to is real.
+            skip_server_lookup=not license_info.sync,
         )
         directory, resolved_name = resolved.dir, resolved.name
+        server_denied = resolved.server_denied
     directory.mkdir(parents=True, exist_ok=True)
 
     budget.check("restoring the cloud archive")
@@ -283,6 +289,7 @@ def prepare_launch(
             license_info=license_info,
             sync=sync,
             temporary=temporary,
+            server_denied=server_denied,
             on_sync=on_sync,
             notify=notify,
             on_progress=on_progress,
@@ -874,6 +881,7 @@ def _restore_archive(
     license_info: LicenseInfo,
     sync: Optional[bool],
     temporary: bool,
+    server_denied: bool = False,
     on_sync: Optional[SyncCallback],
     notify: ProgressCallback,
     on_progress: Optional[ProgressCallback] = None,
@@ -904,6 +912,15 @@ def _restore_archive(
 
     key = resolve_api_key(api_key)
     if not key:
+        return None
+
+    # The directory lookup already asked about this name and was told there is
+    # no such profile, so probing would spend a second request on the same 404
+    # - which the per-profile rate limit refuses anyway. `sync=True` still goes
+    # through: its probe is what creates the row.
+    if server_denied and sync is not True:
+        if sync is None:
+            _notify_local_only(profile_name, on_progress)
         return None
 
     # A launch never creates a cloud profile on its own: an automation run that

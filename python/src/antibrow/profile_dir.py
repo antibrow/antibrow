@@ -57,6 +57,9 @@ class ResolvedProfile:
     dir: Path
     id: str
     name: str
+    #: The server was asked and answered that it has no such profile. False also
+    #: covers "never asked" and "could not reach it" - only a definitive no.
+    server_denied: bool = False
 
 
 def read_profile_meta(directory: Path) -> Optional[ProfileMeta]:
@@ -344,25 +347,31 @@ def resolve_profile_dir(
     server: Optional[str] = None,
     *,
     temporary: bool = False,
+    skip_server_lookup: bool = False,
 ) -> ResolvedProfile:
     """Directory holding ``profile_name``, preferring the server's stable id so
     the SDKs and the desktop app land on the same one. Every failure degrades to
     a local id; resolution never blocks a launch. A temporary profile skips the
-    server entirely - it has no cloud counterpart."""
+    server entirely - it has no cloud counterpart, and so does an account whose
+    plan has no cloud sync (``skip_server_lookup``): the route can only answer
+    403, and a run that mints a name per task would spend one request per launch
+    learning that."""
     _config.sanitize_profile_name(profile_name)
     root = _config.profiles_dir(cache_dir, temporary=temporary)
     entries = list_profile_entries(cache_dir, temporary=temporary)
     found = _find_by_name(entries, profile_name)
     server_id: Optional[str] = None
     answered = False
-    if not temporary and api_key and server and _needs_lookup(found):
+    if not temporary and not skip_server_lookup and api_key and server and _needs_lookup(found):
         server_id, answered = _lookup_server_id(profile_name, api_key, server)
     checked_at = _now() if answered else None
+
+    denied = answered and server_id is None
 
     def _create(profile_id: str, origin: Origin, stamp: Optional[str], directory: Optional[Path] = None) -> ResolvedProfile:
         target = directory if directory is not None else root / profile_id
         write_profile_meta(target, ProfileMeta(id=profile_id, name=profile_name, origin=origin, server_checked_at=stamp))
-        return ResolvedProfile(dir=target, id=profile_id, name=profile_name)
+        return ResolvedProfile(dir=target, id=profile_id, name=profile_name, server_denied=denied)
 
     def _shadow(entry: ProfileEntry) -> None:
         """Stop answering to this name without moving or deleting anything."""
@@ -388,7 +397,7 @@ def resolve_profile_dir(
                 found.dir,
                 ProfileMeta(id=found.id, name=profile_name, origin=found.origin, server_checked_at=checked_at),  # type: ignore[arg-type]
             )
-        return ResolvedProfile(dir=found.dir, id=found.id, name=profile_name)
+        return ResolvedProfile(dir=found.dir, id=found.id, name=profile_name, server_denied=denied)
 
     # A record that already carried a server id and now gets a different one is
     # the only real namesake: some other machine's cloud profile under this name.
@@ -409,4 +418,4 @@ def resolve_profile_dir(
         directory,
         ProfileMeta(id=pid, name=profile_name, origin="server" if server_id else "local", server_checked_at=None if server_id else checked_at),
     )
-    return ResolvedProfile(dir=directory, id=pid, name=profile_name)
+    return ResolvedProfile(dir=directory, id=pid, name=profile_name, server_denied=denied)

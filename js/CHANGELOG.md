@@ -4,6 +4,22 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.28.0] - 2026-09-07
+
+### Changed
+
+- An account whose plan has no cloud sync no longer sends the profile lookup on
+  every launch - that request could only be refused. Nothing to change in your
+  code; scripts that mint a profile name per run make one request fewer each
+  time. `launch({ sync: false })` on a plan that does have sync is unaffected.
+- Launching a profile the cloud does not have makes one request instead of two;
+  the second was refused by the per-profile rate limit anyway.
+
+### Added
+
+- `openProfile()` accepts `skipServerLookup` for callers that already know the
+  account owns no cloud profiles.
+
 ## [2.27.0] - 2026-08-31
 
 ### Fixed

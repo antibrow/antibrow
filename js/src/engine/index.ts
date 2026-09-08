@@ -105,6 +105,10 @@ export interface OpenProfileOptions {
   temporary?: boolean
   /** Cloud row id the caller already holds; saves a duplicate profile GET. */
   serverProfileId?: string
+  /** Skip the profile lookup because this account has no cloud profiles at all
+   *  (no sync on the plan). Set by `launch()`; direct callers that do not know
+   *  the plan should leave it off. */
+  skipServerLookup?: boolean
   /** For new profiles only; existing ones use their persona's version. */
   kernelVersion?: string
   /** Pull a newer build of this profile's kernel before launching. */
@@ -392,6 +396,7 @@ async function openProfileWithin(opts: OpenProfileOptions, budget: Deadline): Pr
         key: opts.key,
         server: opts.server,
         temporary: opts.temporary,
+        skipServerLookup: opts.skipServerLookup,
         serverId: opts.serverProfileId,
         onProgress: opts.onProgress,
       })

@@ -12,6 +12,7 @@ The two orderings asserted here are the whole correctness story of sync:
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 
 import pytest
@@ -174,6 +175,44 @@ def test_a_free_plan_stays_entirely_local(tmp_path, fake_kernel, free_license, m
     plan = plan_for(tmp_path)
 
     assert plan.archive is None
+
+
+def test_a_free_plan_does_not_look_the_profile_up_either(tmp_path, fake_kernel, free_license, monkeypatch):
+    # The lookup can only answer 403 without sync on the plan, and a run that
+    # mints a name per task would spend one request per launch learning that.
+    # `antibrow.profile_dir` the name is a function on the package; the module
+    # itself only comes back from import_module.
+    pd = importlib.import_module("antibrow.profile_dir")
+
+    monkeypatch.setattr(
+        pd, "_lookup_server_id", lambda *a, **k: pytest.fail("no cloud profiles on a free plan")
+    )
+
+    assert plan_for(tmp_path).archive is None
+
+
+def test_a_name_the_lookup_already_denied_is_not_probed_again(tmp_path, fake_kernel, paid_license, server_stub, monkeypatch):
+    # Two GETs of the same name in one launch: the directory lookup, then the
+    # archive probe. The second is refused by the per-profile rate limit, and a
+    # server that just said "no such profile" has no archive either.
+    pd = importlib.import_module("antibrow.profile_dir")
+    monkeypatch.setattr(pd, "_lookup_server_id", lambda *a, **k: (None, True))
+
+    plan = plan_for(tmp_path)
+
+    assert server_stub["ensure"] == []
+    assert plan.archive is None
+
+
+def test_a_lookup_that_could_not_settle_still_probes(tmp_path, fake_kernel, paid_license, server_stub, monkeypatch):
+    # Unreachable is not an answer: skipping the probe here would strand a real
+    # cloud profile as local-only for the whole session.
+    pd = importlib.import_module("antibrow.profile_dir")
+    monkeypatch.setattr(pd, "_lookup_server_id", lambda *a, **k: (None, False))
+
+    plan_for(tmp_path)
+
+    assert server_stub["ensure"] == ["p1"]
 
 
 def test_sync_false_opts_out_even_on_a_paid_plan(tmp_path, fake_kernel, paid_license, monkeypatch):

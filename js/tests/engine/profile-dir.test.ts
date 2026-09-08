@@ -195,6 +195,18 @@ describe('resolveProfileDir (server-aware)', () => {
     expect(listProfileEntries(cacheDir)).toHaveLength(1)
   })
 
+  it('never asks at all when the caller knows the account has no cloud profiles', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    const r = await resolveProfileDir({
+      cacheDir, profileName: 'free-plan', key: 'adb_k', server: 'https://x.test', skipServerLookup: true,
+    })
+    expect(fetchSpy).not.toHaveBeenCalled()
+    // Nothing was asked, so nothing is recorded: an upgrade must be free to
+    // look this name up on the very next launch.
+    expect(readProfileMeta(r.dir)?.serverCheckedAt).toBeUndefined()
+    expect(readProfileMeta(r.dir)?.origin).toBe('local')
+  })
+
   it('records a 403 - a free plan answers "absent", it is not an outage', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(mockFetch(403, { error: 'paid plan' }) as unknown as typeof fetch)
     const first = await resolveProfileDir({ cacheDir, profileName: 'free-plan', key: 'adb_k', server: 'https://x.test' })

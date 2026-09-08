@@ -77,6 +77,12 @@ export interface BuildOpenProfileOptionsInput {
   temporary: boolean
   /** Cloud row id already fetched by the sync probe, so the engine skips its own GET. */
   serverProfileId?: string
+  /** The plan sells cloud sync. False means the profile lookup can only 403,
+   *  so it is not worth a request - unlike `sync: false`, which is per launch
+   *  and leaves the account's rows (and the directory they name) real. */
+  licenseSync: boolean
+  /** The sync probe already got a definitive "no such profile" for this name. */
+  cloudProfileDenied?: boolean
   options: LaunchOptions
 }
 
@@ -87,7 +93,7 @@ export interface BuildOpenProfileOptionsInput {
  * deterministic inputs and assert on the object it returns.
  */
 export function buildOpenProfileOptions(input: BuildOpenProfileOptionsInput): OpenProfileOptions {
-  const { key, server, profileName, licenseToken, proxyUrl, getProxyUrl, archive, getArchivePutUrl, cacheDir, profileDir, temporary, serverProfileId, options } = input
+  const { key, server, profileName, licenseToken, proxyUrl, getProxyUrl, archive, getArchivePutUrl, cacheDir, profileDir, temporary, serverProfileId, licenseSync, cloudProfileDenied, options } = input
   return {
     key,
     server,
@@ -105,6 +111,7 @@ export function buildOpenProfileOptions(input: BuildOpenProfileOptionsInput): Op
     profileDir,
     temporary,
     serverProfileId,
+    skipServerLookup: !licenseSync || cloudProfileDenied === true,
     headless: options.headless,
     focusWindow: options.focusWindow,
     updateKernelBeforeLaunch: options.updateKernelBeforeLaunch,
@@ -254,6 +261,12 @@ export class AntiDetectBrowser {
         profileDir: options.userDataDir,
         temporary,
         serverProfileId: this.cloudProfileIds.get(profileName),
+        licenseSync: license.sync,
+        // A server that just said "no such profile" has no id to align with, so
+        // the engine repeating the same GET only spends a second request on the
+        // same 404 - and the per-profile rate limit refuses it anyway. An
+        // unsettled probe (unreachable, 5xx) is not an answer and does not count.
+        cloudProfileDenied: syncMode !== 'off' && this.syncedProfiles.get(`${syncMode}:${profileName}`) === false,
         options,
       }))
     } catch (error) {

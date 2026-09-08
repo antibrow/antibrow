@@ -187,6 +187,21 @@ describe('AntiDetectBrowser.launch (engine)', () => {
     expect(openProfileSpy).toHaveBeenCalledTimes(2)
   })
 
+  it('does not let a plan without sync spend a request on a lookup that can only 403', async () => {
+    licenseSpy.mockResolvedValue({ token: 'tok', exp: Math.floor(Date.now() / 1000) + 86400, mi: 1, sync: false })
+    const ab = new AntiDetectBrowser({ key: 'k' })
+    await ab.launch({ profile: 'shein_1_f21c3216' })
+    expect(openProfileSpy.mock.calls.at(-1)![0]).toMatchObject({ skipServerLookup: true })
+  })
+
+  it('still looks the profile up when the plan has sync, even with sync off for this launch', async () => {
+    // `sync: false` is "do not upload", not "this account has no cloud rows":
+    // the lookup is also what keeps the SDK and the desktop app on one directory.
+    const ab = new AntiDetectBrowser({ key: 'k' })
+    await ab.launch({ profile: 'amazon-us', sync: false })
+    expect(openProfileSpy.mock.calls.at(-1)![0]).toMatchObject({ skipServerLookup: false })
+  })
+
   it('prints a notice (once per process) when an installed kernel has an update and the flag is off', async () => {
     installedKernelUpdatesSpy.mockReturnValue([
       { version: '150', label: 'Chrome 150', installed: true, updateAvailable: true },
@@ -469,6 +484,25 @@ describe('launch sync behaviour', () => {
 
     expect(getOrCreateProfileSpy).toHaveBeenCalledTimes(1)
     expect(getProfileArchiveUrlsSpy).toHaveBeenCalledTimes(1)
+  })
+
+  // Two GETs of the same name in one launch: the probe here, and openProfile's
+  // own directory lookup. The second is refused by the per-profile rate limit,
+  // and there is nothing to align with anyway once the server said 404.
+  it('does not make the engine repeat a lookup the sync probe already answered', async () => {
+    getProfileSpy.mockRejectedValueOnce(new Error('Failed to get profile: HTTP 404. '))
+    const ab = new AntiDetectBrowser({ key: 'adb_test' })
+    await ab.launch({ profile: 'brand-new' })
+
+    expect(openProfileSpy.mock.calls.at(-1)![0]).toMatchObject({ skipServerLookup: true })
+  })
+
+  it('still lets the engine look up a name the probe could not settle', async () => {
+    getProfileSpy.mockRejectedValueOnce(new Error('fetch failed'))
+    const ab = new AntiDetectBrowser({ key: 'adb_test' })
+    await ab.launch({ profile: 'unreachable' })
+
+    expect(openProfileSpy.mock.calls.at(-1)![0]).toMatchObject({ skipServerLookup: false })
   })
 
   // The flip side: a repeated default launch of a local-only name must stay at

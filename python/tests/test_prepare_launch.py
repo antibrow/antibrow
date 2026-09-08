@@ -158,6 +158,11 @@ def test_the_server_lookup_runs_on_an_env_only_key(tmp_path, fake_kernel, fake_l
         return ("server-uuid", True)
 
     monkeypatch.setattr(pd, "_lookup_server_id", lookup)
+    # The lookup only runs for an account that can own cloud rows; the shared
+    # fixture's plan has no sync, and skipping it is what the next test asserts.
+    monkeypatch.setattr(
+        B, "get_license_token", lambda *a, **k: L.LicenseInfo(token="P.S", exp=2**31, mi=5, sync=True)
+    )
     monkeypatch.setenv(C.ENV_API_KEY, "adb_env")
     monkeypatch.delenv(C.ENV_SERVER, raising=False)
     monkeypatch.delenv(C.ENV_SERVER_LEGACY, raising=False)
@@ -165,6 +170,21 @@ def test_the_server_lookup_runs_on_an_env_only_key(tmp_path, fake_kernel, fake_l
     assert seen == [("gmail", "adb_env", C.DEFAULT_SERVER)]
     assert plan.profile_dir.name == "server-uuid"
     assert read_profile_meta(plan.profile_dir).origin == "server"
+
+
+def test_a_plan_without_sync_never_looks_the_profile_up(tmp_path, fake_kernel, fake_license, monkeypatch):
+    # Without sync on the plan the route can only answer 403, and a run that
+    # mints a name per task would spend one request per launch learning that.
+    pd = importlib.import_module("antibrow.profile_dir")
+    monkeypatch.setattr(pd, "_lookup_server_id", lambda *a, **k: pytest.fail("no cloud profiles"))
+    monkeypatch.setenv(C.ENV_API_KEY, "adb_env")
+
+    plan = plan_for(tmp_path, profile="shein_1_f21c3216")
+
+    assert read_profile_meta(plan.profile_dir).origin == "local"
+    # Nothing was asked, so nothing is recorded: an upgrade must be free to look
+    # this name up on the very next launch.
+    assert read_profile_meta(plan.profile_dir).server_checked_at is None
 
 
 def test_kernel_version_pins_new_profiles_only(tmp_path, fake_kernel, fake_license, monkeypatch):

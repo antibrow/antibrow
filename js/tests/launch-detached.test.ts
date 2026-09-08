@@ -10,6 +10,7 @@ const base = {
   archive: {},
   cacheDir: '/cache',
   temporary: false,
+  licenseSync: true,
 } as unknown as Parameters<typeof buildOpenProfileOptions>[0]
 
 describe('detached launches', () => {

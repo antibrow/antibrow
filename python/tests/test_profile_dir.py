@@ -155,6 +155,20 @@ def test_a_free_plan_403_is_an_answer_and_is_cached(tmp_path: Path, monkeypatch:
     assert len(calls) == 1
 
 
+def test_skip_server_lookup_never_asks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _urlopen(request, timeout=None):  # pragma: no cover - must never run
+        raise AssertionError("the lookup was skipped, nothing may reach the network")
+
+    monkeypatch.setattr(pd.urllib.request, "urlopen", _urlopen)
+    r = resolve_profile_dir(
+        "free-plan", tmp_path, api_key="adb_k", server="https://x.test", skip_server_lookup=True
+    )
+    # Nothing was asked, so nothing is recorded: an upgrade must be free to look
+    # this name up on the very next launch.
+    assert read_profile_meta(r.dir).server_checked_at is None
+    assert read_profile_meta(r.dir).origin == "local"
+
+
 def test_a_server_error_is_not_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 
