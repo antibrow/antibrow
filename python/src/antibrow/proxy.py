@@ -22,6 +22,7 @@ hatch for HTTP/HTTPS proxies if you ever run a kernel build that predates the
 
 from __future__ import annotations
 
+import base64
 import json
 import urllib.parse
 from dataclasses import dataclass
@@ -29,6 +30,9 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Union
 
 from .errors import ProxyError
+
+#: Length of the relay pre-shared key, once base64url-decoded.
+RELAY_KEY_LEN = 32
 
 #: Schemes the kernel understands on ``--proxy-server``.
 SUPPORTED_SCHEMES = ("http", "https", "socks5", "socks", "relay")
@@ -45,6 +49,11 @@ class ProxySpec:
     port: Optional[int] = None
     username: Optional[str] = None
     password: Optional[str] = None
+    #: ``relay://…?key=`` - the pre-shared key that selects the encrypted
+    #: fp-relay/1 mode. It has to reach ``--proxy-server`` verbatim: without it
+    #: the kernel speaks the legacy plaintext protocol instead, which is not
+    #: what a caller who supplied a key asked for.
+    relay_key: Optional[str] = None
 
     @property
     def has_credentials(self) -> bool:
@@ -63,13 +72,21 @@ class ProxySpec:
         return "{0}:{1}".format(self.host, self.port) if self.port else self.host
 
     def to_url(self, *, with_credentials: bool = True) -> str:
-        """Rebuild the URL, optionally without the credentials."""
+        """Rebuild the URL, optionally without the credentials.
+
+        The relay key counts as a credential: it is the transport key, and a
+        redacted URL is usually on its way into a log line.
+        """
         if with_credentials and self.username:
             userinfo = urllib.parse.quote(self.username, safe="")
             if self.password:
                 userinfo += ":" + urllib.parse.quote(self.password, safe="")
-            return "{0}://{1}@{2}".format(self.scheme, userinfo, self.netloc)
-        return "{0}://{1}".format(self.scheme, self.netloc)
+            base = "{0}://{1}@{2}".format(self.scheme, userinfo, self.netloc)
+        else:
+            base = "{0}://{1}".format(self.scheme, self.netloc)
+        if with_credentials and self.relay_key:
+            base += "?key=" + self.relay_key
+        return base
 
     def __str__(self) -> str:  # never leak the password in logs / reprs
         return self.to_url(with_credentials=False)
@@ -119,6 +136,26 @@ def _parse_proxy_url(url: str) -> ProxySpec:
         )
     if not parsed.hostname or any(c.isspace() for c in parsed.hostname):
         raise ProxyError("Proxy URL has no usable host: {0!r}".format(url))
+    relay_key = None
+    if scheme == "relay":
+        for name, value in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True):
+            if name != "key":
+                continue
+            # Same rule the kernel applies: a present-but-malformed key
+            # invalidates the proxy rather than silently falling back to the
+            # plaintext protocol.
+            padded = value + "=" * (-len(value) % 4)
+            try:
+                raw = base64.urlsafe_b64decode(padded)
+            except Exception:
+                raw = b""
+            if len(raw) != RELAY_KEY_LEN:
+                raise ProxyError(
+                    "relay key must decode to {0} bytes of base64url, got {1}".format(
+                        RELAY_KEY_LEN, len(raw)
+                    )
+                )
+            relay_key = value
     return ProxySpec(
         scheme=scheme,
         host=parsed.hostname,
@@ -127,6 +164,7 @@ def _parse_proxy_url(url: str) -> ProxySpec:
         # passwords with "@" or ":" are common in residential proxy pools.
         username=urllib.parse.unquote(parsed.username) if parsed.username else None,
         password=urllib.parse.unquote(parsed.password) if parsed.password else None,
+        relay_key=relay_key,
     )
 
 

@@ -498,6 +498,11 @@ export async function getAccount(options: { key: string; server?: string }): Pro
 }
 
 export function proxyConfigToUrl(c: ProxyConfig): string {
+  if (c.url) return c.url
+  // Rebuilding a relay url from the fields would drop the key, and a keyless
+  // relay url is not a broken url - it is a working one that runs the relay's
+  // plaintext protocol. Refuse rather than downgrade.
+  if (c.type === 'RELAY') throw new Error('a RELAY proxy row needs its full relay:// url (with ?key=)')
   const scheme = c.type === 'SOCKS5' ? 'socks5' : c.type === 'SSH' ? 'ssh' : 'http'
   const auth = c.username ? `${encodeURIComponent(c.username)}:${encodeURIComponent(c.password ?? '')}@` : ''
   return `${scheme}://${auth}${c.host}:${c.port}`

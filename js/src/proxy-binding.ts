@@ -22,7 +22,11 @@ export type BindingPlan =
  * A url with no `@` (no credentials) passes through unchanged.
  */
 function redactProxyUrl(url: string): string {
-  return url.replace(/^([a-zA-Z][\w+.-]*:\/\/)?[^/@]*@/, (_m, scheme?: string) => `${scheme ?? ''}***@`)
+  // The relay's `?key=` is transport key material, so it is redacted alongside
+  // the userinfo rather than left in a log line.
+  return url
+    .replace(/^([a-zA-Z][\w+.-]*:\/\/)?[^/@]*@/, (_m, scheme?: string) => `${scheme ?? ''}***@`)
+    .replace(/([?&]key=)[^&]*/i, '$1***')
 }
 
 /**
@@ -59,22 +63,31 @@ export function normalizeProxyUrl(url: string): string {
   const pass = parsed.password ? decodeURIComponent(parsed.password) : ''
   const auth = user ? `${user}${pass ? `:${pass}` : ''}@` : ''
   const port = parsed.port ? `:${parsed.port}` : ''
-  return `${scheme}://${auth}${parsed.hostname.toLowerCase()}${port}`
+  // The key is part of the identity: the same host with a different key is a
+  // different deployment, and adding one to a bound url has to read as a change.
+  const key = parsed.searchParams.get('key')
+  const query = key ? `?key=${key}` : ''
+  return `${scheme}://${auth}${parsed.hostname.toLowerCase()}${port}${query}`
 }
 
 const SCHEME_TYPES: Record<string, ProxyConfig['type']> = {
-  socks5: 'SOCKS5', socks: 'SOCKS5', http: 'HTTP', https: 'HTTP', ssh: 'SSH',
+  socks5: 'SOCKS5', socks: 'SOCKS5', http: 'HTTP', https: 'HTTP', ssh: 'SSH', relay: 'RELAY',
 }
+
+/** A relay is reached over TLS, so an url without a port means 443. */
+const RELAY_DEFAULT_PORT = 443
 
 export function proxyUrlToConfig(url: string): ProxyConfig {
   const { scheme, parsed } = parseProxyUrl(url)
   const type = SCHEME_TYPES[scheme]
   if (!type) throw new Error(`Unsupported proxy scheme: ${scheme}`)
-  const port = Number(parsed.port)
+  const port = Number(parsed.port) || (type === 'RELAY' ? RELAY_DEFAULT_PORT : 0)
   if (!port) throw new Error(`Proxy url needs a port: ${redactProxyUrl(url)}`)
   const config: ProxyConfig = { type, host: parsed.hostname.toLowerCase(), port }
   if (parsed.username) config.username = decodeURIComponent(parsed.username)
   if (parsed.password) config.password = decodeURIComponent(parsed.password)
+  // Relay urls carry the key in the query string, which no field here holds.
+  if (type === 'RELAY') config.url = url.trim()
   return config
 }
 

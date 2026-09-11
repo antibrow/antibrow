@@ -4,6 +4,23 @@ All notable changes to the `antibrow` Python SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.23.0] - 2026-09-11
+
+### Fixed
+
+- `?key=` on a `relay://` proxy URL was dropped during parsing, so a launch that
+  asked for the encrypted relay protocol silently ran the plaintext one. The key
+  now reaches the browser, and a malformed key raises instead of downgrading.
+
+### Added
+
+- The pre-launch exit-IP lookup speaks the encrypted relay protocol for keyed
+  `relay://` proxies, so `geoip=True` sets timezone and WebRTC from a
+  self-hosted relay's exit without that relay serving its plaintext protocol.
+- `cryptography` is now a required dependency (AES-256-GCM for that transport).
+- `ProxyConfig.url` carries a proxy url verbatim for schemes the other fields
+  cannot hold whole, and `ProxyConfig.type` accepts `"RELAY"`.
+
 ## [0.22.0] - 2026-09-07
 
 ### Changed

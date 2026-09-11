@@ -76,10 +76,20 @@ other, with the identical fingerprint.
 - **Timezone and locale follow the proxy.** Pass a proxy and the exit IP's geo is resolved
   and written into the fingerprint before launch.
 - **Proxy auth handled in the engine.** `http` / `https` / `socks5` credentials go inline on
-  `--proxy-server`; the kernel answers the challenge itself. No helper extension is loaded,
+  `--proxy-server`; the engine answers the challenge itself. No helper extension is loaded,
   so nothing shows up in `chrome://extensions`.
+- **An encrypted relay with no proxy-protocol signature.** `relay://…?key=` is spoken
+  natively by the engine over a single WebSocket, with every frame sealed under
+  AES-256-GCM - no plaintext CONNECT line, no SOCKS5 handshake, no local forwarder process.
+  The relay server is MIT-licensed and self-hostable. See below.
 - **Persistent identities.** Cookies, storage and passkeys survive restarts — warm an
   account once and it stays warm.
+- **Passkeys captured and replayed.** Each profile carries its own virtual authenticator, so
+  a passkey a site enrols is kept in the profile's own store and replayed on the next
+  sign-in. On by default; it travels with a sync or an export.
+- **Portable profiles.** Export a profile - identity, browser state and passkey store - to a
+  single `.fpprofile` file and import it on another machine or hand it to someone else.
+  Cloud sync moves the same payload for you, per profile, when you turn it on.
 - **Standard Playwright.** You get a normal `BrowserContext` over CDP. No proprietary API to
   learn, and existing scripts port over by changing how the browser is launched.
 - **MCP server mode**, so an AI agent can drive a profile directly.
@@ -113,6 +123,49 @@ reach the hosts it declares - a request to any other host is blocked.
 **Want a platform that is not there yet?** Sites behind Cloudflare, DataDome, PerimeterX or
 Akamai are the ones this layer exists for. Open an issue on the recipes repo, or write one
 from its `GUIDE.md` - the format is a single file with no dependencies.
+
+## Encrypted relay
+
+`relay://` is a transport both SDKs accept wherever a proxy URL goes. SOCKS5 and HTTP
+CONNECT put a fixed, recognizable handshake on the wire before any of your traffic moves;
+this one doesn't. The engine opens a single WebSocket to the relay and speaks an
+AEAD-sealed frame protocol inside it - keys derived per connection with HKDF-SHA256, each
+frame sealed with AES-256-GCM under a counter nonce - so there is no plaintext CONNECT
+line, no SOCKS5 handshake and no fixed-length header to match on. The target hostname
+travels inside the sealed frame.
+
+```js
+const browser = await new AntiDetectBrowser({ apiKey }).launch({
+  proxy: 'relay://alice:s3cret@relay.yourdomain.com?key=<relay key>',
+})
+```
+
+```python
+browser = launch(proxy="relay://alice:s3cret@relay.yourdomain.com?key=<relay key>")
+```
+
+`?key=` is the relay's 32-byte base64url pre-shared key, and it is what selects the
+encrypted protocol - both here and in the exit-IP lookup the SDK runs before launch, so
+timezone and WebRTC follow the relay's exit. Leave it out and the URL means the older
+plaintext protocol instead, which a relay serves only if its operator turned it on; a
+malformed key is refused rather than downgraded.
+
+There is no local forwarder process and no extension - the engine speaks the protocol
+itself, and the credential never reaches the page's renderer process.
+
+The relay server is a separate MIT-licensed project
+([antibrow/relay](https://github.com/antibrow/relay)) and is meant to be self-hosted on a
+domain you control: `npx antibrow-relay keygen` prints the deployment's pre-shared key,
+then deploy it as a Cloudflare Worker or run it as a plain Node process and create an
+upstream and an account at `/admin`. The account credential is what goes in the URL above.
+A hosted one runs at <https://bastion.antibrow.com/>.
+
+Two limits worth knowing: a device running TLS inspection sees the WebSocket upgrade and
+the sealed frames under it (it still finds no proxy-protocol signature, but it sees more
+than a passive observer does), and domain-category filtering blocks a hostname before any
+protocol is inspected - which is the reason to host on your own domain rather than a shared
+default. The frame format, key schedule and threat model are in the
+[whitepaper](https://antibrow.com/relay/whitepaper).
 
 ## Docs and examples
 
@@ -152,4 +205,5 @@ automate and with the law in your jurisdiction.
 
 - Website — <https://antibrow.com>
 - Documentation — <https://antibrow.com/docs>
+- Encrypted relay — <https://antibrow.com/relay> · [antibrow/relay](https://github.com/antibrow/relay)
 - Issues — <https://github.com/antibrow/antibrow/issues>

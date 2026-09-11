@@ -260,6 +260,22 @@ def lookup_direct_geo(timeout: float = DIRECT_TIMEOUT) -> Optional[ProxyGeo]:
     return geo
 
 
+def _lookup_via_relay_tunnel(spec: ProxySpec, timeout: float) -> Optional[ProxyGeo]:
+    """Encrypted relays: probe through the same tunnel the browser will use.
+
+    The header path below is the legacy protocol, which a relay only serves
+    with plaintext mode switched on - probing over it would make every
+    self-hosted deployment choose between a matching timezone and putting
+    hostnames in clear text.
+    """
+    from .relay_tunnel import relay_fetch
+
+    body = relay_fetch(
+        spec.to_url(), host=GEO_HOST, port=80, path=GEO_PATH, timeout=timeout
+    )
+    return parse_geo_response(body)
+
+
 def lookup_proxy_geo(proxy: ProxyLike, timeout: float = DEFAULT_TIMEOUT) -> Optional[ProxyGeo]:
     """Resolve the exit IP + timezone of a proxy. Returns None on any failure.
 
@@ -274,7 +290,9 @@ def lookup_proxy_geo(proxy: ProxyLike, timeout: float = DEFAULT_TIMEOUT) -> Opti
         return None
     start = time.monotonic()
     try:
-        if spec.is_relay:
+        if spec.is_relay and spec.relay_key:
+            geo = _lookup_via_relay_tunnel(spec, timeout)
+        elif spec.is_relay:
             geo = _lookup_via_relay(spec, timeout)
         elif spec.is_socks:
             geo = _lookup_via_socks5(spec, timeout)

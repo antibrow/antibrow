@@ -690,13 +690,17 @@ def revoke_proxy_ticket(
 class ProxyConfig:
     """One of your own proxies, credentials included - unlike a managed one."""
 
-    type: str  # "SOCKS5" | "HTTP" | "SSH"
+    type: str  # "SOCKS5" | "HTTP" | "SSH" | "RELAY"
     host: str
     port: int
     username: Optional[str] = None
     password: Optional[str] = None
     label: Optional[str] = None
     country: Optional[str] = None
+    #: The proxy url verbatim, for schemes the fields above cannot hold whole
+    #: (``relay://…?key=``, whose key selects the encrypted protocol). Source of
+    #: truth when present; the fields are for display and de-duplication.
+    url: Optional[str] = None
 
     @classmethod
     def from_dict(cls, raw: Any) -> "Optional[ProxyConfig]":
@@ -713,6 +717,7 @@ class ProxyConfig:
             password=_as_str(raw.get("password")),
             label=_as_str(raw.get("label")),
             country=_as_str(raw.get("country")),
+            url=_as_str(raw.get("url")),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -725,6 +730,7 @@ class ProxyConfig:
                 "password": self.password,
                 "label": self.label,
                 "country": self.country,
+                "url": self.url,
             }
         )
 

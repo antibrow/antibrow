@@ -198,13 +198,18 @@ export interface McpSession {
 
 /** A user's own proxy definition. */
 export interface ProxyConfig {
-  type: 'SOCKS5' | 'HTTP' | 'SSH'
+  type: 'SOCKS5' | 'HTTP' | 'SSH' | 'RELAY'
   host: string
   port: number
   username?: string
   password?: string
   label?: string
   country?: string
+  /** The proxy url verbatim, for schemes that carry more than the fields above
+   *  can hold (`relay://…?key=`, whose key selects the encrypted protocol).
+   *  When present it is the source of truth; the fields are for display and
+   *  de-duplication. */
+  url?: string
 }
 
 /** Wire shape from the proxy-library sync endpoints. */

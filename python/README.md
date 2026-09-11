@@ -39,7 +39,7 @@ That is a real Chromium — with a real device's fingerprint, its own persistent
 - [API reference](#api-reference)
 - [Profiles and fingerprints](#profiles-and-fingerprints)
 - [Proxies](#proxies)
-  - [Managed proxies](#managed-proxies) · [Your own proxy library](#your-own-proxy-library)
+  - [Encrypted relay](#encrypted-relay) · [Managed proxies](#managed-proxies) · [Your own proxy library](#your-own-proxy-library)
 - [Managing cloud profiles](#managing-cloud-profiles)
 - [Live View](#live-view)
 - [Recipes](#recipes)
@@ -62,6 +62,8 @@ That is a real Chromium — with a real device's fingerprint, its own persistent
 **Timezone follows the proxy.** Pass a proxy and the exit IP is resolved through that same proxy; the browser's timezone and WebRTC identity are set from it before the first byte of the first page.
 
 **Authenticated proxies, with nothing loaded to make them work.** `socks5://user:pass@host:port` works as-is: HTTP/HTTPS `407` challenges are answered in the network stack, SOCKS5 by RFC 1929 username/password negotiation, all inside the engine. `chrome://extensions` stays empty — the proxy-auth helper extension most antidetect browsers still ship is enumerable from any page, and is itself a tell.
+
+**An encrypted relay when the handshake itself is the problem.** `relay://user:secret@relay.yourdomain.com?key=<relay key>` swaps the transport for one the engine speaks natively - a single WebSocket carrying AES-256-GCM-sealed frames, no plaintext CONNECT line, no SOCKS5 handshake, no fixed-length header, target hostname inside the sealed frame. The relay server is MIT-licensed and self-hostable.
 
 **Unlimited local profiles, free.** A profile is a directory. Name one and it exists. There is no per-profile fee and nothing to provision. Your plan sets how many browsers run *at the same time*, not how many identities you may own.
 
@@ -349,6 +351,44 @@ With `geoip=True` (the default), the exit IP is looked up *through* the proxy be
 browser = launch(profile="p1", proxy="socks5://user:pass@127.0.0.1:1080")
 print(browser.public_ip, browser.timezone)   # 203.0.113.7 America/Los_Angeles
 ```
+
+### Encrypted relay
+
+`relay://` is a transport the engine speaks itself, for when the *shape* of a
+proxy connection is the thing you need to avoid. SOCKS5 and HTTP CONNECT both
+put a fixed, recognizable handshake on the wire before any traffic moves; this
+opens one WebSocket and carries AEAD-sealed frames inside it - keys derived per
+connection with HKDF-SHA256, each frame sealed with AES-256-GCM under a counter
+nonce - so there is no plaintext CONNECT line, no SOCKS5 handshake and no
+fixed-length header to match on, and the target hostname stays inside the frame.
+
+```python
+browser = launch("shopper", proxy="relay://alice:s3cret@relay.yourdomain.com?key=<relay key>")
+```
+
+`?key=` is the relay's 32-byte base64url pre-shared key and it selects the
+encrypted protocol - for the browser and for the `geoip=True` exit lookup that
+runs before launch, so timezone and WebRTC follow the relay's exit. Without it
+the URL means the older plaintext protocol, which a relay serves only if its
+operator turned it on; a malformed key raises rather than downgrading.
+
+No local forwarder process, no extension, and the credential never reaches a
+renderer.
+
+The relay server is a separate MIT-licensed project
+([antibrow/relay](https://github.com/antibrow/relay)), meant to be self-hosted
+on a domain you control: `npx antibrow-relay keygen` prints the deployment's
+pre-shared key, then deploy it as a Cloudflare Worker or run it as a plain Node
+process and create an upstream and an account at `/admin`. That account
+credential is what goes in the URL above. A hosted one runs at
+<https://bastion.antibrow.com/>. Frame format, key schedule and threat model:
+the [whitepaper](https://antibrow.com/relay/whitepaper).
+
+Two limits worth knowing. A device running TLS inspection sees the WebSocket
+upgrade and the sealed frames under it - it still finds no proxy-protocol
+signature, but that vantage point sees more than a passive observer does. And
+domain-category filtering blocks a hostname before any protocol is inspected,
+which is the reason to host on your own domain rather than a shared default.
 
 ### Managed proxies
 

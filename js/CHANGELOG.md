@@ -4,6 +4,20 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.29.0] - 2026-09-11
+
+### Added
+
+- `relay://user:pass@host?key=<base64url key>` now uses the encrypted relay
+  protocol for the pre-launch exit-IP lookup as well as for browsing, so
+  timezone and WebRTC follow a self-hosted relay's exit without the relay
+  having to serve its plaintext protocol. A key that is present but malformed
+  fails the launch instead of falling back to plaintext.
+- `ProxyConfig.type` accepts `'RELAY'`, and `ProxyConfig.url` carries a proxy
+  url verbatim for schemes the other fields cannot hold whole. `proxyUrlToConfig`
+  accepts `relay://`; `proxyConfigToUrl` returns `url` when set and throws for a
+  `'RELAY'` row without one rather than returning a keyless url.
+
 ## [2.28.0] - 2026-09-07
 
 ### Changed

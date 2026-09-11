@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "antibrow"
-version = "0.22.0"
+version = "0.23.0"
 description = "The antidetect browser your AI agent can drive - kernel-level fingerprint spoofing with the Playwright API"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -54,6 +54,8 @@ classifiers = [
 ]
 dependencies = [
     "playwright>=1.40",
+    # AES-256-GCM for the encrypted relay transport; stdlib has no AES.
+    "cryptography>=42",
 ]
 
 [project.optional-dependencies]

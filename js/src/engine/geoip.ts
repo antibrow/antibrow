@@ -2,6 +2,7 @@ import http from 'node:http'
 import https from 'node:https'
 import net from 'node:net'
 import { SocksClient } from 'socks'
+import { relayFetch, relayKeyFromUrl } from './relay-tunnel'
 
 export interface ProxyGeo {
   ip: string
@@ -140,6 +141,20 @@ function lookupViaRelayHeader(parsed: URL, timeoutMs: number): Promise<ProxyGeo>
   })
 }
 
+/**
+ * Self-hosted relays carrying a key: probe through the encrypted tunnel the
+ * browser itself will use. The header path below is the legacy protocol, which
+ * a relay only serves with plaintext mode switched on - probing over it would
+ * make every self-hosted deployment choose between an exit-matched timezone and
+ * putting hostnames in clear text.
+ */
+async function lookupViaRelayTunnel(parsed: URL, key: Uint8Array, timeoutMs: number): Promise<ProxyGeo> {
+  const body = await relayFetch({
+    relay: parsed, key, host: GEO_API_HOST, port: 80, path: GEO_API_PATH, timeoutMs,
+  })
+  return parseGeoOrThrow(body)
+}
+
 /** SOCKS5: CONNECT to the geo API and speak HTTP/1.1 on the raw tunnel. */
 function lookupViaSocks5(parsed: URL, timeoutMs: number): Promise<ProxyGeo> {
   return new Promise((resolve, reject) => {
@@ -197,11 +212,20 @@ export async function probeProxyExit(proxyUrl: string, timeoutMs = 10_000): Prom
   }
 
   const scheme = parsed.protocol.replace(':', '')
+  let relayKey: Uint8Array | null = null
+  if (scheme === 'relay') {
+    try {
+      relayKey = relayKeyFromUrl(parsed)
+    } catch (e) {
+      return fail(e instanceof Error ? e.message : String(e))
+    }
+  }
   const lookup =
-    scheme === 'relay' ? lookupViaRelayHeader
-      : scheme === 'socks5' || scheme === 'socks' ? lookupViaSocks5
-        : scheme === 'http' || scheme === 'https' ? lookupViaHttpProxy
-          : null
+    relayKey ? (u: URL, t: number) => lookupViaRelayTunnel(u, relayKey!, t)
+      : scheme === 'relay' ? lookupViaRelayHeader
+        : scheme === 'socks5' || scheme === 'socks' ? lookupViaSocks5
+          : scheme === 'http' || scheme === 'https' ? lookupViaHttpProxy
+            : null
   if (!lookup) return fail(`unsupported proxy scheme: ${scheme}`)
 
   try {

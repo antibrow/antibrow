@@ -30,11 +30,15 @@ Ships as an **MCP server** — one line (`npx -p anti-detect-browser -p @modelco
 
 ### Technically ahead
 
-Fingerprints are spoofed at the **kernel level** (a custom Chromium 149 runtime), not with fragile JavaScript patches that anti-bot systems flag on sight. Signals stay **coherent** across Canvas, WebGL, WebGPU, fonts, audio, `navigator`, screen and timezone — nothing contradicts, because it's a real device profile, not randomized noise. Timezone and geolocation **follow your proxy** automatically.
+Fingerprints are spoofed at the **kernel level** (a custom Chromium runtime), not with fragile JavaScript patches that anti-bot systems flag on sight. Signals stay **coherent** across Canvas, WebGL, WebGPU, fonts, audio, `navigator`, screen and timezone — nothing contradicts, because it's a real device profile, not randomized noise. Timezone and geolocation **follow your proxy** automatically.
 
 ### Authenticated proxies, with nothing loaded to make them work
 
 Pass `http://`, `https://` or **`socks5://user:pass@host:port`** and the credentials are answered **inside the engine** — HTTP/HTTPS `407` challenges in the network stack, SOCKS5 by RFC 1929 username/password negotiation. No helper extension is installed, so `chrome://extensions` stays empty; the proxy-auth extension most antidetect browsers still ship is enumerable from any page and is itself a tell. Credentials reach the network process only, never a renderer.
+
+### An encrypted relay, if a proxy handshake is itself the problem
+
+`launch({ proxy: 'relay://user:secret@relay.yourdomain.com?key=<relay key>' })` swaps the transport for one the engine speaks natively: a single WebSocket carrying AEAD-sealed frames — HKDF-SHA256 per connection, AES-256-GCM per frame — so there is no plaintext CONNECT line, no SOCKS5 handshake and no fixed-length header on the wire, and the target hostname stays inside the sealed frame. Still no local forwarder and no extension. `?key=` is the relay's 32-byte base64url pre-shared key: it selects the encrypted protocol for the browser **and** for the exit-IP lookup the SDK runs before launch, so timezone and WebRTC follow the relay's exit. Without it the URL means the older plaintext protocol, and a malformed key is refused rather than downgraded. The relay server is MIT-licensed and self-hostable on a domain you control ([antibrow/relay](https://github.com/antibrow/relay)); the frame format and threat model are in the [whitepaper](https://antibrow.com/relay/whitepaper).
 
 ## Proof it works
 
@@ -480,6 +484,9 @@ profile's directory on whichever call passes it. The handle exposes `name`,
 | **Built-in MCP server** | Drive it from Claude or any MCP agent, no glue code |
 | **Managed residential proxies** | One `proxyId`; the exit IP, timezone and geo all line up |
 | **Authenticated HTTP/SOCKS5** | Credentials answered in the engine (`407` / RFC 1929) — no proxy-auth extension to enumerate |
+| **Encrypted relay** | `relay://…?key=` — AES-256-GCM per frame over one WebSocket, no proxy-protocol signature, self-hostable |
+| **Passkeys** | Each profile keeps its own WebAuthn authenticator; enrolled passkeys replay on the next sign-in |
+| **Portable profiles** | `exportProfileArchive()` / `importProfileArchive()` — identity, state and passkeys in one `.fpprofile` |
 | **Live View** | Stream a running session to your dashboard in real time |
 | **Cloud profile sync** | Roam a profile (identity + state) across machines |
 | **Concurrency by plan** | Kernel-enforced simultaneous-browser cap |
