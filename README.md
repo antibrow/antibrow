@@ -26,6 +26,7 @@ isn't open.
 python/       →  PyPI: antibrow
 js/           →  npm:  anti-detect-browser
 ai-sdk-tool/  →  npm:  ai-sdk-tool-antibrow  (Vercel AI SDK tools)
+docker/       →  Docker Hub: antibrow/antibrow  (SDK + engine deps + xvfb)
 ```
 
 ## Install
