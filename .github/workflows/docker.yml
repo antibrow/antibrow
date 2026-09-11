@@ -2,7 +2,9 @@ name: Publish the Docker image
 
 # Publishing needs two repository secrets, set once:
 #   DOCKERHUB_USERNAME  - the Docker Hub account that owns antibrow/antibrow
-#   DOCKERHUB_TOKEN     - a Personal Access Token with Read & Write on that account
+#   DOCKERHUB_TOKEN     - a Personal Access Token with `read/write/delete` scope.
+#                         Read & Write is enough to push images but NOT to update the
+#                         repository description, which fails with `Forbidden`.
 # Nothing else is stored here. A pull request that touches docker/ builds the image
 # and runs it, but never logs in and never pushes.
 
@@ -97,11 +99,17 @@ jobs:
           build-args: ANTIBROW_VERSION=${{ steps.plan.outputs.version }}
           provenance: false
 
-      # The Hub listing page is the thing users read, and it is also where the
-      # links to the docs live; keep it equal to docker/README.md.
+      # The Hub listing page is the thing users read, and it is also where the links
+      # to the docs live; keep it equal to docker/README.md. This runs on a manual
+      # publish too, so fixing the overview does not require cutting a new tag.
+      #
+      # The token for THIS step is not the one that pushes images: updating a
+      # repository's description needs a Docker Hub PAT with `read/write/delete`
+      # scope (the action's own README says so). A read/write token pushes fine and
+      # then fails here with a bare `Forbidden`.
       - name: Sync the Docker Hub overview
-        if: steps.plan.outputs.publish == 'true' && github.ref_type == 'tag'
-        uses: peter-evans/dockerhub-description@v4
+        if: steps.plan.outputs.publish == 'true'
+        uses: peter-evans/dockerhub-description@v5
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
