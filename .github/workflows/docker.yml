@@ -1,0 +1,110 @@
+name: Publish the Docker image
+
+# Publishing needs two repository secrets, set once:
+#   DOCKERHUB_USERNAME  - the Docker Hub account that owns antibrow/antibrow
+#   DOCKERHUB_TOKEN     - a Personal Access Token with Read & Write on that account
+# Nothing else is stored here. A pull request that touches docker/ builds the image
+# and runs it, but never logs in and never pushes.
+
+on:
+  push:
+    tags: ["docker-v*"]
+  pull_request:
+    paths: ["docker/**", ".github/workflows/docker.yml"]
+  workflow_dispatch:
+    inputs:
+      antibrow_version:
+        description: "antibrow version to bake in (empty = latest on PyPI)"
+        required: false
+        type: string
+      push:
+        description: "Push to Docker Hub"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: antibrow/antibrow
+
+jobs:
+  image:
+    name: Build, smoke test, publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out the version and whether this run publishes
+        id: plan
+        run: |
+          # `docker-v0.23.0` pins antibrow==0.23.0 and tags the image 0.23.0 + latest.
+          # A manual run may pin a version too; otherwise the image takes the current
+          # PyPI release and is only ever tagged `edge`.
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#docker-v}"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "tags=${IMAGE}:${VERSION},${IMAGE}:latest" >> "$GITHUB_OUTPUT"
+          else
+            VERSION="${{ inputs.antibrow_version }}"
+            if [ "${{ inputs.push }}" = "true" ]; then
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+            fi
+            echo "tags=${IMAGE}:edge" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # Build for this runner first and load it, so the smoke test runs on a real
+      # image rather than on a manifest that was never executed.
+      - name: Build for the runner and load
+        uses: docker/build-push-action@v6
+        with:
+          context: ./docker
+          load: true
+          tags: ${{ env.IMAGE }}:smoke
+          build-args: ANTIBROW_VERSION=${{ steps.plan.outputs.version }}
+
+      - name: Smoke test - the image must start and report its versions
+        run: |
+          set -e
+          OUT=$(docker run --rm "${IMAGE}:smoke")
+          echo "$OUT"
+          # A bare `xvfb-run` entrypoint hangs as PID 1 instead of failing, so assert on
+          # the output rather than on the exit code alone.
+          echo "$OUT" | grep -q "^antibrow "
+          echo "$OUT" | grep -q "default kernel"
+
+      - name: Log in to Docker Hub
+        if: steps.plan.outputs.publish == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build both architectures and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./docker
+          platforms: linux/amd64,linux/arm64
+          push: ${{ steps.plan.outputs.publish == 'true' }}
+          tags: ${{ steps.plan.outputs.tags }}
+          build-args: ANTIBROW_VERSION=${{ steps.plan.outputs.version }}
+          provenance: false
+
+      # The Hub listing page is the thing users read, and it is also where the
+      # links to the docs live; keep it equal to docker/README.md.
+      - name: Sync the Docker Hub overview
+        if: steps.plan.outputs.publish == 'true' && github.ref_type == 'tag'
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ env.IMAGE }}
+          short-description: "The antidetect browser your AI agent can drive - Playwright API, persistent profiles"
+          readme-filepath: ./docker/README.md
