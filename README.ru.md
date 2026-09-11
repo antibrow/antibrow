@@ -23,8 +23,9 @@ canvas, WebGL, WebGPU, аудио, шрифты, WebRTC и уровень про
 см. в разделе [Лицензирование](#лицензирование).
 
 ```
-python/   →  PyPI: antibrow
-js/       →  npm:  anti-detect-browser
+python/       →  PyPI: antibrow
+js/           →  npm:  anti-detect-browser
+ai-sdk-tool/  →  npm:  ai-sdk-tool-antibrow  (Vercel AI SDK tools)
 ```
 
 ## Установка

@@ -1,0 +1,60 @@
+{
+  "name": "ai-sdk-tool-antibrow",
+  "version": "0.1.0",
+  "description": "AI SDK tools that drive a persistent AntiBrow browser profile: cookies, storage, fingerprint and exit IP survive between agent runs.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean",
+    "test": "tsx src/test.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "ai",
+    "ai-sdk",
+    "tools",
+    "browser",
+    "playwright",
+    "antidetect",
+    "agent"
+  ],
+  "license": "MIT",
+  "homepage": "https://antibrow.com/docs/ai-sdk",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/antibrow/antibrow.git",
+    "directory": "ai-sdk-tool"
+  },
+  "bugs": {
+    "url": "https://github.com/antibrow/antibrow/issues"
+  },
+  "dependencies": {
+    "anti-detect-browser": "^2.29.0"
+  },
+  "peerDependencies": {
+    "ai": "^5.0.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "tsup": "^8.5.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -23,8 +23,9 @@ This repository holds the **open-source SDKs**. See [Licensing](#licensing) for 
 isn't open.
 
 ```
-python/   →  PyPI: antibrow
-js/       →  npm:  anti-detect-browser
+python/       →  PyPI: antibrow
+js/           →  npm:  anti-detect-browser
+ai-sdk-tool/  →  npm:  ai-sdk-tool-antibrow  (Vercel AI SDK tools)
 ```
 
 ## Install
@@ -173,6 +174,7 @@ default. The frame format, key schedule and threat model are in the
 |---|---|
 | Python API, options, CLI | [`python/README.md`](python/README.md) |
 | JavaScript API | [`js/README.md`](js/README.md) |
+| Vercel AI SDK tools | [`ai-sdk-tool/README.md`](ai-sdk-tool/README.md) · [antibrow.com/docs/ai-sdk](https://antibrow.com/docs/ai-sdk) |
 | Runnable examples (Playwright, browser-use, crawl4ai, Scrapling, MCP, Docker) | [`python/examples/`](python/examples/) |
 
 ## Platforms
