@@ -67,7 +67,7 @@ export interface LaunchOptions {
    */
   deviceType?: 'desktop' | 'android'
   /**
-   * Draw this profile's identity from the Captured-machine fingerprint library
+   * Draw this profile's identity from the Real-device fingerprint library
    * instead of generating one (paid plans; the server rejects free-plan
    * requests). Applies only when the profile is first created.
    */

@@ -59,6 +59,22 @@ export interface RealDevice {
     shaderPrecision?: Record<string, number[]>
     extensions?: string[]
   }
+  webgpu?: WebgpuFacts
+}
+
+/**
+ * One machine's `navigator.gpu` adapter. Present only when the capture resolved
+ * an adapter at all - roughly two captures in three - so a row without it falls
+ * back to the baseline table in persona.ts.
+ */
+export interface WebgpuFacts {
+  vendor?: string
+  architecture?: string
+  subgroupMinSize?: number
+  subgroupMaxSize?: number
+  features?: string[]
+  /** All 36 the kernel can replay, or the capture is not used at all. */
+  limits?: Record<string, number>
 }
 
 const DEFAULT_SERVER = 'https://antibrow.com'

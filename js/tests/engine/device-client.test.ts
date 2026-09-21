@@ -39,7 +39,7 @@ describe('fetchRealDevice', () => {
     // The shape the server actually sends (ApiError.toJSON): a nested object,
     // not a string. Mocking a bare string here is what let the real 403 message
     // reach the user as a bare "HTTP 403".
-    const body = { error: { code: 'FORBIDDEN', message: 'The Captured-machine fingerprint library requires a paid plan.' } }
+    const body = { error: { code: 'FORBIDDEN', message: 'The Real-device fingerprint library requires a paid plan.' } }
     vi.stubGlobal('fetch', async () => new Response(JSON.stringify(body), { status: 403 }))
     await expect(fetchRealDevice({ os: 'android', key: 'adb_free' })).rejects.toThrow(/requires a paid plan/)
   })

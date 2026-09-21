@@ -46,7 +46,7 @@ export type { Persona, ApiLogMode, DeviceType, CapturedFacts, PersonaInit } from
 export { fetchRealDevice } from './devices'
 export type { RealDevice } from './devices'
 export { getLicenseToken, fetchLicenseToken, type LicenseInfo } from './license'
-export { lookupProxyGeo as lookupEngineProxyGeo, lookupDirectGeo, probeProxyExit, type ProxyGeo, type ProxyProbeResult } from './geoip'
+export { lookupProxyGeo as lookupEngineProxyGeo, lookupDirectGeo, probeProxyExit, geoTargets, parseGeoBody, type ProxyGeo, type ProxyProbeResult, type GeoTarget, type ProbeOptions } from './geoip'
 export { resolveProfileDir, resolveProfileDirSync, listProfileEntries, readProfileMeta, writeProfileMeta, isProfileEncrypted, markProfileEncrypted, unmarkProfileEncrypted, readCryptState, writeCryptState, settleCryptState, isCryptKeyPending, markCryptKeyPending, clearCryptKeyPending, profileCryptMarker, CRYPT_STATE_FILE, CRYPT_PENDING_FILE, sanitizeProfileName, profilesRoot, TEMPORARY_PROFILES_DIR } from './profile-dir'
 export type { CryptSettlement } from './profile-dir'
 export { fetchProfileCryptKey, parseCryptKeyBody, resolveCryptKey } from './crypt-key'

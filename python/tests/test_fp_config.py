@@ -81,30 +81,92 @@ def test_seeds_are_carried_through_to_every_noise_dimension():
 
 def test_webgpu_identity_matches_the_webgl_gpu():
     # navigator.gpu must name the GPU WebGL claims, not the real adapter.
+    # The cards we roll carry the architecture their real counterparts report;
+    # only a GPU absent from the corpus falls back to a derived name.
     cases = {
         "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11-31.0.15.3699)":
-            {"vendor": "nvidia", "architecture": ""},  # NVIDIA on D3D reports no architecture
+            {"vendor": "nvidia", "architecture": "ampere"},
         "ANGLE (AMD, AMD Radeon(TM) Graphics Direct3D11 vs_5_0 ps_5_0, D3D11-31.0.12027.9001)":
-            {"vendor": "amd", "architecture": "rdna-3"},
+            {"vendor": "amd", "architecture": "gcn-5"},
         "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11-31.0.101.4577)":
             {"vendor": "intel", "architecture": "gen-12lp"},
         "ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11-27.20.100.9316)":
             {"vendor": "intel", "architecture": "gen-9"},
-        "ANGLE (Intel, Intel(R) Arc(TM) A770 Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)":
-            {"vendor": "intel", "architecture": "xe-lpg"},
-        # Unknown vendor: say nothing rather than guess.
-        "SwiftShader": {},
     }
     persona = generate_persona(150, "150.0.0.0")
     for renderer, expected in cases.items():
         persona.gpu_renderer = renderer
         _, config = config_for(persona)
-        assert config["webgpu"] == expected, renderer
+        for key, value in expected.items():
+            assert config["webgpu"][key] == value, renderer
+
+    # Not a card we roll, so nothing was measured for it: name only.
+    persona.gpu_renderer = "ANGLE (Intel, Intel(R) Arc(TM) A770 Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)"
+    _, config = config_for(persona)
+    assert config["webgpu"] == {"vendor": "intel", "architecture": "xe-lpg"}
+    # Unknown vendor: say nothing rather than guess.
+    persona.gpu_renderer = "SwiftShader"
+    _, config = config_for(persona)
+    assert config["webgpu"] == {}
 
     # Every GPU we can roll must resolve, or our own personas would ship the
     # cross-API mismatch this field exists to prevent.
     for _ in range(40):
         _, config = config_for(generate_persona(150, "150.0.0.0"))
+        assert config["webgpu"] != {}
+
+
+def test_webgpu_replays_the_whole_adapter():
+    # vendor alone left adapter.limits and adapter.features answering for the
+    # host GPU, the same cross-API tell the vendor spoof exists to close.
+    for _ in range(40):
+        _, config = config_for(generate_persona(153, "153"))
+        w = config["webgpu"]
+        assert len(w["limits"]) == 36
+        assert "texture-compression-bc" in w["features"]
+        assert isinstance(w["subgroupMinSize"], int)
+        # Real machines report an architecture for these cards; "" was our guess.
+        assert w["architecture"]
+
+    _, config = config_for(generate_persona(153, "153", device_type="android"))
+    w = config["webgpu"]
+    assert len(w["limits"]) == 36
+    assert w["vendor"] in ("qualcomm", "arm")
+    assert w["architecture"] in ("adreno-7xx", "adreno-8xx", "bifrost", "valhall", "midgard")
+
+    # An unknown card still says nothing rather than inventing a limit table.
+    persona = generate_persona(153, "153")
+    persona.gpu_vendor, persona.gpu_renderer = "X", "SwiftShader"
+    _, config = config_for(persona)
+    assert config["webgpu"] == {}
+
+
+def test_webgpu_names_the_mobile_gpu_on_android():
+    # An empty pair means "keep the real adapter": a mobile renderer that fell
+    # through published the host's desktop card beside a WebGL surface claiming
+    # Adreno. Dawn reports no architecture for these, so only the vendor ships.
+    cases = [
+        ("Google Inc. (Qualcomm)", "ANGLE (Qualcomm, Adreno (TM) 830, OpenGL ES 3.2)",
+         {"vendor": "qualcomm", "architecture": ""}),
+        ("Google Inc. (ARM)", "ANGLE (ARM, Mali-G52 MC2, OpenGL ES 3.2)",
+         {"vendor": "arm", "architecture": ""}),
+        ("Google Inc. (Samsung Electronics Co., Ltd.)",
+         "ANGLE (Samsung Electronics Co., Ltd., Samsung Xclipse 920, OpenGL ES 3.2)",
+         {"vendor": "samsung", "architecture": ""}),
+        # sanitize_persona_gpu rewrites the blocked Imagination token to ARM and
+        # keeps the PowerVR model, so the vendor token wins over the model.
+        ("Google Inc. (ARM)", "ANGLE (ARM, PowerVR Rogue GE8320, OpenGL ES 3.2)",
+         {"vendor": "arm", "architecture": ""}),
+    ]
+    persona = generate_persona(153, "153")
+    for vendor, renderer, expected in cases:
+        persona.gpu_vendor = vendor
+        persona.gpu_renderer = renderer
+        _, config = config_for(persona)
+        assert config["webgpu"] == expected, renderer
+
+    for _ in range(40):
+        _, config = config_for(generate_persona(153, "153", device_type="android"))
         assert config["webgpu"] != {}
 
 

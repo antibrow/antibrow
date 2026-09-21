@@ -39,7 +39,7 @@ def test_keyless_relay_stays_on_the_header_path(monkeypatch):
     # attempt there would break every managed-proxy launch.
     called = {"header": False}
 
-    def header(spec, timeout):
+    def header(spec, target, timeout):
         called["header"] = True
         return None
 

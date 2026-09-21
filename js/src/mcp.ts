@@ -139,7 +139,7 @@ export async function startMcpServer(): Promise<void> {
             headless: { type: 'boolean', description: 'Run in headless mode' },
             focusWindow: { type: 'boolean', description: 'Whether the new window takes focus. Default true. Pass false to open it behind whatever the user is looking at, without interrupting them; the window is still there.' },
             deviceType: { type: 'string', enum: ['desktop', 'android'], description: 'Simulate an Android phone (running on this desktop/server, not on a physical device) instead of a desktop browser. Applies only when the profile is first created; an existing profile keeps its own device type.' },
-            realFingerprint: { type: 'boolean', description: 'Draw the identity from the Captured-machine fingerprint library instead of generating one. Requires a paid plan; the server rejects this on free plans. Applies only when the profile is first created.' },
+            realFingerprint: { type: 'boolean', description: 'Draw the identity from the Real-device fingerprint library instead of generating one. Requires a paid plan; the server rejects this on free plans. Applies only when the profile is first created.' },
             temporary: { type: 'boolean', description: 'Use the temporary profile tree. Recommended for automation: temporary profiles are local-only and do not appear in the desktop app profile list. They persist on disk and are never deleted automatically.' },
           },
           required: ['profile'],
@@ -182,7 +182,7 @@ export async function startMcpServer(): Promise<void> {
           properties: {
             name: { type: 'string', description: 'Profile name (must be unique on this machine)' },
             deviceType: { type: 'string', enum: ['desktop', 'android'], description: 'Simulate an Android phone (running on this desktop/server, not on a physical device) instead of a desktop browser.' },
-            realFingerprint: { type: 'boolean', description: 'Draw the identity from the Captured-machine fingerprint library instead of generating one. Requires a paid plan; the server rejects this on free plans.' },
+            realFingerprint: { type: 'boolean', description: 'Draw the identity from the Real-device fingerprint library instead of generating one. Requires a paid plan; the server rejects this on free plans.' },
             temporary: { type: 'boolean', description: 'Use the temporary profile tree. Recommended for automation: temporary profiles are local-only and do not appear in the desktop app profile list. They persist on disk and are never deleted automatically.' },
           },
           required: ['name'],

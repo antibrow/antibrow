@@ -20,7 +20,7 @@ See https://antibrow.com and the project README for the full API.
 
 from __future__ import annotations
 
-__version__ = "0.23.0"
+__version__ = "0.25.0"
 
 from .api import (
     DEFAULT_RELAY_HOST,
@@ -120,7 +120,14 @@ from .errors import (
     ProxyError,
     UnsupportedPlatformError,
 )
-from .geoip import ProxyGeo, lookup_direct_geo, lookup_proxy_geo
+from .geoip import (
+    GeoTarget,
+    ProxyGeo,
+    geo_targets,
+    lookup_direct_geo,
+    lookup_proxy_geo,
+    parse_geo_body,
+)
 from .kernel import (
     ANDROID_MIN_KERNEL_VERSION,
     KERNEL_MANIFEST_URL,
@@ -415,6 +422,9 @@ __all__ = [
     "ProxySpec",
     "parse_proxy",
     "ProxyGeo",
+    "GeoTarget",
+    "geo_targets",
+    "parse_geo_body",
     "lookup_direct_geo",
     "lookup_proxy_geo",
     # recipes

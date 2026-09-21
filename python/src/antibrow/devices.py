@@ -1,4 +1,4 @@
-"""Client for the Captured-machine fingerprint library."""
+"""Client for the Real-device fingerprint library."""
 
 from __future__ import annotations
 

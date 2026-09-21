@@ -211,6 +211,9 @@ class Persona:
     #: A real device's WebGL report, replayed verbatim so the GL facts stay
     #: anchored to one machine. Absent for personas generated here.
     captured_webgl: Optional[Dict[str, Any]] = None
+    #: The same machine's ``navigator.gpu`` adapter. Absent when the capture
+    #: resolved no adapter, or for personas generated here.
+    captured_webgpu: Optional[Dict[str, Any]] = None
     #: Absent means desktop, so existing profiles keep their current behaviour.
     device_type: Optional[DeviceType] = None
     android_model: Optional[str] = None
@@ -222,6 +225,8 @@ class Persona:
         out = {json_key: getattr(self, attr) for attr, json_key in _JSON_KEYS}
         if self.captured_webgl:
             out["capturedWebgl"] = self.captured_webgl
+        if self.captured_webgpu:
+            out["capturedWebgpu"] = self.captured_webgpu
         if self.device_type is not None:
             out["deviceType"] = self.device_type
         if self.android_model is not None:
@@ -241,6 +246,9 @@ class Persona:
         captured_webgl = data.get("capturedWebgl")
         if isinstance(captured_webgl, dict):
             kwargs["captured_webgl"] = captured_webgl
+        captured_webgpu = data.get("capturedWebgpu")
+        if isinstance(captured_webgpu, dict):
+            kwargs["captured_webgpu"] = captured_webgpu
         if "deviceType" in data:
             kwargs["device_type"] = data["deviceType"]
         if "androidModel" in data:
@@ -408,6 +416,7 @@ def device_to_persona_parts(
         "gpu_renderer": webgl_in.get("unmaskedRenderer"),
         "captured": captured,
         "captured_webgl": webgl if webgl else None,
+        "captured_webgpu": device.get("webgpu"),
     }
 
 
@@ -580,7 +589,7 @@ def captured_webgl_config(captured: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return out
 
 
-def webgpu_identity(renderer: str) -> Tuple[str, str]:
+def webgpu_identity(renderer: str, vendor: str = "") -> Tuple[str, str]:
     """``(vendor, architecture)`` for ``navigator.gpu``, derived from the WebGL renderer.
 
     The kernel rewrites ``adapter.info`` with these so WebGPU names the same GPU
@@ -606,7 +615,241 @@ def webgpu_identity(renderer: str) -> Tuple[str, str]:
         if "uhd" in r or "hd graphics" in r:
             return ("intel", "gen-9")  # UHD/HD 6xx = Skylake..Coffee Lake
         return ("intel", "gen-12lp")  # modern Intel fallback
+    # Mobile. Every Android renderer used to fall through to "keep the real
+    # values", which on a desktop host published that machine's card next to a
+    # WebGL surface claiming Adreno. Dawn reports no architecture for these
+    # parts, so only the vendor ships. The ANGLE vendor token is read before the
+    # model because sanitize_persona_gpu rewrites a blocked token (Imagination
+    # -> ARM) and leaves the model alone.
+    token = _angle_vendor_token(vendor)
+    for needle, name, *_models in MOBILE_WEBGPU_VENDORS:
+        if needle in token:
+            return (name, "")
+    for _needle, name, *models in MOBILE_WEBGPU_VENDORS:
+        if any(m in r for m in models):
+            return (name, "")
     return ("", "")
+
+
+#: ``(vendor token, Dawn vendor name, *renderer models)``; first match wins.
+MOBILE_WEBGPU_VENDORS: Tuple[Tuple[str, ...], ...] = (
+    ("qualcomm", "qualcomm", "adreno"),
+    ("imagination", "img-tec", "powervr"),
+    ("samsung", "samsung", "xclipse"),
+    ("arm", "arm", "mali", "immortalis"),
+)
+
+
+def _angle_vendor_token(vendor: str) -> str:
+    """ANGLE hides the real vendor inside the parens: ``Google Inc. (Qualcomm)``."""
+    inner = re.search(r"\(([^)]+)\)", vendor)
+    return (inner.group(1) if inner else vendor).lower()
+
+
+#: Real adapters for the cards ``_generate_desktop_persona`` rolls, from the
+#: same capture corpus as ``windows_webgl_config``. Every Windows machine in it
+#: reported the identical limit table - D3D12 exposes one tier - so only the
+#: parts that do differ are held per card.
+WINDOWS_WEBGPU_LIMITS: Dict[str, int] = {
+    "maxBindGroups": 4,
+    "maxBindGroupsPlusVertexBuffers": 24,
+    "maxBindingsPerBindGroup": 1000,
+    "maxBufferSize": 2147483648,
+    "maxColorAttachmentBytesPerSample": 128,
+    "maxColorAttachments": 8,
+    "maxComputeInvocationsPerWorkgroup": 1024,
+    "maxComputeWorkgroupSizeX": 1024,
+    "maxComputeWorkgroupSizeY": 1024,
+    "maxComputeWorkgroupSizeZ": 64,
+    "maxComputeWorkgroupStorageSize": 32768,
+    "maxComputeWorkgroupsPerDimension": 65535,
+    "maxDynamicStorageBuffersPerPipelineLayout": 8,
+    "maxDynamicUniformBuffersPerPipelineLayout": 10,
+    "maxImmediateSize": 64,
+    "maxInterStageShaderVariables": 28,
+    "maxSampledTexturesPerShaderStage": 48,
+    "maxSamplersPerShaderStage": 16,
+    "maxStorageBufferBindingSize": 2147483644,
+    "maxStorageBuffersInFragmentStage": 16,
+    "maxStorageBuffersInVertexStage": 16,
+    "maxStorageBuffersPerShaderStage": 16,
+    "maxStorageTexturesInFragmentStage": 8,
+    "maxStorageTexturesInVertexStage": 8,
+    "maxStorageTexturesPerShaderStage": 8,
+    "maxTextureArrayLayers": 2048,
+    "maxTextureDimension1D": 16384,
+    "maxTextureDimension2D": 16384,
+    "maxTextureDimension3D": 2048,
+    "maxUniformBufferBindingSize": 65536,
+    "maxUniformBuffersPerShaderStage": 12,
+    "maxVertexAttributes": 30,
+    "maxVertexBufferArrayStride": 2048,
+    "maxVertexBuffers": 8,
+    "minStorageBufferOffsetAlignment": 256,
+    "minUniformBufferOffsetAlignment": 256,
+}
+
+DESKTOP_WEBGPU: Tuple[Tuple[str, Dict[str, Any]], ...] = (
+    (
+        "UHD Graphics 620",
+        {
+            "architecture": "gen-9",
+            "subgroupMinSize": 16,
+            "subgroupMaxSize": 16,
+            "features": [
+            "bgra8unorm-storage",
+            "clip-distances",
+            "core-features-and-limits",
+            "depth-clip-control",
+            "depth32float-stencil8",
+            "dual-source-blending",
+            "float32-blendable",
+            "float32-filterable",
+            "indirect-first-instance",
+            "primitive-index",
+            "rg11b10ufloat-renderable",
+            "shader-f16",
+            "texture-component-swizzle",
+            "texture-compression-bc",
+            "texture-compression-bc-sliced-3d",
+            "texture-formats-tier1",
+            "texture-formats-tier2",
+            "timestamp-query",
+            ],
+        },
+    ),
+    (
+        "Iris(R) Xe",
+        {
+            "architecture": "gen-12lp",
+            "subgroupMinSize": 8,
+            "subgroupMaxSize": 16,
+            "features": [
+            "bgra8unorm-storage",
+            "clip-distances",
+            "core-features-and-limits",
+            "depth-clip-control",
+            "depth32float-stencil8",
+            "dual-source-blending",
+            "float32-blendable",
+            "float32-filterable",
+            "indirect-first-instance",
+            "primitive-index",
+            "rg11b10ufloat-renderable",
+            "shader-f16",
+            "subgroups",
+            "texture-component-swizzle",
+            "texture-compression-bc",
+            "texture-compression-bc-sliced-3d",
+            "texture-formats-tier1",
+            "texture-formats-tier2",
+            "timestamp-query",
+            ],
+        },
+    ),
+    (
+        "RTX 3060",
+        {
+            "architecture": "ampere",
+            "subgroupMinSize": 32,
+            "subgroupMaxSize": 128,
+            "features": [
+            "bgra8unorm-storage",
+            "clip-distances",
+            "core-features-and-limits",
+            "depth-clip-control",
+            "depth32float-stencil8",
+            "dual-source-blending",
+            "float32-blendable",
+            "float32-filterable",
+            "indirect-first-instance",
+            "primitive-index",
+            "rg11b10ufloat-renderable",
+            "shader-f16",
+            "subgroups",
+            "texture-component-swizzle",
+            "texture-compression-bc",
+            "texture-compression-bc-sliced-3d",
+            "texture-formats-tier1",
+            "texture-formats-tier2",
+            "timestamp-query",
+            ],
+        },
+    ),
+    (
+        "GTX 1650",
+        {
+            "architecture": "turing",
+            "subgroupMinSize": 32,
+            "subgroupMaxSize": 32,
+            "features": [
+            "bgra8unorm-storage",
+            "clip-distances",
+            "core-features-and-limits",
+            "depth-clip-control",
+            "depth32float-stencil8",
+            "dual-source-blending",
+            "float32-blendable",
+            "float32-filterable",
+            "indirect-first-instance",
+            "primitive-index",
+            "rg11b10ufloat-renderable",
+            "shader-f16",
+            "subgroups",
+            "texture-component-swizzle",
+            "texture-compression-bc",
+            "texture-compression-bc-sliced-3d",
+            "texture-formats-tier1",
+            "texture-formats-tier2",
+            "timestamp-query",
+            ],
+        },
+    ),
+    (
+        "AMD Radeon(TM) Graphics",
+        {
+            "architecture": "gcn-5",
+            "subgroupMinSize": 64,
+            "subgroupMaxSize": 64,
+            "features": [
+            "bgra8unorm-storage",
+            "clip-distances",
+            "core-features-and-limits",
+            "depth-clip-control",
+            "depth32float-stencil8",
+            "dual-source-blending",
+            "float32-blendable",
+            "float32-filterable",
+            "indirect-first-instance",
+            "primitive-index",
+            "rg11b10ufloat-renderable",
+            "shader-f16",
+            "subgroups",
+            "texture-component-swizzle",
+            "texture-compression-bc",
+            "texture-compression-bc-sliced-3d",
+            "texture-formats-tier1",
+            "texture-formats-tier2",
+            "timestamp-query",
+            ],
+        },
+    ),
+)
+
+
+def webgpu_config(persona: "Persona") -> Dict[str, Any]:
+    """The adapter to publish: the captured one, this card's real one, or - for
+    a GPU we have no measurements of - the name alone, as before."""
+    captured = persona.captured_webgpu
+    if captured and captured.get("vendor") and captured.get("limits"):
+        return dict(captured)
+    vendor, architecture = webgpu_identity(persona.gpu_renderer, persona.gpu_vendor)
+    if not vendor:
+        return {}
+    for needle, facts in DESKTOP_WEBGPU:
+        if needle in persona.gpu_renderer:
+            return {"vendor": vendor, **facts, "limits": WINDOWS_WEBGPU_LIMITS}
+    return {"vendor": vendor, "architecture": architecture}
 
 
 #: Chromium's http-RTT cut-offs for navigator.connection.effectiveType, copied
@@ -888,10 +1131,7 @@ def persona_to_fp_config(
     color_scheme = "light" if seed_sum % 10 < 7 else "dark"
 
     # ``{}`` means unknown vendor: leave navigator.gpu alone.
-    gpu_vendor, gpu_arch = webgpu_identity(persona.gpu_renderer)
-    webgpu: Dict[str, Any] = (
-        {"vendor": gpu_vendor, "architecture": gpu_arch} if gpu_vendor else {}
-    )
+    webgpu = webgpu_config(persona)
 
     webgl: Dict[str, Any] = {
         "unmaskedVendor": persona.gpu_vendor,

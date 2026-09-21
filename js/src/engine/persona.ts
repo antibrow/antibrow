@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { ANDROID_FALLBACK_DEVICES } from './android-devices'
+import type { WebgpuFacts } from './devices'
 import type { RealDevice } from './devices'
 import { normalizeKernelVersion } from './downloader'
 
@@ -95,6 +96,7 @@ export interface Persona {
    * from the GPU strings alone.
    */
   capturedWebgl?: Record<string, unknown>
+  capturedWebgpu?: WebgpuFacts
   /** Absent means desktop, so existing profiles keep their current behaviour. */
   deviceType?: DeviceType
   androidModel?: string
@@ -181,6 +183,7 @@ export function deviceToPersonaParts(
     gpuRenderer: device.webgl.unmaskedRenderer,
     captured,
     capturedWebgl: Object.keys(webgl).length > 0 ? webgl : undefined,
+    capturedWebgpu: device.webgpu,
   } as Partial<Persona>
 }
 
@@ -369,7 +372,7 @@ function windowsWebglConfig(gpuVendor: string): Record<string, unknown> {
  * same GPU the WebGL unmasked strings do: a cross-API mismatch is exactly what
  * fingerprint scanners look for. An empty vendor means "leave it alone".
  */
-function webgpuIdentity(renderer: string): { vendor: string; architecture: string } {
+function webgpuIdentity(renderer: string, vendor = ''): { vendor: string; architecture: string } {
   const r = renderer.toLowerCase()
   if (r.includes('nvidia')) return { vendor: 'nvidia', architecture: '' }
   if (r.includes('amd') || r.includes('radeon')) return { vendor: 'amd', architecture: 'rdna-3' }
@@ -381,7 +384,122 @@ function webgpuIdentity(renderer: string): { vendor: string; architecture: strin
     else architecture = 'gen-12lp'
     return { vendor: 'intel', architecture }
   }
+  // Mobile. Every Android renderer used to fall through to "keep the real
+  // values", which on a desktop host published that machine's card next to a
+  // WebGL surface claiming Adreno - a one-line cross-API contradiction. Dawn
+  // reports no architecture for these parts, so only the vendor ships.
+  // The ANGLE vendor token is read before the model because sanitizePersonaGpu
+  // rewrites a blocked token (Imagination -> ARM) and leaves the model alone.
+  const token = angleVendorToken(vendor)
+  const mobile = MOBILE_WEBGPU_VENDORS.find(([needle]) => token.includes(needle))
+    ?? MOBILE_WEBGPU_VENDORS.find(([, , ...models]) => models.some((m) => r.includes(m)))
+  if (mobile) return { vendor: mobile[1], architecture: '' }
   return { vendor: '', architecture: '' }
+}
+
+/** [vendor token, Dawn vendor name, ...renderer models]. Order matters: the
+ *  first match wins, and "arm" is a substring of nothing else here. */
+const MOBILE_WEBGPU_VENDORS: readonly (readonly [string, string, ...string[]])[] = [
+  ['qualcomm', 'qualcomm', 'adreno'],
+  ['imagination', 'img-tec', 'powervr'],
+  ['samsung', 'samsung', 'xclipse'],
+  ['arm', 'arm', 'mali', 'immortalis'],
+]
+
+/**
+ * Real adapters for the cards generateDesktopPersona rolls, from the same
+ * capture corpus as windowsWebglConfig. Every Windows machine in it reported
+ * the identical limit table - D3D12 exposes one tier - so only the parts that
+ * do differ are held per card.
+ */
+const WINDOWS_WEBGPU_LIMITS: Readonly<Record<string, number>> = {
+  maxBindGroups: 4,
+  maxBindGroupsPlusVertexBuffers: 24,
+  maxBindingsPerBindGroup: 1000,
+  maxBufferSize: 2147483648,
+  maxColorAttachmentBytesPerSample: 128,
+  maxColorAttachments: 8,
+  maxComputeInvocationsPerWorkgroup: 1024,
+  maxComputeWorkgroupSizeX: 1024,
+  maxComputeWorkgroupSizeY: 1024,
+  maxComputeWorkgroupSizeZ: 64,
+  maxComputeWorkgroupStorageSize: 32768,
+  maxComputeWorkgroupsPerDimension: 65535,
+  maxDynamicStorageBuffersPerPipelineLayout: 8,
+  maxDynamicUniformBuffersPerPipelineLayout: 10,
+  maxImmediateSize: 64,
+  maxInterStageShaderVariables: 28,
+  maxSampledTexturesPerShaderStage: 48,
+  maxSamplersPerShaderStage: 16,
+  maxStorageBufferBindingSize: 2147483644,
+  maxStorageBuffersInFragmentStage: 16,
+  maxStorageBuffersInVertexStage: 16,
+  maxStorageBuffersPerShaderStage: 16,
+  maxStorageTexturesInFragmentStage: 8,
+  maxStorageTexturesInVertexStage: 8,
+  maxStorageTexturesPerShaderStage: 8,
+  maxTextureArrayLayers: 2048,
+  maxTextureDimension1D: 16384,
+  maxTextureDimension2D: 16384,
+  maxTextureDimension3D: 2048,
+  maxUniformBufferBindingSize: 65536,
+  maxUniformBuffersPerShaderStage: 12,
+  maxVertexAttributes: 30,
+  maxVertexBufferArrayStride: 2048,
+  maxVertexBuffers: 8,
+  minStorageBufferOffsetAlignment: 256,
+  minUniformBufferOffsetAlignment: 256,
+}
+
+const DESKTOP_WEBGPU: readonly (readonly [string, WebgpuFacts])[] = [
+  ['UHD Graphics 620', {
+    architecture: 'gen-9',
+    subgroupMinSize: 16,
+    subgroupMaxSize: 16,
+    features: ['bgra8unorm-storage', 'clip-distances', 'core-features-and-limits', 'depth-clip-control', 'depth32float-stencil8', 'dual-source-blending', 'float32-blendable', 'float32-filterable', 'indirect-first-instance', 'primitive-index', 'rg11b10ufloat-renderable', 'shader-f16', 'texture-component-swizzle', 'texture-compression-bc', 'texture-compression-bc-sliced-3d', 'texture-formats-tier1', 'texture-formats-tier2', 'timestamp-query'],
+  }],
+  ['Iris(R) Xe', {
+    architecture: 'gen-12lp',
+    subgroupMinSize: 8,
+    subgroupMaxSize: 16,
+    features: ['bgra8unorm-storage', 'clip-distances', 'core-features-and-limits', 'depth-clip-control', 'depth32float-stencil8', 'dual-source-blending', 'float32-blendable', 'float32-filterable', 'indirect-first-instance', 'primitive-index', 'rg11b10ufloat-renderable', 'shader-f16', 'subgroups', 'texture-component-swizzle', 'texture-compression-bc', 'texture-compression-bc-sliced-3d', 'texture-formats-tier1', 'texture-formats-tier2', 'timestamp-query'],
+  }],
+  ['RTX 3060', {
+    architecture: 'ampere',
+    subgroupMinSize: 32,
+    subgroupMaxSize: 128,
+    features: ['bgra8unorm-storage', 'clip-distances', 'core-features-and-limits', 'depth-clip-control', 'depth32float-stencil8', 'dual-source-blending', 'float32-blendable', 'float32-filterable', 'indirect-first-instance', 'primitive-index', 'rg11b10ufloat-renderable', 'shader-f16', 'subgroups', 'texture-component-swizzle', 'texture-compression-bc', 'texture-compression-bc-sliced-3d', 'texture-formats-tier1', 'texture-formats-tier2', 'timestamp-query'],
+  }],
+  ['GTX 1650', {
+    architecture: 'turing',
+    subgroupMinSize: 32,
+    subgroupMaxSize: 32,
+    features: ['bgra8unorm-storage', 'clip-distances', 'core-features-and-limits', 'depth-clip-control', 'depth32float-stencil8', 'dual-source-blending', 'float32-blendable', 'float32-filterable', 'indirect-first-instance', 'primitive-index', 'rg11b10ufloat-renderable', 'shader-f16', 'subgroups', 'texture-component-swizzle', 'texture-compression-bc', 'texture-compression-bc-sliced-3d', 'texture-formats-tier1', 'texture-formats-tier2', 'timestamp-query'],
+  }],
+  ['AMD Radeon(TM) Graphics', {
+    architecture: 'gcn-5',
+    subgroupMinSize: 64,
+    subgroupMaxSize: 64,
+    features: ['bgra8unorm-storage', 'clip-distances', 'core-features-and-limits', 'depth-clip-control', 'depth32float-stencil8', 'dual-source-blending', 'float32-blendable', 'float32-filterable', 'indirect-first-instance', 'primitive-index', 'rg11b10ufloat-renderable', 'shader-f16', 'subgroups', 'texture-component-swizzle', 'texture-compression-bc', 'texture-compression-bc-sliced-3d', 'texture-formats-tier1', 'texture-formats-tier2', 'timestamp-query'],
+  }],
+]
+
+/** The adapter to publish: the captured one, this card's real one, or - for a
+ *  GPU we have no measurements of - the name alone, as before. */
+function webgpuConfig(persona: Persona): Record<string, unknown> {
+  const captured = persona.capturedWebgpu
+  if (captured?.vendor && captured.limits) return { ...captured }
+  const id = webgpuIdentity(persona.gpuRenderer, persona.gpuVendor)
+  if (!id.vendor) return {}
+  const card = DESKTOP_WEBGPU.find(([needle]) => persona.gpuRenderer.includes(needle))
+  if (!card) return { vendor: id.vendor, architecture: id.architecture }
+  return { vendor: id.vendor, ...card[1], limits: WINDOWS_WEBGPU_LIMITS }
+}
+
+/** ANGLE hides the real vendor inside the parens: "Google Inc. (Qualcomm)". */
+function angleVendorToken(vendor: string): string {
+  const inner = /\(([^)]+)\)/.exec(vendor)
+  return (inner ? inner[1] : vendor).toLowerCase()
 }
 
 /**
@@ -662,8 +780,7 @@ export function personaToFpConfig(
     webgl.mode = 'off'
     canvas.mode = 'off'
   }
-  const gpu = webgpuIdentity(persona.gpuRenderer)
-  const webgpu = gpu.vendor ? { vendor: gpu.vendor, architecture: gpu.architecture } : {}
+  const webgpu = webgpuConfig(persona)
   const apiLog = opts.apiLog ?? 'off'
   const navPlatform = android ? 'Linux armv81' : 'Win32'
   const maxTouchPoints = android ? 5 : 0

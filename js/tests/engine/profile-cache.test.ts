@@ -590,16 +590,18 @@ describe('importProfileArchive - launcher format (.fpprofile)', () => {
     const webgpuFor = (gpuRenderer: string) =>
       personaToFpConfig({ ...persona, gpuRenderer }, { label: 'x', timezone: 'UTC' }).webgpu
 
-    // The launcher's `webgpu_identity` mapping, so navigator.gpu names the same
-    // GPU as WebGL instead of leaking the real adapter.
+    // navigator.gpu names the same GPU as WebGL instead of leaking the real
+    // adapter. The cards we roll carry the architecture their real counterparts
+    // report; only a GPU absent from the corpus falls back to a derived name.
     expect(webgpuFor('ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11-31.0.15.3699)'))
-      .toEqual({ vendor: 'nvidia', architecture: '' }) // NVIDIA on D3D reports no architecture
+      .toMatchObject({ vendor: 'nvidia', architecture: 'ampere' })
     expect(webgpuFor('ANGLE (AMD, AMD Radeon(TM) Graphics Direct3D11 vs_5_0 ps_5_0, D3D11-31.0.12027.9001)'))
-      .toEqual({ vendor: 'amd', architecture: 'rdna-3' })
+      .toMatchObject({ vendor: 'amd', architecture: 'gcn-5' })
     expect(webgpuFor('ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11-31.0.101.4577)'))
-      .toEqual({ vendor: 'intel', architecture: 'gen-12lp' })
+      .toMatchObject({ vendor: 'intel', architecture: 'gen-12lp' })
     expect(webgpuFor('ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11-27.20.100.9316)'))
-      .toEqual({ vendor: 'intel', architecture: 'gen-9' })
+      .toMatchObject({ vendor: 'intel', architecture: 'gen-9' })
+    // Not a card we roll, so nothing was measured for it: name only.
     expect(webgpuFor('ANGLE (Intel, Intel(R) Arc(TM) A770 Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)'))
       .toEqual({ vendor: 'intel', architecture: 'xe-lpg' })
     // Unknown vendor: say nothing rather than guess — the kernel keeps the real values.
@@ -609,6 +611,57 @@ describe('importProfileArchive - launcher format (.fpprofile)', () => {
     // of ours would ship the mismatch this field exists to prevent.
     for (let i = 0; i < 40; i++) {
       expect(personaToFpConfig(generatePersona(150, '150.0.0.0'), { label: 'x', timezone: 'UTC' }).webgpu)
+        .not.toEqual({})
+    }
+  })
+
+  it('replays the whole WebGPU adapter, not just its name', () => {
+    const cfg = (persona: Persona) => personaToFpConfig(persona, { label: 'x', timezone: 'UTC' }).webgpu as Record<string, unknown>
+
+    // vendor alone left adapter.limits and adapter.features answering for the
+    // host GPU, which is the same cross-API tell the vendor spoof exists to close.
+    for (let i = 0; i < 40; i++) {
+      const desktop = cfg(generatePersona(153, '153'))
+      expect(Object.keys(desktop.limits as object)).toHaveLength(36)
+      expect(desktop.features as string[]).toContain('texture-compression-bc')
+      expect(desktop.subgroupMinSize).toBeTypeOf('number')
+      // Real machines report an architecture for these cards; '' was our guess.
+      expect(desktop.architecture).toBeTruthy()
+    }
+
+    const android = cfg(generatePersona(153, '153', { deviceType: 'android' }))
+    expect(Object.keys(android.limits as object)).toHaveLength(36)
+    expect(['qualcomm', 'arm']).toContain(android.vendor)
+    expect(android.architecture).toMatch(/adreno|valhall|bifrost|midgard/)
+
+    // An unknown card still says nothing rather than inventing a limit table.
+    expect(cfg({ ...generatePersona(153, '153'), gpuVendor: 'X', gpuRenderer: 'SwiftShader' })).toEqual({})
+  })
+
+  it('names the mobile GPU on Android instead of leaving the host adapter exposed', () => {
+    const webgpuFor = (gpuVendor: string, gpuRenderer: string) =>
+      personaToFpConfig(
+        { ...generatePersona(153, '153'), gpuVendor, gpuRenderer },
+        { label: 'x', timezone: 'UTC' },
+      ).webgpu
+
+    // An empty pair means "keep the real adapter", so a mobile renderer that
+    // fell through used to publish the host's desktop card beside a WebGL
+    // surface claiming Adreno. Dawn reports no architecture for these, and a
+    // capture cannot supply one, so only the vendor ships.
+    expect(webgpuFor('Google Inc. (Qualcomm)', 'ANGLE (Qualcomm, Adreno (TM) 830, OpenGL ES 3.2)'))
+      .toEqual({ vendor: 'qualcomm', architecture: '' })
+    expect(webgpuFor('Google Inc. (ARM)', 'ANGLE (ARM, Mali-G52 MC2, OpenGL ES 3.2)'))
+      .toEqual({ vendor: 'arm', architecture: '' })
+    expect(webgpuFor('Google Inc. (Samsung Electronics Co., Ltd.)', 'ANGLE (Samsung Electronics Co., Ltd., Samsung Xclipse 920, OpenGL ES 3.2)'))
+      .toEqual({ vendor: 'samsung', architecture: '' })
+    // sanitizePersonaGpu rewrites the blocked Imagination token to ARM and
+    // keeps the PowerVR model, so the ANGLE vendor token wins over the model.
+    expect(webgpuFor('Google Inc. (ARM)', 'ANGLE (ARM, PowerVR Rogue GE8320, OpenGL ES 3.2)'))
+      .toEqual({ vendor: 'arm', architecture: '' })
+
+    for (let i = 0; i < 40; i++) {
+      expect(personaToFpConfig(generatePersona(153, '153', { deviceType: 'android' }), { label: 'x', timezone: 'UTC' }).webgpu)
         .not.toEqual({})
     }
   })

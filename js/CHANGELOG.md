@@ -4,6 +4,44 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.31.0] - 2026-09-21
+
+### Fixed
+
+- `navigator.gpu` answered for the host machine's GPU whenever WebGL named one
+  the SDK had no mapping for, which was every Android profile. Qualcomm, ARM,
+  Imagination and Samsung parts are spoofed now too. No action needed; existing
+  profiles pick it up on their next launch.
+
+### Added
+
+- The adapter's full surface - features, the 36 limits and the subgroup sizes -
+  is reported, not just its vendor name. Real-device profiles replay their own
+  capture; generated ones use a measured baseline. Needs a kernel built
+  2026-09-20 or later; older ones ignore the new fields.
+
+### Changed
+
+- The cards the SDK generates now report the WebGPU architecture their real
+  counterparts do (`ampere`, `gcn-5`, ...) rather than an empty or guessed one.
+
+## [2.30.0] - 2026-09-17
+
+### Changed
+
+- The pre-launch exit-IP lookup now asks `https://<server>/api/v1/geo` first and
+  only falls back to the previous third-party endpoint if that fails, so the
+  request rides HTTPS instead of clear-text HTTP. Point it elsewhere with
+  `ANTIBROW_GEO_SERVER`, or per call with the new `serverUrl` argument on
+  `lookupProxyGeo` / `lookupDirectGeo` and `ProbeOptions.serverUrl` on
+  `probeProxyExit`. Keyed `relay://` proxies keep using the plaintext endpoint:
+  their tunnel cannot carry an HTTPS target.
+
+### Added
+
+- `geoTargets()`, `parseGeoBody()` and the `GeoTarget` / `ProbeOptions` types are
+  exported for callers that need to resolve or stub the lookup themselves.
+
 ## [2.29.0] - 2026-09-11
 
 ### Added

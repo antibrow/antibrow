@@ -58,7 +58,7 @@ def test_fetch_real_device_surfaces_the_plan_error(monkeypatch):
     # not a string. Mocking a bare string here is what let the real 403 message
     # reach the user as a bare "HTTP 403".
     body = {"error": {"code": "FORBIDDEN",
-                      "message": "The Captured-machine fingerprint library requires a paid plan."}}
+                      "message": "The Real-device fingerprint library requires a paid plan."}}
 
     def fake_urlopen(req, timeout=None):
         raise urllib.error.HTTPError(

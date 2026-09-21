@@ -11,7 +11,14 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const MODELS = ['SM-S918U', 'moto g05', 'SM-S936U']
+// Pinned by model *and* screen: several captures of the same phone differ only
+// by the browser's display-size setting, and picking whichever the corpus lists
+// first would silently swap the machine every free-tier profile is built on.
+const MODELS = [
+  { model: 'SM-S918U', width: 384, height: 824 },
+  { model: 'moto g05', width: 412, height: 917 },
+  { model: 'SM-S936U', width: 320, height: 694 },
+]
 
 const src = process.argv[2]
 if (!src) {
@@ -20,9 +27,14 @@ if (!src) {
 }
 
 const corpus = JSON.parse(fs.readFileSync(src, 'utf8'))
-const picked = MODELS.map((model) => {
-  const row = corpus.devices.find((d) => d.os === 'android' && d.model === model)
-  if (!row) throw new Error(`corpus is missing ${model}`)
+const picked = MODELS.map(({ model, width, height }) => {
+  const rows = corpus.devices.filter(
+    (d) => d.os === 'android' && d.model === model && d.screen.width === width && d.screen.height === height,
+  )
+  // A row whose capture resolved no WebGPU adapter would leave the profile's
+  // navigator.gpu answering for the host machine.
+  const row = rows.find((d) => d.webgpu) ?? rows[0]
+  if (!row) throw new Error(`corpus is missing ${model} ${width}x${height}`)
   const { weight, ...device } = row
   return device
 })

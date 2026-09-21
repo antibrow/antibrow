@@ -10,17 +10,52 @@ import type { RealDevice } from './devices'
 
 export const ANDROID_FALLBACK_DEVICES: readonly RealDevice[] = [
   {
+    "os": "android",
+    "ua": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Mobile Safari/537.36",
+    "model": "SM-S918U",
+    "osMajor": 10,
+    "navigator": {
+      "platform": "Linux armv81",
+      "vendor": "Google Inc.",
+      "hardwareConcurrency": 8,
+      "deviceMemory": 8,
+      "maxTouchPoints": 5,
+      "uaData": {
+        "platform": "Android",
+        "platformVersion": "16.0.0",
+        "architecture": "",
+        "bitness": "",
+        "model": "SM-S918U",
+        "mobile": true,
+        "formFactors": [
+          "Mobile"
+        ]
+      }
+    },
+    "screen": {
+      "width": 384,
+      "height": 824,
+      "availWidth": 384,
+      "availHeight": 743,
+      "colorDepth": 24,
+      "devicePixelRatio": 1.875,
+      "isExtended": false,
+      "orientation": {
+        "angle": 0,
+        "type": "portrait-primary"
+      }
+    },
     "audio": {
-      "maxChannelCount": 1,
-      "sampleRate": 44100
+      "sampleRate": 44100,
+      "maxChannelCount": 1
     },
     "connection": {
-      "downlink": 10,
-      "downlinkMax": null,
       "effectiveType": "4g",
       "rtt": 50,
-      "saveData": false,
-      "type": "wifi"
+      "downlink": 10,
+      "type": "wifi",
+      "downlinkMax": null,
+      "saveData": false
     },
     "fonts": [
       "Arial",
@@ -34,42 +69,95 @@ export const ANDROID_FALLBACK_DEVICES: readonly RealDevice[] = [
       "Times New Roman",
       "Verdana"
     ],
-    "model": "SM-S918U",
-    "navigator": {
-      "deviceMemory": 8,
-      "hardwareConcurrency": 8,
-      "maxTouchPoints": 5,
-      "platform": "Linux armv81",
-      "uaData": {
-        "architecture": "",
-        "bitness": "",
-        "formFactors": [
-          "Mobile"
-        ],
-        "mobile": true,
-        "model": "SM-S918U",
-        "platform": "Android",
-        "platformVersion": "16.0.0"
-      },
-      "vendor": "Google Inc."
-    },
-    "os": "android",
-    "osMajor": 10,
-    "screen": {
-      "availHeight": 743,
-      "availWidth": 384,
-      "colorDepth": 24,
-      "devicePixelRatio": 1.875,
-      "height": 824,
-      "isExtended": false,
-      "orientation": {
-        "angle": 0,
-        "type": "portrait-primary"
-      },
-      "width": 384
-    },
-    "ua": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Mobile Safari/537.36",
     "webgl": {
+      "unmaskedVendor": "Google Inc. (Qualcomm)",
+      "unmaskedRenderer": "ANGLE (Qualcomm, Adreno (TM) 740, OpenGL ES 3.2)",
+      "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
+      "shadingLanguageVersion": "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)",
+      "version2": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+      "shadingLanguageVersion2": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
+      "params": {
+        "3379": 8192,
+        "3408": 4,
+        "3410": 8,
+        "3411": 8,
+        "3412": 8,
+        "3413": 8,
+        "3414": 24,
+        "3415": 0,
+        "34024": 16384,
+        "34047": 16,
+        "34076": 8192,
+        "34921": 16,
+        "34930": 16,
+        "35660": 16,
+        "35661": 48,
+        "36347": 256,
+        "36348": 31,
+        "36349": 256
+      },
+      "shaderPrecision": {
+        "35633-36336": [
+          127,
+          127,
+          23
+        ],
+        "35633-36337": [
+          127,
+          127,
+          23
+        ],
+        "35633-36338": [
+          127,
+          127,
+          23
+        ],
+        "35633-36339": [
+          31,
+          31,
+          0
+        ],
+        "35633-36340": [
+          31,
+          31,
+          0
+        ],
+        "35633-36341": [
+          31,
+          31,
+          0
+        ],
+        "35632-36336": [
+          15,
+          15,
+          10
+        ],
+        "35632-36337": [
+          15,
+          15,
+          10
+        ],
+        "35632-36338": [
+          127,
+          127,
+          23
+        ],
+        "35632-36339": [
+          15,
+          15,
+          0
+        ],
+        "35632-36340": [
+          15,
+          15,
+          0
+        ],
+        "35632-36341": [
+          31,
+          31,
+          0
+        ]
+      },
       "extensions": [
         "ANGLE_instanced_arrays",
         "EXT_blend_minmax",
@@ -103,109 +191,122 @@ export const ANDROID_FALLBACK_DEVICES: readonly RealDevice[] = [
         "WEBGL_depth_texture",
         "WEBGL_lose_context",
         "WEBGL_multi_draw"
+      ]
+    },
+    "webgpu": {
+      "vendor": "qualcomm",
+      "architecture": "adreno-7xx",
+      "subgroupMinSize": 64,
+      "subgroupMaxSize": 128,
+      "features": [
+        "clip-distances",
+        "core-features-and-limits",
+        "depth-clip-control",
+        "depth32float-stencil8",
+        "dual-source-blending",
+        "float32-blendable",
+        "indirect-first-instance",
+        "primitive-index",
+        "rg11b10ufloat-renderable",
+        "shader-f16",
+        "subgroups",
+        "texture-component-swizzle",
+        "texture-compression-astc",
+        "texture-compression-astc-sliced-3d",
+        "texture-compression-bc",
+        "texture-compression-bc-sliced-3d",
+        "texture-compression-etc2",
+        "texture-formats-tier1",
+        "texture-formats-tier2",
+        "timestamp-query"
       ],
-      "params": {
-        "3379": 8192,
-        "3408": 4,
-        "3410": 8,
-        "3411": 8,
-        "3412": 8,
-        "3413": 8,
-        "3414": 24,
-        "3415": 0,
-        "34024": 16384,
-        "34047": 16,
-        "34076": 8192,
-        "34921": 16,
-        "34930": 16,
-        "35660": 16,
-        "35661": 48,
-        "36347": 256,
-        "36348": 31,
-        "36349": 256
-      },
-      "shaderPrecision": {
-        "35632-36336": [
-          15,
-          15,
-          10
-        ],
-        "35632-36337": [
-          15,
-          15,
-          10
-        ],
-        "35632-36338": [
-          127,
-          127,
-          23
-        ],
-        "35632-36339": [
-          15,
-          15,
-          0
-        ],
-        "35632-36340": [
-          15,
-          15,
-          0
-        ],
-        "35632-36341": [
-          31,
-          31,
-          0
-        ],
-        "35633-36336": [
-          127,
-          127,
-          23
-        ],
-        "35633-36337": [
-          127,
-          127,
-          23
-        ],
-        "35633-36338": [
-          127,
-          127,
-          23
-        ],
-        "35633-36339": [
-          31,
-          31,
-          0
-        ],
-        "35633-36340": [
-          31,
-          31,
-          0
-        ],
-        "35633-36341": [
-          31,
-          31,
-          0
-        ]
-      },
-      "shadingLanguageVersion": "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)",
-      "shadingLanguageVersion2": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
-      "unmaskedRenderer": "ANGLE (Qualcomm, Adreno (TM) 740, OpenGL ES 3.2)",
-      "unmaskedVendor": "Google Inc. (Qualcomm)",
-      "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
-      "version2": "WebGL 2.0 (OpenGL ES 3.0 Chromium)"
+      "limits": {
+        "maxTextureDimension1D": 16384,
+        "maxTextureDimension2D": 16384,
+        "maxTextureDimension3D": 2048,
+        "maxTextureArrayLayers": 2048,
+        "maxBindGroups": 4,
+        "maxBindGroupsPlusVertexBuffers": 24,
+        "maxBindingsPerBindGroup": 1000,
+        "maxDynamicUniformBuffersPerPipelineLayout": 10,
+        "maxDynamicStorageBuffersPerPipelineLayout": 8,
+        "maxSampledTexturesPerShaderStage": 48,
+        "maxSamplersPerShaderStage": 16,
+        "maxStorageBuffersPerShaderStage": 16,
+        "maxStorageTexturesPerShaderStage": 8,
+        "maxUniformBuffersPerShaderStage": 12,
+        "maxUniformBufferBindingSize": 65536,
+        "maxStorageBufferBindingSize": 134217728,
+        "minUniformBufferOffsetAlignment": 256,
+        "minStorageBufferOffsetAlignment": 256,
+        "maxVertexBuffers": 8,
+        "maxBufferSize": 2147483648,
+        "maxVertexAttributes": 30,
+        "maxVertexBufferArrayStride": 2048,
+        "maxInterStageShaderVariables": 16,
+        "maxColorAttachments": 8,
+        "maxColorAttachmentBytesPerSample": 128,
+        "maxComputeWorkgroupStorageSize": 32768,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupSizeX": 1024,
+        "maxComputeWorkgroupSizeY": 1024,
+        "maxComputeWorkgroupSizeZ": 64,
+        "maxComputeWorkgroupsPerDimension": 65535,
+        "maxImmediateSize": 64,
+        "maxStorageBuffersInVertexStage": 16,
+        "maxStorageTexturesInVertexStage": 8,
+        "maxStorageBuffersInFragmentStage": 16,
+        "maxStorageTexturesInFragmentStage": 8
+      }
     }
   },
   {
+    "os": "android",
+    "ua": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Mobile Safari/537.36",
+    "model": "moto g05",
+    "osMajor": 10,
+    "navigator": {
+      "platform": "Linux armv81",
+      "vendor": "Google Inc.",
+      "hardwareConcurrency": 8,
+      "deviceMemory": 4,
+      "maxTouchPoints": 5,
+      "uaData": {
+        "platform": "Android",
+        "platformVersion": "15.0.0",
+        "architecture": "",
+        "bitness": "",
+        "model": "moto g05",
+        "mobile": true,
+        "formFactors": [
+          "Mobile"
+        ]
+      }
+    },
+    "screen": {
+      "width": 412,
+      "height": 917,
+      "availWidth": 412,
+      "availHeight": 917,
+      "colorDepth": 24,
+      "devicePixelRatio": 1.75,
+      "isExtended": false,
+      "orientation": {
+        "angle": 0,
+        "type": "portrait-primary"
+      }
+    },
     "audio": {
-      "maxChannelCount": 1,
-      "sampleRate": 44100
+      "sampleRate": 44100,
+      "maxChannelCount": 1
     },
     "connection": {
-      "downlink": 1.55,
-      "downlinkMax": null,
       "effectiveType": "4g",
       "rtt": 200,
-      "saveData": false,
-      "type": "wifi"
+      "downlink": 1.55,
+      "type": "wifi",
+      "downlinkMax": null,
+      "saveData": false
     },
     "fonts": [
       "Arial",
@@ -219,67 +320,13 @@ export const ANDROID_FALLBACK_DEVICES: readonly RealDevice[] = [
       "Times New Roman",
       "Verdana"
     ],
-    "model": "moto g05",
-    "navigator": {
-      "deviceMemory": 4,
-      "hardwareConcurrency": 8,
-      "maxTouchPoints": 5,
-      "platform": "Linux armv81",
-      "uaData": {
-        "architecture": "",
-        "bitness": "",
-        "formFactors": [
-          "Mobile"
-        ],
-        "mobile": true,
-        "model": "moto g05",
-        "platform": "Android",
-        "platformVersion": "15.0.0"
-      },
-      "vendor": "Google Inc."
-    },
-    "os": "android",
-    "osMajor": 10,
-    "screen": {
-      "availHeight": 917,
-      "availWidth": 412,
-      "colorDepth": 24,
-      "devicePixelRatio": 1.75,
-      "height": 917,
-      "isExtended": false,
-      "orientation": {
-        "angle": 0,
-        "type": "portrait-primary"
-      },
-      "width": 412
-    },
-    "ua": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Mobile Safari/537.36",
     "webgl": {
-      "extensions": [
-        "ANGLE_instanced_arrays",
-        "EXT_blend_minmax",
-        "EXT_color_buffer_half_float",
-        "EXT_float_blend",
-        "EXT_polygon_offset_clamp",
-        "EXT_sRGB",
-        "EXT_texture_filter_anisotropic",
-        "OES_element_index_uint",
-        "OES_fbo_render_mipmap",
-        "OES_standard_derivatives",
-        "OES_texture_float",
-        "OES_texture_half_float",
-        "OES_texture_half_float_linear",
-        "OES_vertex_array_object",
-        "WEBGL_color_buffer_float",
-        "WEBGL_compressed_texture_astc",
-        "WEBGL_compressed_texture_etc",
-        "WEBGL_compressed_texture_etc1",
-        "WEBGL_debug_renderer_info",
-        "WEBGL_debug_shaders",
-        "WEBGL_depth_texture",
-        "WEBGL_lose_context",
-        "WEBGL_multi_draw"
-      ],
+      "unmaskedVendor": "Google Inc. (ARM)",
+      "unmaskedRenderer": "ANGLE (ARM, Mali-G52 MC2, OpenGL ES 3.2)",
+      "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
+      "shadingLanguageVersion": "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)",
+      "version2": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+      "shadingLanguageVersion2": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
       "params": {
         "3379": 8192,
         "3408": 4,
@@ -301,36 +348,6 @@ export const ANDROID_FALLBACK_DEVICES: readonly RealDevice[] = [
         "36349": 1024
       },
       "shaderPrecision": {
-        "35632-36336": [
-          15,
-          15,
-          10
-        ],
-        "35632-36337": [
-          15,
-          15,
-          10
-        ],
-        "35632-36338": [
-          127,
-          127,
-          23
-        ],
-        "35632-36339": [
-          15,
-          14,
-          0
-        ],
-        "35632-36340": [
-          15,
-          14,
-          0
-        ],
-        "35632-36341": [
-          31,
-          30,
-          0
-        ],
         "35633-36336": [
           15,
           15,
@@ -360,28 +377,175 @@ export const ANDROID_FALLBACK_DEVICES: readonly RealDevice[] = [
           31,
           30,
           0
+        ],
+        "35632-36336": [
+          15,
+          15,
+          10
+        ],
+        "35632-36337": [
+          15,
+          15,
+          10
+        ],
+        "35632-36338": [
+          127,
+          127,
+          23
+        ],
+        "35632-36339": [
+          15,
+          14,
+          0
+        ],
+        "35632-36340": [
+          15,
+          14,
+          0
+        ],
+        "35632-36341": [
+          31,
+          30,
+          0
         ]
       },
-      "shadingLanguageVersion": "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)",
-      "shadingLanguageVersion2": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
-      "unmaskedRenderer": "ANGLE (ARM, Mali-G52 MC2, OpenGL ES 3.2)",
-      "unmaskedVendor": "Google Inc. (ARM)",
-      "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
-      "version2": "WebGL 2.0 (OpenGL ES 3.0 Chromium)"
+      "extensions": [
+        "ANGLE_instanced_arrays",
+        "EXT_blend_minmax",
+        "EXT_color_buffer_half_float",
+        "EXT_float_blend",
+        "EXT_polygon_offset_clamp",
+        "EXT_sRGB",
+        "EXT_texture_filter_anisotropic",
+        "OES_element_index_uint",
+        "OES_fbo_render_mipmap",
+        "OES_standard_derivatives",
+        "OES_texture_float",
+        "OES_texture_half_float",
+        "OES_texture_half_float_linear",
+        "OES_vertex_array_object",
+        "WEBGL_color_buffer_float",
+        "WEBGL_compressed_texture_astc",
+        "WEBGL_compressed_texture_etc",
+        "WEBGL_compressed_texture_etc1",
+        "WEBGL_debug_renderer_info",
+        "WEBGL_debug_shaders",
+        "WEBGL_depth_texture",
+        "WEBGL_lose_context",
+        "WEBGL_multi_draw"
+      ]
+    },
+    "webgpu": {
+      "vendor": "arm",
+      "architecture": "bifrost",
+      "subgroupMinSize": 8,
+      "subgroupMaxSize": 8,
+      "features": [
+        "bgra8unorm-storage",
+        "core-features-and-limits",
+        "depth32float-stencil8",
+        "dual-source-blending",
+        "float32-filterable",
+        "indirect-first-instance",
+        "primitive-index",
+        "rg11b10ufloat-renderable",
+        "shader-f16",
+        "subgroups",
+        "texture-component-swizzle",
+        "texture-compression-astc",
+        "texture-compression-astc-sliced-3d",
+        "texture-compression-etc2",
+        "texture-formats-tier1",
+        "texture-formats-tier2",
+        "timestamp-query"
+      ],
+      "limits": {
+        "maxTextureDimension1D": 16384,
+        "maxTextureDimension2D": 16384,
+        "maxTextureDimension3D": 2048,
+        "maxTextureArrayLayers": 2048,
+        "maxBindGroups": 4,
+        "maxBindGroupsPlusVertexBuffers": 24,
+        "maxBindingsPerBindGroup": 1000,
+        "maxDynamicUniformBuffersPerPipelineLayout": 10,
+        "maxDynamicStorageBuffersPerPipelineLayout": 8,
+        "maxSampledTexturesPerShaderStage": 48,
+        "maxSamplersPerShaderStage": 16,
+        "maxStorageBuffersPerShaderStage": 16,
+        "maxStorageTexturesPerShaderStage": 8,
+        "maxUniformBuffersPerShaderStage": 12,
+        "maxUniformBufferBindingSize": 65536,
+        "maxStorageBufferBindingSize": 2147483644,
+        "minUniformBufferOffsetAlignment": 256,
+        "minStorageBufferOffsetAlignment": 256,
+        "maxVertexBuffers": 8,
+        "maxBufferSize": 2147483648,
+        "maxVertexAttributes": 30,
+        "maxVertexBufferArrayStride": 2048,
+        "maxInterStageShaderVariables": 28,
+        "maxColorAttachments": 8,
+        "maxColorAttachmentBytesPerSample": 128,
+        "maxComputeWorkgroupStorageSize": 32768,
+        "maxComputeInvocationsPerWorkgroup": 256,
+        "maxComputeWorkgroupSizeX": 256,
+        "maxComputeWorkgroupSizeY": 256,
+        "maxComputeWorkgroupSizeZ": 64,
+        "maxComputeWorkgroupsPerDimension": 65535,
+        "maxImmediateSize": 64,
+        "maxStorageBuffersInVertexStage": 16,
+        "maxStorageTexturesInVertexStage": 8,
+        "maxStorageBuffersInFragmentStage": 16,
+        "maxStorageTexturesInFragmentStage": 8
+      }
     }
   },
   {
+    "os": "android",
+    "ua": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Mobile Safari/537.36",
+    "model": "SM-S936U",
+    "osMajor": 10,
+    "navigator": {
+      "platform": "Linux armv81",
+      "vendor": "Google Inc.",
+      "hardwareConcurrency": 8,
+      "deviceMemory": 8,
+      "maxTouchPoints": 5,
+      "uaData": {
+        "platform": "Android",
+        "platformVersion": "16.0.0",
+        "architecture": "",
+        "bitness": "",
+        "model": "SM-S936U",
+        "mobile": true,
+        "formFactors": [
+          "Mobile"
+        ]
+      }
+    },
+    "screen": {
+      "width": 320,
+      "height": 694,
+      "availWidth": 320,
+      "availHeight": 694,
+      "colorDepth": 24,
+      "devicePixelRatio": 3.375,
+      "isExtended": false,
+      "orientation": {
+        "angle": 0,
+        "type": "portrait-primary"
+      }
+    },
     "audio": {
-      "maxChannelCount": 1,
-      "sampleRate": 44100
+      "sampleRate": 44100,
+      "maxChannelCount": 1
     },
     "connection": {
-      "downlink": 10,
-      "downlinkMax": null,
       "effectiveType": "4g",
       "rtt": 100,
-      "saveData": false,
-      "type": "wifi"
+      "downlink": 10,
+      "type": "wifi",
+      "downlinkMax": null,
+      "saveData": false
     },
     "fonts": [
       "Arial",
@@ -395,42 +559,95 @@ export const ANDROID_FALLBACK_DEVICES: readonly RealDevice[] = [
       "Times New Roman",
       "Verdana"
     ],
-    "model": "SM-S936U",
-    "navigator": {
-      "deviceMemory": 8,
-      "hardwareConcurrency": 8,
-      "maxTouchPoints": 5,
-      "platform": "Linux armv81",
-      "uaData": {
-        "architecture": "",
-        "bitness": "",
-        "formFactors": [
-          "Mobile"
-        ],
-        "mobile": true,
-        "model": "SM-S936U",
-        "platform": "Android",
-        "platformVersion": "16.0.0"
-      },
-      "vendor": "Google Inc."
-    },
-    "os": "android",
-    "osMajor": 10,
-    "screen": {
-      "availHeight": 694,
-      "availWidth": 320,
-      "colorDepth": 24,
-      "devicePixelRatio": 3.375,
-      "height": 694,
-      "isExtended": false,
-      "orientation": {
-        "angle": 0,
-        "type": "portrait-primary"
-      },
-      "width": 320
-    },
-    "ua": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Mobile Safari/537.36",
     "webgl": {
+      "unmaskedVendor": "Google Inc. (Qualcomm)",
+      "unmaskedRenderer": "ANGLE (Qualcomm, Adreno (TM) 830, OpenGL ES 3.2)",
+      "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
+      "shadingLanguageVersion": "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)",
+      "version2": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+      "shadingLanguageVersion2": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
+      "params": {
+        "3379": 8192,
+        "3408": 4,
+        "3410": 8,
+        "3411": 8,
+        "3412": 8,
+        "3413": 8,
+        "3414": 24,
+        "3415": 0,
+        "34024": 16384,
+        "34047": 16,
+        "34076": 8192,
+        "34921": 16,
+        "34930": 16,
+        "35660": 16,
+        "35661": 48,
+        "36347": 256,
+        "36348": 31,
+        "36349": 256
+      },
+      "shaderPrecision": {
+        "35633-36336": [
+          127,
+          127,
+          23
+        ],
+        "35633-36337": [
+          127,
+          127,
+          23
+        ],
+        "35633-36338": [
+          127,
+          127,
+          23
+        ],
+        "35633-36339": [
+          31,
+          31,
+          0
+        ],
+        "35633-36340": [
+          31,
+          31,
+          0
+        ],
+        "35633-36341": [
+          31,
+          31,
+          0
+        ],
+        "35632-36336": [
+          15,
+          15,
+          10
+        ],
+        "35632-36337": [
+          15,
+          15,
+          10
+        ],
+        "35632-36338": [
+          127,
+          127,
+          23
+        ],
+        "35632-36339": [
+          15,
+          15,
+          0
+        ],
+        "35632-36340": [
+          15,
+          15,
+          0
+        ],
+        "35632-36341": [
+          31,
+          31,
+          0
+        ]
+      },
       "extensions": [
         "ANGLE_instanced_arrays",
         "EXT_blend_minmax",
@@ -464,95 +681,76 @@ export const ANDROID_FALLBACK_DEVICES: readonly RealDevice[] = [
         "WEBGL_depth_texture",
         "WEBGL_lose_context",
         "WEBGL_multi_draw"
+      ]
+    },
+    "webgpu": {
+      "vendor": "qualcomm",
+      "architecture": "adreno-8xx",
+      "subgroupMinSize": 64,
+      "subgroupMaxSize": 64,
+      "features": [
+        "bgra8unorm-storage",
+        "clip-distances",
+        "core-features-and-limits",
+        "depth-clip-control",
+        "depth32float-stencil8",
+        "dual-source-blending",
+        "float32-blendable",
+        "float32-filterable",
+        "indirect-first-instance",
+        "primitive-index",
+        "rg11b10ufloat-renderable",
+        "shader-f16",
+        "subgroup-size-control",
+        "subgroups",
+        "texture-component-swizzle",
+        "texture-compression-astc",
+        "texture-compression-astc-sliced-3d",
+        "texture-compression-bc",
+        "texture-compression-bc-sliced-3d",
+        "texture-compression-etc2",
+        "texture-formats-tier1",
+        "texture-formats-tier2",
+        "timestamp-query"
       ],
-      "params": {
-        "3379": 8192,
-        "3408": 4,
-        "3410": 8,
-        "3411": 8,
-        "3412": 8,
-        "3413": 8,
-        "3414": 24,
-        "3415": 0,
-        "34024": 16384,
-        "34047": 16,
-        "34076": 8192,
-        "34921": 16,
-        "34930": 16,
-        "35660": 16,
-        "35661": 48,
-        "36347": 256,
-        "36348": 31,
-        "36349": 256
-      },
-      "shaderPrecision": {
-        "35632-36336": [
-          15,
-          15,
-          10
-        ],
-        "35632-36337": [
-          15,
-          15,
-          10
-        ],
-        "35632-36338": [
-          127,
-          127,
-          23
-        ],
-        "35632-36339": [
-          15,
-          15,
-          0
-        ],
-        "35632-36340": [
-          15,
-          15,
-          0
-        ],
-        "35632-36341": [
-          31,
-          31,
-          0
-        ],
-        "35633-36336": [
-          127,
-          127,
-          23
-        ],
-        "35633-36337": [
-          127,
-          127,
-          23
-        ],
-        "35633-36338": [
-          127,
-          127,
-          23
-        ],
-        "35633-36339": [
-          31,
-          31,
-          0
-        ],
-        "35633-36340": [
-          31,
-          31,
-          0
-        ],
-        "35633-36341": [
-          31,
-          31,
-          0
-        ]
-      },
-      "shadingLanguageVersion": "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)",
-      "shadingLanguageVersion2": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
-      "unmaskedRenderer": "ANGLE (Qualcomm, Adreno (TM) 830, OpenGL ES 3.2)",
-      "unmaskedVendor": "Google Inc. (Qualcomm)",
-      "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
-      "version2": "WebGL 2.0 (OpenGL ES 3.0 Chromium)"
+      "limits": {
+        "maxTextureDimension1D": 16384,
+        "maxTextureDimension2D": 16384,
+        "maxTextureDimension3D": 2048,
+        "maxTextureArrayLayers": 2048,
+        "maxBindGroups": 4,
+        "maxBindGroupsPlusVertexBuffers": 24,
+        "maxBindingsPerBindGroup": 1000,
+        "maxDynamicUniformBuffersPerPipelineLayout": 10,
+        "maxDynamicStorageBuffersPerPipelineLayout": 8,
+        "maxSampledTexturesPerShaderStage": 48,
+        "maxSamplersPerShaderStage": 16,
+        "maxStorageBuffersPerShaderStage": 16,
+        "maxStorageTexturesPerShaderStage": 8,
+        "maxUniformBuffersPerShaderStage": 12,
+        "maxUniformBufferBindingSize": 65536,
+        "maxStorageBufferBindingSize": 2147483644,
+        "minUniformBufferOffsetAlignment": 256,
+        "minStorageBufferOffsetAlignment": 256,
+        "maxVertexBuffers": 8,
+        "maxBufferSize": 2147483648,
+        "maxVertexAttributes": 30,
+        "maxVertexBufferArrayStride": 2048,
+        "maxInterStageShaderVariables": 16,
+        "maxColorAttachments": 8,
+        "maxColorAttachmentBytesPerSample": 128,
+        "maxComputeWorkgroupStorageSize": 32768,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupSizeX": 1024,
+        "maxComputeWorkgroupSizeY": 1024,
+        "maxComputeWorkgroupSizeZ": 64,
+        "maxComputeWorkgroupsPerDimension": 65535,
+        "maxImmediateSize": 64,
+        "maxStorageBuffersInVertexStage": 16,
+        "maxStorageTexturesInVertexStage": 8,
+        "maxStorageBuffersInFragmentStage": 16,
+        "maxStorageTexturesInFragmentStage": 8
+      }
     }
   }
 ] as const
