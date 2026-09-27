@@ -4,6 +4,12 @@ All notable changes to the `antibrow` Python SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.26.0] - 2026-09-27
+
+### Added
+
+- Launches report their outcome to the API: success, or a failure category such as `timeout`, `concurrency` or `network`. No URLs, profile names, proxy details or error text are sent. Turn it off with `launch(telemetry=False)` or `ANTIBROW_TELEMETRY=0`.
+
 ## [0.25.0] - 2026-09-21
 
 ### Fixed

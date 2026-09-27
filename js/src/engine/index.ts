@@ -124,6 +124,8 @@ export interface OpenProfileOptions {
   /** Draw the identity from the real-device library (paid). New profiles only. */
   realFingerprint?: boolean
   onProgress?: (message: string) => void
+  /** Fires once per kernel download this launch had to do (first install or forced update). */
+  onKernelDownload?: (e: { ok: boolean; version: string; error?: unknown }) => void
   /** `download` runs before launch, `upload` after openProfile has returned. */
   onArchiveSync?: (e: ArchiveSyncEvent) => void
   /**
@@ -480,11 +482,14 @@ async function openProfileWithin(opts: OpenProfileOptions, budget: Deadline): Pr
     ? findKernelVersionStrict(persona.kernelVersion)
     : findKernelVersion(persona.kernelVersion)
 
+  const onDownload = opts.onKernelDownload
+    ? (e: { ok: boolean; error?: unknown }) => opts.onKernelDownload?.({ ...e, version: kv.version })
+    : undefined
   if (opts.updateKernelBeforeLaunch) {
     const status = kernelUpdateStatus(cacheDir, kv.version)
     if (status?.updateAvailable) {
       opts.onProgress?.(`Updating kernel ${kv.label} to the latest build`)
-      await budget.paused(() => ensureKernel(cacheDir, kv, opts.onProgress, { force: true }))
+      await budget.paused(() => ensureKernel(cacheDir, kv, opts.onProgress, { force: true, onDownload }))
     }
   }
 
@@ -492,7 +497,7 @@ async function openProfileWithin(opts: OpenProfileOptions, budget: Deadline): Pr
   budget.check('installing the browser kernel')
   // Outside the budget too: a first install is ~200-320MB and waiting on another
   // process's install has its own 30 minute cap.
-  const exePath = await budget.paused(() => ensureKernel(cacheDir, kv, opts.onProgress))
+  const exePath = await budget.paused(() => ensureKernel(cacheDir, kv, opts.onProgress, onDownload && { onDownload }))
 
   if (persona.deviceType === 'android') assertAndroidKernel(kv.version)
 

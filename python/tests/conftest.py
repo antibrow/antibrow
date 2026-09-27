@@ -11,3 +11,9 @@ def _reset_local_only_notice():
     _browser._local_only_notified.clear()
     yield
     _browser._local_only_notified.clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_telemetry(monkeypatch):
+    """Launch tests must never report to the real API; telemetry tests opt back in."""
+    monkeypatch.setenv("ANTIBROW_TELEMETRY", "0")

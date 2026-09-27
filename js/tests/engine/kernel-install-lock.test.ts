@@ -186,4 +186,20 @@ describe('kernel install lock', () => {
 
     expect(fs.readdirSync(cache).filter((n) => n.startsWith('kernel-913'))).toEqual([])
   })
+  // Launch telemetry counts downloads, so an already-installed kernel and the
+  // caller that waited on another process's install must not report one.
+  it('reports only the download it actually did', async () => {
+    const kv = register('914')
+    const cache = tmp()
+    const events: Array<Array<{ ok: boolean }>> = [[], []]
+    await Promise.all([
+      ensureKernel(cache, kv, undefined, { onDownload: (e) => events[0].push(e) }),
+      ensureKernel(cache, kv, undefined, { onDownload: (e) => events[1].push(e) }),
+    ])
+    expect(events.flat()).toEqual([{ ok: true }])
+
+    const again: unknown[] = []
+    await ensureKernel(cache, kv, undefined, { onDownload: (e) => again.push(e) })
+    expect(again).toEqual([])
+  })
 })

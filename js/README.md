@@ -210,6 +210,8 @@ filter, so it can ask for two fields instead of a whole payload. See
 
 `launch_browser` and `create_profile` both take `deviceType` (`"desktop"` / `"android"`) and `realFingerprint`, so an agent can ask for a phone profile in the same call that starts it.
 
+The first `launch_browser` on a machine downloads the browser kernel (a few hundred MB), which can take longer than a client's tool-call timeout. The launch keeps going in the background, and calling `launch_browser` again for the same profile joins it (or returns the session it produced) instead of starting a second browser. Clients that send a progress token get progress notifications while it runs. On Windows, a client that reports `spawn npx ENOENT` needs `"command": "cmd"` with `"/c", "npx"` in front of the other args.
+
 ## Recipes
 
 A recipe is one file that turns one site into one command: ask for `reddit/hot`
@@ -505,6 +507,10 @@ Local profiles are unlimited on every plan. How many browsers you run **at once*
 | Team | unlimited | 100 | yes | yes |
 
 See [antibrow.com/pricing](https://antibrow.com/pricing).
+
+## Telemetry
+
+Each launch reports its outcome to the API: success, or a failure category such as `timeout`, `concurrency` or `network`, plus the SDK version, OS and kernel version. No URLs, profile names, proxy details or error text are sent. Turn it off with `new AntiDetectBrowser({ key, telemetry: false })` or `ANTIBROW_TELEMETRY=0`.
 
 ## Requirements
 

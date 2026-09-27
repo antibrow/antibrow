@@ -182,3 +182,28 @@ def test_abandoned_temp_zip_is_swept(tmp_path, counting_server):
     K.ensure_kernel(cache, kv, platform=PLAT)
 
     assert not list(cache.glob("*.zip"))
+
+
+def test_reports_only_the_download_it_actually_did(tmp_path, counting_server):
+    """Launch telemetry counts downloads: the waiter and an installed kernel report none."""
+    base, _hits = counting_server
+    kv = make_version(base, version="0.0.0-report")
+    cache = tmp_path / "cache"
+    events: list = []
+
+    threads = [
+        threading.Thread(
+            target=lambda: K.ensure_kernel(
+                cache, kv, platform=PLAT, on_download=lambda ok, err: events.append((ok, err))
+            )
+        )
+        for _ in range(2)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(60)
+    assert events == [(True, None)]
+
+    K.ensure_kernel(cache, kv, platform=PLAT, on_download=lambda ok, err: events.append((ok, err)))
+    assert events == [(True, None)]

@@ -4,6 +4,18 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.32.0] - 2026-09-27
+
+### Added
+
+- Launches report their outcome to the API: success, or a failure category such as `timeout`, `concurrency` or `network`. No URLs, profile names, proxy details or error text are sent. Turn it off with `new AntiDetectBrowser({ telemetry: false })` or `ANTIBROW_TELEMETRY=0`.
+- `launch({ onProgress })` receives progress messages, including the kernel download percentage on a first launch.
+
+### Changed
+
+- MCP: `launch_browser` for a profile that already has a running browser, or one still starting, returns that session (`reused: true`) instead of launching a second browser. A client that timed out on a slow first launch can simply call it again.
+- MCP: `launch_browser` sends progress notifications when the client supplies a progress token.
+
 ## [2.31.0] - 2026-09-21
 
 ### Fixed

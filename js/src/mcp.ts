@@ -16,6 +16,7 @@ import { runRecipe } from './recipe/runtime'
 import { fanoutRecipe } from './recipe/fanout'
 import { applyFilter } from './recipe/select'
 import { rmSync } from 'node:fs'
+import { setTelemetryClient } from './telemetry'
 import type { McpSession } from './types'
 
 /**
@@ -45,6 +46,73 @@ export async function closeAllMcpSessions(
   const open = [...sessions.values()]
   sessions.clear()
   await Promise.allSettled(open.map((session) => closeMcpSession(session, unregisterLive)))
+}
+
+function sessionAlive(session: McpSession): boolean {
+  const browser = session.context.browser?.()
+  return browser ? browser.isConnected() : true
+}
+
+/**
+ * One launch per profile at a time. A first launch can outlast the client's
+ * tool-call timeout while the kernel downloads, and the client's retry would
+ * otherwise start a second browser on the same directory while the first one
+ * still holds the only concurrency slot. The retry joins the running launch,
+ * or gets the session it already produced.
+ */
+export async function launchOnce(
+  sessions: Map<string, McpSession>,
+  inFlight: Map<string, Promise<McpSession>>,
+  launchKey: string,
+  start: () => Promise<McpSession>,
+): Promise<{ session: McpSession; reused: boolean }> {
+  for (const [id, existing] of sessions) {
+    if (existing.launchKey !== launchKey) continue
+    if (sessionAlive(existing)) return { session: existing, reused: true }
+    sessions.delete(id)
+  }
+  const pending = inFlight.get(launchKey)
+  if (pending) return { session: await pending, reused: true }
+
+  const launch = start()
+  inFlight.set(launchKey, launch)
+  try {
+    const session = await launch
+    sessions.set(session.id, session)
+    return { session, reused: false }
+  } finally {
+    inFlight.delete(launchKey)
+  }
+}
+
+interface ProgressExtra {
+  _meta?: { progressToken?: string | number }
+  sendNotification: (n: { method: 'notifications/progress'; params: { progressToken: string | number; progress: number; message: string } }) => Promise<void>
+}
+
+/**
+ * Forwards launch progress to stderr and, when the client asked for it, as MCP
+ * progress notifications, which some clients count as activity against their
+ * tool-call timeout. Download percentages are throttled to one a second.
+ */
+export function launchProgress(extra: ProgressExtra | undefined, log: (m: string) => void, now = Date.now): (message: string) => void {
+  const token = extra?._meta?.progressToken
+  let step = 0
+  let lastAt = -Infinity
+  let lastMessage = ''
+  return (message) => {
+    const t = now()
+    if (message === lastMessage) return
+    if (/^Downloading \d+%$/.test(message) && t - lastAt < 1000) return
+    lastAt = t
+    lastMessage = message
+    log(message)
+    if (token === undefined || !extra) return
+    extra.sendNotification({
+      method: 'notifications/progress',
+      params: { progressToken: token, progress: ++step, message },
+    }).catch(() => {})
+  }
 }
 
 /** The tree a profile tool should act on. Anything but `true` means managed. */
@@ -86,6 +154,7 @@ export async function startMcpServer(): Promise<void> {
   const { Server, StdioServerTransport, CallToolRequestSchema, ListToolsRequestSchema } =
     await loadMcpSdk()
 
+  setTelemetryClient('mcp-js')
   const apiKey = process.env.ANTI_DETECT_BROWSER_KEY
   if (!apiKey) {
     console.error('Error: ANTI_DETECT_BROWSER_KEY environment variable is required')
@@ -105,6 +174,7 @@ export async function startMcpServer(): Promise<void> {
 
   const resolvedCacheDir = ensureCacheDir(cacheDir)
   const sessions = new Map<string, McpSession>()
+  const launching = new Map<string, Promise<McpSession>>()
   let sessionCounter = 0
 
   const unregisterLive = (sessionKey: string) =>
@@ -357,43 +427,48 @@ export async function startMcpServer(): Promise<void> {
   }))
 
 
-  mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
+  mcpServer.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args } = request.params
 
     try {
       switch (name) {
         case 'launch_browser': {
-          const result = await ab.launch({
-            profile: args?.profile as string,
-            tags: args?.tags as string[] | undefined,
-            label: args?.label as string | undefined,
-            proxy: args?.proxy as string | undefined,
-            proxyId: args?.proxyId as string | undefined,
-            headless: args?.headless as boolean | undefined,
-            focusWindow: args?.focusWindow as boolean | undefined,
-            deviceType: args?.deviceType as 'desktop' | 'android' | undefined,
-            realFingerprint: args?.realFingerprint as boolean | undefined,
-            temporary: mcpRootOptions(args).temporary,
+          const temporary = mcpRootOptions(args).temporary
+          const profile = args?.profile as string
+          const launchKey = `${temporary ? 'temporary' : 'managed'}:${profile}`
+          const { session, reused } = await launchOnce(sessions, launching, launchKey, async () => {
+            const result = await ab.launch({
+              profile,
+              tags: args?.tags as string[] | undefined,
+              label: args?.label as string | undefined,
+              proxy: args?.proxy as string | undefined,
+              proxyId: args?.proxyId as string | undefined,
+              headless: args?.headless as boolean | undefined,
+              focusWindow: args?.focusWindow as boolean | undefined,
+              deviceType: args?.deviceType as 'desktop' | 'android' | undefined,
+              realFingerprint: args?.realFingerprint as boolean | undefined,
+              temporary,
+              onProgress: launchProgress(extra, (m) => console.error(`[launch_browser ${profile}] ${m}`)),
+              })
+              return {
+                id: `session_${++sessionCounter}`,
+                browser: result.browser,
+                context: result.context,
+                page: result.page,
+                profileDir: result.profileDir,
+                profileName: profile,
+                launchKey,
+                createdAt: new Date(),
+              }
           })
-
-          const sessionId = `session_${++sessionCounter}`
-          const session: McpSession = {
-            id: sessionId,
-            browser: result.browser,
-            context: result.context,
-            page: result.page,
-            profileDir: result.profileDir,
-            profileName: args?.profile as string,
-            createdAt: new Date(),
-          }
-          sessions.set(sessionId, session)
 
           return {
             content: [{
               type: 'text' as const,
               text: JSON.stringify({
-                sessionId,
-                profileDir: result.profileDir,
+                sessionId: session.id,
+                profileDir: session.profileDir,
+                ...(reused ? { reused: true, note: 'This profile already had a running browser; reusing its session.' } : {}),
               }, null, 2),
             }],
           }

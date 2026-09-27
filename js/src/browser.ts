@@ -18,6 +18,7 @@ import {
   getProfileArchiveUploadUrl,
 } from './api'
 import { ensureCacheDir } from './profile'
+import { classifyDownloadError, classifyLaunchError, errorKind, sendTelemetry, type TelemetryEvent } from './telemetry'
 import {
   openProfile,
   getLicenseToken,
@@ -127,7 +128,13 @@ export function buildOpenProfileOptions(input: BuildOpenProfileOptionsInput): Op
     args: options.args,
     detached: options.detached,
     timeoutMs: options.timeoutMs,
+    onProgress: options.onProgress,
   }
+}
+
+interface LaunchOutcome {
+  events: TelemetryEvent[]
+  kernelVersion?: string
 }
 
 export class AntiDetectBrowser {
@@ -138,6 +145,7 @@ export class AntiDetectBrowser {
   private readonly proxyHost: string
   private readonly notify: (message: string) => void
   private readonly temporary: boolean
+  private readonly telemetry: boolean
   private activeSessions: Map<string, {
     session: EngineSession
     profileName: string
@@ -169,6 +177,7 @@ export class AntiDetectBrowser {
     this.proxyHost = options.proxyHost || DEFAULT_RELAY_HOST
     this.notify = options.notify ?? ((m) => console.log(m))
     this.temporary = options.temporary ?? false
+    this.telemetry = options.telemetry ?? true
   }
 
   async launch(options: LaunchOptions): Promise<LaunchResult> {
@@ -187,6 +196,27 @@ export class AntiDetectBrowser {
       }
     }
 
+    const outcome: LaunchOutcome = { events: [] }
+    try {
+      const result = await this.launchChecked(options, outcome)
+      void this.report([...outcome.events, { type: 'kernel.launch', ok: true, kernelVersion: outcome.kernelVersion }])
+      return result
+    } catch (error) {
+      const code = classifyLaunchError(error)
+      await this.report([...outcome.events, {
+        type: 'kernel.launch', ok: false, code, kernelVersion: outcome.kernelVersion,
+        meta: code === 'unknown' ? errorKind(error) : undefined,
+      }])
+      throw error
+    }
+  }
+
+  private report(events: TelemetryEvent[]): Promise<void> {
+    if (!this.telemetry) return Promise.resolve()
+    return sendTelemetry({ key: this.key, server: this.server ?? 'https://antibrow.com', events })
+  }
+
+  private async launchChecked(options: LaunchOptions, outcome: LaunchOutcome): Promise<LaunchResult> {
     await this.ensureVersionOk()
 
     // Advisory only: never blocks the launch, and never updates behind the
@@ -246,7 +276,8 @@ export class AntiDetectBrowser {
         }).catch(() => ({}))
       }
 
-      session = await openProfile(buildOpenProfileOptions({
+      session = await openProfile({
+        ...buildOpenProfileOptions({
         key: this.key,
         server: this.server,
         profileName,
@@ -268,7 +299,15 @@ export class AntiDetectBrowser {
         // unsettled probe (unreachable, 5xx) is not an answer and does not count.
         cloudProfileDenied: syncMode !== 'off' && this.syncedProfiles.get(`${syncMode}:${profileName}`) === false,
         options,
-      }))
+        }),
+        onKernelDownload: (e) => {
+          outcome.kernelVersion = e.version
+          outcome.events.push({
+            type: 'kernel.download', ok: e.ok, kernelVersion: e.version,
+            ...(e.ok ? {} : { code: classifyDownloadError(e.error) }),
+          })
+        },
+      })
     } catch (error) {
       // A launch that never opened a browser has no close hook to revoke on, so
       // the ticket would stay live for its full lifetime. Retrying against a
@@ -281,6 +320,7 @@ export class AntiDetectBrowser {
     // After the launch, not before it: the version a profile actually runs is
     // settled by its persona (which arrives inside the archive) and by the
     // Android/reconcile rules, none of which the row-creating call above knows.
+    outcome.kernelVersion = session.kernelVersion
     await this.pushKernelVersion(profileName, session.kernelVersion)
 
     const { context } = session

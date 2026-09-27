@@ -51,6 +51,7 @@ That is a real Chromium — with a real device's fingerprint, its own persistent
 - [Platform support](#platform-support)
 - [Plans and concurrency](#plans-and-concurrency)
 - [FAQ](#faq)
+- [Telemetry](#telemetry)
 - [License](#license)
 
 ## Why antibrow
@@ -705,7 +706,7 @@ Any MCP client can drive a fingerprinted browser. [`examples/09_mcp_server.py`](
 }
 ```
 
-The Node package ships an MCP server out of the box (`npx anti-detect-browser --mcp`) if you would rather not run the example.
+The Node package ships an MCP server out of the box (`npx -y -p anti-detect-browser -p @modelcontextprotocol/sdk anti-detect-browser --mcp`) if you would rather not run the example.
 
 ### Selenium
 
@@ -915,6 +916,10 @@ Real headless Chromium is, which is why `headless=True` on Windows moves the win
 
 **Is this legal to use?**
 It is a browser. Scraping public data, testing your own anti-fraud stack and managing your own accounts are ordinary uses. Fraud, credential stuffing and violating a site's terms are not — and are not supported here.
+
+## Telemetry
+
+Each launch reports its outcome to the API: success, or a failure category such as `timeout`, `concurrency` or `network`, plus the SDK version, OS and kernel version. No URLs, profile names, proxy details or error text are sent. Turn it off with `launch(telemetry=False)` or `ANTIBROW_TELEMETRY=0`.
 
 ## License
 

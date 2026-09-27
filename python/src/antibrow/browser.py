@@ -33,6 +33,7 @@ from . import exit_hooks as _exit_hooks
 from . import kernel as _kernel
 from . import profile_sync as _sync
 from . import reaper as _reaper
+from . import telemetry as _telemetry
 from .crypt_key import fetch_profile_crypt_key, resolve_crypt_key
 from .deadline import Deadline
 from .errors import ApiError, LicenseError, ProfileCacheError, ProxyError
@@ -222,6 +223,7 @@ def prepare_launch(
     on_sync: Optional[SyncCallback] = None,
     on_progress: Optional[ProgressCallback] = None,
     deadline: Optional[Deadline] = None,
+    on_kernel_download: Optional[Callable[[str, bool, Optional[BaseException]], None]] = None,
 ) -> LaunchPlan:
     """Do every blocking step of a launch except starting the process.
 
@@ -352,6 +354,11 @@ def prepare_launch(
     else:
         kv = _kernel.find_kernel_version(persona.kernel_version)
 
+    on_download = (
+        (lambda ok, error: on_kernel_download(kv.version, ok, error))
+        if on_kernel_download is not None
+        else None
+    )
     if update_kernel:
         # Opt-in: pull a rebuilt same-version kernel before launching. The forced
         # manifest refresh already happened above, before the version was resolved.
@@ -359,14 +366,14 @@ def prepare_launch(
         if status is not None and status.update_available:
             notify("Updating kernel {0} to the latest build".format(kv.label))
             with budget.paused():
-                _kernel.ensure_kernel(root, kv, on_progress, force=True)
+                _kernel.ensure_kernel(root, kv, on_progress, force=True, on_download=on_download)
 
     notify("Ensuring kernel {0}".format(kv.label))
     budget.check("installing the browser kernel")
     # Outside the budget too: a first install is ~1GB compressed, and waiting on
     # another process's install has its own 30 minute cap.
     with budget.paused():
-        exe_path = _kernel.ensure_kernel(root, kv, on_progress)
+        exe_path = _kernel.ensure_kernel(root, kv, on_progress, on_download=on_download)
 
     if persona.device_type == "android":
         _assert_android_kernel(kv.version)
@@ -1531,6 +1538,7 @@ def launch(
     reuse_initial_page: bool = True,
     timeout: float = DEFAULT_LAUNCH_TIMEOUT,
     on_progress: Optional[ProgressCallback] = None,
+    telemetry: bool = True,
 ) -> Antibrow:
     """Launch a fingerprint browser and return a handle you can drive at once.
 
@@ -1621,6 +1629,10 @@ def launch(
             initial blank tab instead of opening a second one.
         timeout: Seconds to wait for the browser to come up.
         on_progress: Called with human-readable progress messages.
+        telemetry: Report this launch's outcome (success, or a failure
+            category such as ``timeout``) to the API. ``ANTIBROW_TELEMETRY=0``
+            also turns it off. No URLs, profile names, proxy details or error
+            text are sent.
 
     Returns:
         :class:`Antibrow` - delegates to the Playwright ``BrowserContext``.
@@ -1631,64 +1643,71 @@ def launch(
     # `prepare_launch` so every HTTP call it makes shrinks to fit what is left.
     budget = Deadline(timeout)
     _reap_before_launch(cache_dir)
-    with budget.active():
-        plan = prepare_launch(
-            profile,
-            headless=headless,
-            focus_window=focus_window,
-            proxy=proxy,
-            geoip=geoip,
-            timezone=timezone,
-            api_key=api_key,
-            server=server,
-            cache_dir=cache_dir,
-            profile_dir=profile_dir,
-            kernel_version=kernel_version,
-            label=label,
-            args=args,
-            proxy_auth=proxy_auth,
-            license_token=license_token,
-            license_provider=license_provider,
-            crypt_key=crypt_key,
-            get_crypt_key=get_crypt_key,
-            proxy_id=proxy_id,
-            proxy_host=proxy_host,
-            canvas_noise=canvas_noise,
-            api_log=api_log,
-            update_kernel=update_kernel,
-            webauthn_capture=webauthn_capture,
-            restore_tabs=restore_tabs,
-            device_type=device_type,
-            real_fingerprint=real_fingerprint,
-            sync=sync,
-            temporary=temporary,
-            on_sync=on_sync,
-            on_progress=on_progress,
-            deadline=budget,
-        )
-        budget.check("starting the kernel")
-        process, endpoint = _start_process(plan, budget.budget(timeout), on_progress)
-
-        playwright = sync_playwright().start()
-        try:
-            budget.check("connecting to CDP")
-            browser = playwright.chromium.connect_over_cdp(
-                endpoint, timeout=budget.budget(timeout) * 1000
+    report = _telemetry.LaunchReport(api_key, server, enabled=telemetry)
+    try:
+        with budget.active():
+            plan = prepare_launch(
+                profile,
+                headless=headless,
+                focus_window=focus_window,
+                proxy=proxy,
+                geoip=geoip,
+                timezone=timezone,
+                api_key=api_key,
+                server=server,
+                cache_dir=cache_dir,
+                profile_dir=profile_dir,
+                kernel_version=kernel_version,
+                label=label,
+                args=args,
+                proxy_auth=proxy_auth,
+                license_token=license_token,
+                license_provider=license_provider,
+                crypt_key=crypt_key,
+                get_crypt_key=get_crypt_key,
+                proxy_id=proxy_id,
+                proxy_host=proxy_host,
+                canvas_noise=canvas_noise,
+                api_log=api_log,
+                update_kernel=update_kernel,
+                webauthn_capture=webauthn_capture,
+                restore_tabs=restore_tabs,
+                device_type=device_type,
+                real_fingerprint=real_fingerprint,
+                sync=sync,
+                temporary=temporary,
+                on_sync=on_sync,
+                on_progress=on_progress,
+                deadline=budget,
+                on_kernel_download=report.kernel_download,
             )
-            contexts = list(browser.contexts)
-            context = contexts[0] if contexts else browser.new_context()
-            # Order matters: the guard runs first so a kernel that did open the
-            # locale tab has it closed, then we make sure exactly one page is left.
-            _close_stray_locale_tab(context, plan)
-            _ensure_startup_page(context)
-        except BaseException:
+            budget.check("starting the kernel")
+            process, endpoint = _start_process(plan, budget.budget(timeout), on_progress)
+
+            playwright = sync_playwright().start()
             try:
-                playwright.stop()
-            except Exception:
-                pass
-            kill_process_tree(process)
-            _revoke_ticket(plan.proxy_ticket)
-            raise
+                budget.check("connecting to CDP")
+                browser = playwright.chromium.connect_over_cdp(
+                    endpoint, timeout=budget.budget(timeout) * 1000
+                )
+                contexts = list(browser.contexts)
+                context = contexts[0] if contexts else browser.new_context()
+                # Order matters: the guard runs first so a kernel that did open the
+                # locale tab has it closed, then we make sure exactly one page is left.
+                _close_stray_locale_tab(context, plan)
+                _ensure_startup_page(context)
+            except BaseException:
+                try:
+                    playwright.stop()
+                except Exception:
+                    pass
+                kill_process_tree(process)
+                _revoke_ticket(plan.proxy_ticket)
+                raise
+    except Exception as error:
+        report.failed(error)
+        raise
+    report.succeeded(plan.kernel_version)
     session = Antibrow(plan, process, endpoint, playwright, browser, context, reuse_initial_page)
     session._live_view = _start_live_view(
         context,
@@ -1740,6 +1759,7 @@ async def launch_async(
     reuse_initial_page: bool = True,
     timeout: float = DEFAULT_LAUNCH_TIMEOUT,
     on_progress: Optional[ProgressCallback] = None,
+    telemetry: bool = True,
 ) -> AsyncAntibrow:
     """asyncio twin of :func:`launch`.
 
@@ -1756,6 +1776,7 @@ async def launch_async(
     loop = asyncio.get_running_loop()
 
     budget = Deadline(timeout)
+    report = _telemetry.LaunchReport(api_key, server, enabled=telemetry)
     _reap_before_launch(cache_dir)
 
     def _prepare() -> LaunchPlan:
@@ -1798,32 +1819,38 @@ async def launch_async(
             on_sync=on_sync,
             on_progress=on_progress,
             deadline=budget,
+            on_kernel_download=report.kernel_download,
         )
 
-    plan = await loop.run_in_executor(None, _prepare)
-    budget.check("starting the kernel")
-    process, endpoint = await loop.run_in_executor(
-        None, _start_process, plan, budget.budget(timeout), on_progress
-    )
-
-    playwright = await async_playwright().start()
     try:
-        budget.check("connecting to CDP")
-        browser = await playwright.chromium.connect_over_cdp(
-            endpoint, timeout=budget.budget(timeout) * 1000
+        plan = await loop.run_in_executor(None, _prepare)
+        budget.check("starting the kernel")
+        process, endpoint = await loop.run_in_executor(
+            None, _start_process, plan, budget.budget(timeout), on_progress
         )
-        contexts = list(browser.contexts)
-        context = contexts[0] if contexts else await browser.new_context()
-        await _close_stray_locale_tab_async(context, plan)
-        await _ensure_startup_page_async(context)
-    except BaseException:
+
+        playwright = await async_playwright().start()
         try:
-            await playwright.stop()
-        except Exception:
-            pass
-        await loop.run_in_executor(None, kill_process_tree, process)
-        await loop.run_in_executor(None, _revoke_ticket, plan.proxy_ticket)
+            budget.check("connecting to CDP")
+            browser = await playwright.chromium.connect_over_cdp(
+                endpoint, timeout=budget.budget(timeout) * 1000
+            )
+            contexts = list(browser.contexts)
+            context = contexts[0] if contexts else await browser.new_context()
+            await _close_stray_locale_tab_async(context, plan)
+            await _ensure_startup_page_async(context)
+        except BaseException:
+            try:
+                await playwright.stop()
+            except Exception:
+                pass
+            await loop.run_in_executor(None, kill_process_tree, process)
+            await loop.run_in_executor(None, _revoke_ticket, plan.proxy_ticket)
+            raise
+    except Exception as error:
+        await loop.run_in_executor(None, report.failed, error)
         raise
+    report.succeeded(plan.kernel_version)
     session = AsyncAntibrow(plan, process, endpoint, playwright, browser, context, reuse_initial_page)
     if live_view:
         # The stream drives a CDP session of its own and blocks on a socket, so

@@ -21,6 +21,12 @@ export interface AntiDetectBrowserOptions {
    * directory tree, so profile managers never enumerate throwaway runs.
    */
   temporary?: boolean
+  /**
+   * Report each launch's outcome (success, or a failure category such as
+   * `timeout` or `concurrency`) to the API. Default true; `ANTIBROW_TELEMETRY=0`
+   * also turns it off. No URLs, profile names, proxy details or error text are sent.
+   */
+  telemetry?: boolean
 }
 
 export interface LaunchOptions {
@@ -85,19 +91,21 @@ export interface LaunchOptions {
    */
   restoreTabs?: boolean
   /**
+   * Extra Chromium switches, appended after everything this SDK sets. Cross-origin
+   * iframes are not exposed as debugger targets, so Playwright cannot reach inside
+   * one; pass `['--fp-cdp-attach-iframes']` on the rare page that needs it.
+   */
+  args?: string[]
+  /**
    * Leave the kernel running after this process exits.
    *
    * Off by default: a browser nobody closes keeps a whole Chromium resident and
    * holds a slot against the license's concurrency cap. Turn it on only if you
    * reconnect to the session later and take responsibility for closing it.
    */
-  /**
-   * Extra Chromium switches, appended after everything this SDK sets. Cross-origin
-   * iframes are not exposed as debugger targets, so Playwright cannot reach inside
-   * one; pass `['--fp-cdp-attach-iframes']` on the rare page that needs it.
-   */
-  args?: string[]
   detached?: boolean
+  /** Launch progress (kernel download percentage, archive restore, and so on). */
+  onProgress?: (message: string) => void
   /**
    * Total budget for the launch in milliseconds (default 120000). Covers
    * preparation as well as the browser coming up: the license call, the cloud
@@ -192,6 +200,8 @@ export interface McpSession {
   page: Page
   profileDir: string
   profileName: string
+  /** Profile tree plus name; two launches with the same key would share a directory. */
+  launchKey?: string
   createdAt: Date
   liveViewStream?: import('./liveview').LiveViewStream
 }

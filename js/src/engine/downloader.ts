@@ -774,7 +774,11 @@ export async function ensureKernel(
   cacheDir: string,
   kv: KernelVersion = defaultKernelVersion(),
   onProgress?: (message: string) => void,
-  opts?: { force?: boolean },
+  opts?: {
+    force?: boolean
+    /** Fires only when this call actually downloads, not when the kernel was already there. */
+    onDownload?: (e: { ok: boolean; error?: unknown }) => void
+  },
 ): Promise<string> {
   const platform = currentPlatform()
   const asset = kernelAsset(kv, platform)
@@ -833,12 +837,14 @@ export async function ensureKernel(
   } catch (e) {
     // A half-installed dir would look ready to the next launch.
     try { fs.rmSync(kDir, { recursive: true, force: true }) } catch { /* ignore */ }
+    opts?.onDownload?.({ ok: false, error: e })
     throw e
   } finally {
     fs.rmSync(zipPath, { force: true })
     lock.release()
   }
 
+  opts?.onDownload?.({ ok: true })
   onProgress?.(`Kernel ready: ${kv.version}`)
   return exePath
 }

@@ -1011,6 +1011,7 @@ def ensure_kernel(
     *,
     force: bool = False,
     platform: Optional[str] = None,
+    on_download: Optional[Callable[[bool, Optional[BaseException]], None]] = None,
 ) -> Path:
     """Make sure a kernel is downloaded and extracted; return the exe path.
 
@@ -1018,6 +1019,7 @@ def ensure_kernel(
     +x on Linux). ``force=True`` re-downloads, which is how a rebuilt
     same-version kernel is picked up. Concurrent installs of the same kernel,
     in this process or any other, are serialised behind one lock file.
+    ``on_download(ok, error)`` fires only when this call actually downloads.
     """
     cache = Path(cache_dir)
     version = kv or default_kernel_version()
@@ -1088,9 +1090,11 @@ def ensure_kernel(
             chmod_kernel_binaries(exe_path.parent)
         if asset.build:
             write_installed_kernel_build(cache, version.version, asset.build)
-    except BaseException:
+    except BaseException as error:
         # Never leave a half-installed directory behind.
         shutil.rmtree(target_dir, ignore_errors=True)
+        if on_download is not None and isinstance(error, Exception):
+            on_download(False, error)
         raise
     finally:
         try:
@@ -1099,6 +1103,8 @@ def ensure_kernel(
             pass
         lock.release()
 
+    if on_download is not None:
+        on_download(True, None)
     if on_progress is not None:
         on_progress("Kernel ready: {0}".format(version.version))
     return exe_path
