@@ -85,8 +85,11 @@ def sanitize_profile_name(name: str) -> str:
     Matches the Node SDK, so the same profile name maps to the same directory
     in either SDK and in the desktop app.
     """
-    if not name:
-        raise ValueError("Profile name is required")
+    if not isinstance(name, str):
+        raise TypeError(f"Profile name must be a string, got {type(name).__name__}")
+    if not name or not name.strip():
+        raise ValueError("Profile name cannot be empty or whitespace-only")
+        
     sanitized = _UNSAFE_PROFILE_CHARS.sub("_", name).replace("..", "_").strip()
     if not sanitized:
         raise ValueError("Invalid profile name after sanitization")
