@@ -52,10 +52,13 @@ browser.close()
 npm install anti-detect-browser playwright-core
 ```
 
+Set your AntiBrow API key in the `ANTI_DETECT_BROWSER_KEY` environment
+variable before running the JavaScript example.
+
 ```js
 import { openProfile } from 'anti-detect-browser'
 
-const session = await openProfile({ key: process.env.ANTIBROW_KEY, profileName: 'default' })
+const session = await openProfile({ key: process.env.ANTI_DETECT_BROWSER_KEY, profileName: 'default' })
 const page = await session.context.newPage()
 await page.goto('https://example.com')
 await session.close()
