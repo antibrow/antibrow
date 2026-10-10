@@ -67,6 +67,7 @@ from .persona import (
     Persona,
     load_or_generate_persona,
     read_persona,
+    settle_persona_languages,
     with_kernel_version,
     write_fp_config,
     write_persona,
@@ -224,6 +225,7 @@ def prepare_launch(
     on_progress: Optional[ProgressCallback] = None,
     deadline: Optional[Deadline] = None,
     on_kernel_download: Optional[Callable[[str, bool, Optional[BaseException]], None]] = None,
+    on_kernel_resolved: Optional[Callable[[str], None]] = None,
 ) -> LaunchPlan:
     """Do every blocking step of a launch except starting the process.
 
@@ -353,6 +355,8 @@ def prepare_launch(
         kv = _kernel.find_kernel_version_strict(persona.kernel_version)
     else:
         kv = _kernel.find_kernel_version(persona.kernel_version)
+    if on_kernel_resolved is not None:
+        on_kernel_resolved(kv.version)
 
     on_download = (
         (lambda ok, error: on_kernel_download(kv.version, ok, error))
@@ -422,6 +426,8 @@ def prepare_launch(
                     resolved_timezone = geo.timezone
                 if geo.ip:
                     public_ip = geo.ip
+
+        persona = settle_persona_languages(directory, persona, geo.country_code if geo else None)
 
         display_label = label or resolved_name
         fp_config_path = write_fp_config(
@@ -1680,6 +1686,7 @@ def launch(
                 on_progress=on_progress,
                 deadline=budget,
                 on_kernel_download=report.kernel_download,
+            on_kernel_resolved=report.kernel_resolved,
             )
             budget.check("starting the kernel")
             process, endpoint = _start_process(plan, budget.budget(timeout), on_progress)
@@ -1820,6 +1827,7 @@ async def launch_async(
             on_progress=on_progress,
             deadline=budget,
             on_kernel_download=report.kernel_download,
+            on_kernel_resolved=report.kernel_resolved,
         )
 
     try:

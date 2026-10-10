@@ -4,6 +4,17 @@ All notable changes to the `antibrow` Python SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.27.0] - 2026-09-30
+
+### Changed
+
+- New profiles take `navigator.languages` (and the matching Accept-Language and `Intl` locale) from the exit country of their first launch, then keep it. Existing profiles keep their current languages. A launch with `geoip=False` leaves them undecided until one that looks the exit up. `Persona` gains a `languages_pending` field.
+- Failed launches now report the kernel version they were on, and an unclassified kernel download failure reports its error class name (never the message).
+
+### Added
+
+- `prepare_launch(on_kernel_resolved=...)` is called with the kernel version once it is settled, before the kernel is installed or started.
+
 ## [0.26.0] - 2026-09-27
 
 ### Added

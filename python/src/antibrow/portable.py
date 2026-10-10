@@ -693,6 +693,9 @@ def _manifest_to_persona(entry: Dict[str, Any], kernel_version: str) -> Persona:
         value = entry.get(field_name)
         if value not in (None, "", []):
             setattr(persona, field_name, value)
+    # Languages the archive carries were already settled wherever it came from.
+    if entry.get("languages"):
+        persona.languages_pending = False
     captured_webgl = entry.get("captured_webgl")
     if isinstance(captured_webgl, dict):
         persona.captured_webgl = captured_webgl

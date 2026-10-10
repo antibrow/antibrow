@@ -136,7 +136,14 @@ class LaunchReport:
         event: Dict[str, Any] = {"type": "kernel.download", "ok": ok, "kernelVersion": version}
         if not ok and error is not None:
             event["code"] = classify_download_error(error)
+            if event["code"] == "unknown":
+                kind = error_kind(error)
+                if kind:
+                    event["meta"] = kind
         self.events.append(event)
+
+    def kernel_resolved(self, version: str) -> None:
+        self.kernel_version = version
 
     def succeeded(self, kernel_version: Optional[str]) -> None:
         """Sent from a daemon thread: the caller has a browser to drive."""

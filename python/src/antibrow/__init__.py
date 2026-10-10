@@ -20,7 +20,7 @@ See https://antibrow.com and the project README for the full API.
 
 from __future__ import annotations
 
-__version__ = "0.26.0"
+__version__ = "0.27.0"
 
 from .api import (
     DEFAULT_RELAY_HOST,

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, FrozenSet, List, Literal, Optional, Sequence, Tuple
 
 from .android_devices import ANDROID_FALLBACK_DEVICES
+from .country_languages import languages_for_country
 from .kernel import normalize_kernel_version
 
 PERSONA_FILE = "persona.json"
@@ -206,6 +207,10 @@ class Persona:
     gpu_vendor: str
     gpu_renderer: str
     languages: List[str] = field(default_factory=lambda: ["en-US", "en"])
+    #: Set on new personas: the languages are settled once, from the exit
+    #: country of the first launch that resolves one, then stay put. Absent on
+    #: profiles created before this existed, which keep theirs.
+    languages_pending: bool = False
     #: Fallback timezone; overridden at launch from the proxy's exit-IP geo.
     timezone: str = "America/Los_Angeles"
     #: A real device's WebGL report, replayed verbatim so the GL facts stay
@@ -223,6 +228,8 @@ class Persona:
     def to_dict(self) -> Dict[str, Any]:
         """camelCase dict, byte-compatible with the Node SDK's persona.json."""
         out = {json_key: getattr(self, attr) for attr, json_key in _JSON_KEYS}
+        if self.languages_pending:
+            out["languagesPending"] = True
         if self.captured_webgl:
             out["capturedWebgl"] = self.captured_webgl
         if self.captured_webgpu:
@@ -243,6 +250,8 @@ class Persona:
         for attr, json_key in _JSON_KEYS:
             if json_key in data:
                 kwargs[attr] = data[json_key]
+        if data.get("languagesPending") is True:
+            kwargs["languages_pending"] = True
         captured_webgl = data.get("capturedWebgl")
         if isinstance(captured_webgl, dict):
             kwargs["captured_webgl"] = captured_webgl
@@ -314,6 +323,7 @@ def _generate_desktop_persona(
         gpu_vendor=gpu_vendor,
         gpu_renderer=gpu_renderer,
         languages=["en-US", "en"],
+        languages_pending=True,
         timezone="America/Los_Angeles",
     )
 
@@ -1413,6 +1423,34 @@ def load_or_generate_persona(
     )
     write_persona(directory, persona)
     return persona
+
+
+def settle_persona_languages(
+    profile_dir: Path | str, persona: Persona, country_code: Optional[str]
+) -> Persona:
+    """Settle a pending persona's languages from the exit country and persist them.
+
+    A country outside the table still settles (on the default): the exit was
+    known, so waiting for another launch would only let the language change later.
+    """
+    if not persona.languages_pending or not country_code:
+        return persona
+    settled = replace(
+        persona,
+        languages=languages_for_country(country_code) or list(persona.languages),
+        languages_pending=False,
+    )
+    path = Path(profile_dir) / PERSONA_FILE
+    # Patched into the file rather than rewritten from memory: the in-memory copy
+    # has its kernelVersion normalized, and the file keeps whatever it had.
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw.pop("languagesPending", None)
+        raw["languages"] = settled.languages
+        path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+    except (ValueError, TypeError, OSError):
+        write_persona(profile_dir, settled)
+    return settled
 
 
 def with_kernel_version(persona: Persona, version: str) -> Persona:

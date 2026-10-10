@@ -86,7 +86,7 @@ def test_persona_round_trips_through_camel_case_json():
     assert set(data) == {
         "seed", "canvasSeed", "audioSeed", "domrectSeed", "chromeMajor", "kernelVersion",
         "ua", "hardwareConcurrency", "deviceMemory", "screenW", "screenH",
-        "devicePixelRatio", "gpuVendor", "gpuRenderer", "languages", "timezone",
+        "devicePixelRatio", "gpuVendor", "gpuRenderer", "languages", "languagesPending", "timezone",
     }
     assert Persona.from_dict(json.loads(json.dumps(data))) == persona
 

@@ -300,11 +300,15 @@ export class AntiDetectBrowser {
         cloudProfileDenied: syncMode !== 'off' && this.syncedProfiles.get(`${syncMode}:${profileName}`) === false,
         options,
         }),
+        onKernelResolved: (version) => {
+          outcome.kernelVersion = version
+        },
         onKernelDownload: (e) => {
           outcome.kernelVersion = e.version
+          const code = e.ok ? undefined : classifyDownloadError(e.error)
           outcome.events.push({
-            type: 'kernel.download', ok: e.ok, kernelVersion: e.version,
-            ...(e.ok ? {} : { code: classifyDownloadError(e.error) }),
+            type: 'kernel.download', ok: e.ok, kernelVersion: e.version, code,
+            meta: code === 'unknown' ? errorKind(e.error) : undefined,
           })
         },
       })

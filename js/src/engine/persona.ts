@@ -5,6 +5,7 @@ import { ANDROID_FALLBACK_DEVICES } from './android-devices'
 import type { WebgpuFacts } from './devices'
 import type { RealDevice } from './devices'
 import { normalizeKernelVersion } from './downloader'
+import { languagesForCountry } from '../geo'
 
 const GPUS = [
   ['Google Inc. (Intel)', 'ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11-27.20.100.9316)'],
@@ -88,6 +89,12 @@ export interface Persona {
   gpuVendor: string
   gpuRenderer: string
   languages: string[]
+  /**
+   * Set on new personas: the languages are settled once, from the exit country
+   * of the first launch that resolves one, then stay put like the rest of the
+   * identity. Absent on profiles created before this existed, which keep theirs.
+   */
+  languagesPending?: boolean
   /** Fallback timezone; overridden at launch from proxy GeoIP. */
   timezone: string
   /**
@@ -254,6 +261,7 @@ function generateDesktopPersona(chromeMajor: number, kernelVersion: string): Per
     gpuVendor,
     gpuRenderer,
     languages: ['en-US', 'en'],
+    languagesPending: true,
     timezone: 'America/Los_Angeles',
   }
 }
@@ -992,6 +1000,29 @@ export function withKernelVersion(persona: Persona, version: string): Persona {
     chromeMajor,
     ua: persona.ua.replace(/Chrome\/\d+/, `Chrome/${chromeMajor}`),
   }
+}
+
+/**
+ * Settle a pending persona's languages from the exit country and persist them.
+ * A country outside the table still settles (on the default): the exit was
+ * known, so waiting for another launch would only let the language change later.
+ */
+export function settlePersonaLanguages(profileDir: string, persona: Persona, countryCode: string | undefined): Persona {
+  if (!persona.languagesPending || !countryCode) return persona
+  const { languagesPending: _, ...rest } = persona
+  const settled: Persona = { ...rest, languages: languagesForCountry(countryCode) ?? persona.languages }
+  const file = path.join(profileDir, PERSONA_FILE)
+  // Patched into the file rather than rewritten from memory: the in-memory copy
+  // has its kernelVersion normalized, and the file keeps whatever it had.
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>
+    delete raw.languagesPending
+    raw.languages = settled.languages
+    fs.writeFileSync(file, JSON.stringify(raw, null, 2))
+  } catch {
+    writePersona(profileDir, settled)
+  }
+  return settled
 }
 
 /** Load the persisted persona, or generate and persist a new one. */

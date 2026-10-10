@@ -17,7 +17,7 @@ import {
   installedKernelBuild,
   type KernelVersion,
 } from './downloader'
-import { loadOrGeneratePersona, readPersona, writePersona, withKernelVersion, type ApiLogMode, type DeviceType, type Persona, type PersonaInit } from './persona'
+import { loadOrGeneratePersona, readPersona, settlePersonaLanguages, writePersona, withKernelVersion, type ApiLogMode, type DeviceType, type Persona, type PersonaInit } from './persona'
 import { fetchRealDevice } from './devices'
 import { lookupDirectGeo, lookupProxyGeo, type ProxyGeo } from './geoip'
 import { getLicenseToken } from './license'
@@ -126,6 +126,8 @@ export interface OpenProfileOptions {
   onProgress?: (message: string) => void
   /** Fires once per kernel download this launch had to do (first install or forced update). */
   onKernelDownload?: (e: { ok: boolean; version: string; error?: unknown }) => void
+  /** Fires once the kernel version this launch will run is settled, before it is installed or started. */
+  onKernelResolved?: (version: string) => void
   /** `download` runs before launch, `upload` after openProfile has returned. */
   onArchiveSync?: (e: ArchiveSyncEvent) => void
   /**
@@ -472,7 +474,7 @@ async function openProfileWithin(opts: OpenProfileOptions, budget: Deadline): Pr
   // here is seeded from the very version the caller asked for.
   const hadPersona = !!readPersona(profileDir)
   const seeded = loadOrGeneratePersona(profileDir, defaultKv.version, personaInit)
-  const persona = hadPersona
+  let persona = hadPersona
     ? await reconcileKernelVersion({
         profileDir, persona: seeded, requested: opts.kernelVersion, cacheDir, onProgress: opts.onProgress,
       })
@@ -481,6 +483,7 @@ async function openProfileWithin(opts: OpenProfileOptions, budget: Deadline): Pr
   const kv = persona.deviceType === 'android'
     ? findKernelVersionStrict(persona.kernelVersion)
     : findKernelVersion(persona.kernelVersion)
+  opts.onKernelResolved?.(kv.version)
 
   const onDownload = opts.onKernelDownload
     ? (e: { ok: boolean; error?: unknown }) => opts.onKernelDownload?.({ ...e, version: kv.version })
@@ -509,6 +512,7 @@ async function openProfileWithin(opts: OpenProfileOptions, budget: Deadline): Pr
   let publicIp: string | undefined
   let rttMs: number | undefined
   let geo: ProxyGeo | null = null
+  let direct: ProxyGeo | null = null
   if (proxyUrl) {
     opts.onProgress?.('Looking up proxy geo')
     budget.check('looking up the proxy exit geo')
@@ -522,11 +526,13 @@ async function openProfileWithin(opts: OpenProfileOptions, budget: Deadline): Pr
     // timeout because nothing here blocks a launch - a network that swallows
     // the request must not add ten seconds to every start.
     opts.onProgress?.('Looking up exit geo')
-    const direct = await lookupDirectGeo(4_000).catch(() => null)
+    direct = await lookupDirectGeo(4_000).catch(() => null)
     if (direct?.timezone) timezone = direct.timezone
     if (direct?.ip) publicIp = direct.ip
     rttMs = direct?.rttMs
   }
+
+  persona = settlePersonaLanguages(profileDir, persona, (geo ?? direct)?.countryCode)
 
   opts.onProgress?.('Obtaining license token')
   budget.check('obtaining the license token')

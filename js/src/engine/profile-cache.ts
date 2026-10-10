@@ -709,6 +709,8 @@ function launcherPersonaToPersona(lp: LauncherPersona, kernelVersion: string): P
     languages: lp.languages?.length ? lp.languages : base.languages,
     timezone: lp.timezone || base.timezone,
   }
+  // Languages the archive carries were already settled wherever it came from.
+  if (lp.languages?.length) delete persona.languagesPending
   if (lp.captured_webgl) persona.capturedWebgl = lp.captured_webgl
   if (lp.device_type === 'android' || lp.device_type === 'desktop') persona.deviceType = lp.device_type
   if (typeof lp.android_model === 'string') persona.androidModel = lp.android_model

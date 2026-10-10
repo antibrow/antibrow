@@ -4,6 +4,17 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.33.0] - 2026-09-30
+
+### Changed
+
+- New profiles take `navigator.languages` (and the matching Accept-Language and `Intl` locale) from the exit country of their first launch, then keep it. Existing profiles keep their current languages. `Persona` gains an optional `languagesPending` field.
+- Failed launches now report the kernel version they were on, and an unclassified kernel download failure reports its error class name (never the message).
+
+### Added
+
+- `openProfile({ onKernelResolved })` is called with the kernel version once it is settled, before the kernel is installed or started.
+
 ## [2.32.0] - 2026-09-27
 
 ### Added

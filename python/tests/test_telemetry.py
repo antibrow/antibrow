@@ -47,6 +47,32 @@ def test_a_failed_launch_is_reported_before_it_raises(tmp_path, posted, monkeypa
     assert all(e["client"] == "sdk-py" and e["kernelVersion"] == "152" for e in posted)
 
 
+def test_a_launch_that_fails_after_resolving_its_kernel_names_it(tmp_path, posted, monkeypatch):
+    def prepare(profile, **kwargs):
+        kwargs["on_kernel_resolved"]("153")
+        raise ConcurrencyLimitError("limit")
+
+    monkeypatch.setattr(B, "prepare_launch", prepare)
+    with pytest.raises(ConcurrencyLimitError):
+        B.launch("p", api_key="k", server="https://api.test", cache_dir=tmp_path)
+
+    assert posted[0]["code"] == "concurrency"
+    assert posted[0]["kernelVersion"] == "153"
+
+
+def test_an_unclassified_download_failure_carries_its_error_class(posted):
+    class ExtractStalled(Exception):
+        pass
+
+    report = T.LaunchReport("k", "https://api.test")
+    report.kernel_download("153", False, ExtractStalled("/Users/me/cache stuck"))
+    report.failed(ExtractStalled("/Users/me/cache stuck"))
+
+    assert posted[0]["code"] == "unknown"
+    assert posted[0]["meta"] == {"error": "ExtractStalled"}
+    assert "/Users/me" not in json.dumps(posted)
+
+
 def test_error_text_never_leaves_the_machine(tmp_path, posted, monkeypatch):
     def prepare(profile, **kwargs):
         raise RuntimeError("/Users/me/secret-profile exploded")

@@ -273,6 +273,38 @@ function buildGeoInfo(countryCode: string, timezone: string): GeoInfo {
   }
 }
 
+/**
+ * `navigator.languages` for an exit country, or undefined when the table has no
+ * entry. The first tag is what the kernel takes as its UI locale, and on macOS
+ * it aborts at startup unless that names a shipped locale pack exactly - so it
+ * is resolved the way Chromium picks a pack for a system locale.
+ */
+export function languagesForCountry(countryCode: string): string[] | undefined {
+  const entry = COUNTRY_LOCALE[countryCode.toUpperCase()]
+  if (!entry) return undefined
+  const tags = entry[1].split(',').map((tag) => tag.split(';')[0].trim())
+  return [...new Set([chromeLocale(tags[0]), ...tags.slice(1)])]
+}
+
+const CHROME_LOCALES = new Set(
+  ('af am ar bg bn ca cs da de el en-GB en-US es es-419 et fa fi fil fr gu he hi hr hu id it ja kn ko ' +
+    'lt lv ml mr ms nb nl pl pt-BR pt-PT ro ru sk sl sr sv sw ta te th tr uk ur vi zh-CN zh-TW').split(' '),
+)
+
+/** The locale pack Chromium's own resolution lands on for a BCP 47 tag. */
+export function chromeLocale(tag: string): string {
+  if (CHROME_LOCALES.has(tag)) return tag
+  const [lang, region = ''] = tag.toLowerCase().split('-')
+  const r = region.toUpperCase()
+  if (lang === 'en') return ['AU', 'CA', 'IN', 'NZ', 'ZA'].includes(r) ? 'en-GB' : 'en-US'
+  if (lang === 'es') return r === '' || r === 'ES' ? 'es' : 'es-419'
+  if (lang === 'pt') return r === 'BR' ? 'pt-BR' : 'pt-PT'
+  if (lang === 'zh') return ['HK', 'MO', 'TW'].includes(r) ? 'zh-TW' : 'zh-CN'
+  const alias: Record<string, string> = { no: 'nb', nn: 'nb', iw: 'he', tl: 'fil' }
+  const base = alias[lang] ?? lang
+  return CHROME_LOCALES.has(base) ? base : 'en-US'
+}
+
 // Country code -> [locale, accept-language]
 
 const COUNTRY_LOCALE: Record<string, [string, string]> = {

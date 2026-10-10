@@ -31,6 +31,7 @@ vi.mock('../../src/engine/downloader', () => ({
 }))
 
 vi.mock('../../src/engine/persona', () => ({
+  settlePersonaLanguages: (_dir: string, p: unknown) => p,
   // No persona on disk: these tests are about the archive/directory paths, not
   // about moving an existing profile to another kernel.
   readPersona: () => undefined,

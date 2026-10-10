@@ -88,6 +88,27 @@ describe('launch telemetry', () => {
     expect(posted[0]).toMatchObject({ type: 'kernel.launch', ok: false, code: 'unknown', meta: { error: 'OddError' } })
   })
 
+  it('names the kernel a launch was on when it fails after resolving it', async () => {
+    openProfileSpy.mockImplementation(async (opts: { onKernelResolved?: (v: string) => void }) => {
+      opts.onKernelResolved?.('153')
+      throw new Error('Kernel refused to start: max instances reached')
+    })
+    await expect(ab().launch({ profile: 'p' })).rejects.toThrow()
+    expect(posted[0]).toMatchObject({ type: 'kernel.launch', ok: false, code: 'concurrency', kernelVersion: '153' })
+  })
+
+  it('attaches the error class to an unclassified download failure', async () => {
+    class StallTimeoutError extends Error { name = 'StallTimeoutError' }
+    openProfileSpy.mockImplementation(async (opts: { onKernelDownload?: (e: unknown) => void }) => {
+      const error = new StallTimeoutError('/Users/me/cache went quiet')
+      opts.onKernelDownload?.({ ok: false, version: '153', error })
+      throw error
+    })
+    await expect(ab().launch({ profile: 'p' })).rejects.toThrow()
+    expect(posted[0]).toMatchObject({ type: 'kernel.download', ok: false, code: 'unknown', meta: { error: 'StallTimeoutError' } })
+    expect(JSON.stringify(posted)).not.toContain('/Users/me')
+  })
+
   it('sends nothing when turned off in the constructor or the environment', async () => {
     openProfileSpy.mockResolvedValue(fakeSession)
     await new AntiDetectBrowser({ key: 'k', server: 'https://api.test', notify: () => {}, telemetry: false }).launch({ profile: 'a' })

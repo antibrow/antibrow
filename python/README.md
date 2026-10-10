@@ -919,7 +919,7 @@ It is a browser. Scraping public data, testing your own anti-fraud stack and man
 
 ## Telemetry
 
-Each launch reports its outcome to the API: success, or a failure category such as `timeout`, `concurrency` or `network`, plus the SDK version, OS and kernel version. No URLs, profile names, proxy details or error text are sent. Turn it off with `launch(telemetry=False)` or `ANTIBROW_TELEMETRY=0`.
+Each launch reports its outcome to the API: success, or a failure category such as `timeout`, `concurrency` or `network`, plus the SDK version, OS and kernel version, and the error's class name when a failure fits no category. No URLs, profile names, proxy details or error text are sent. Turn it off with `launch(telemetry=False)` or `ANTIBROW_TELEMETRY=0`.
 
 ## License
 
