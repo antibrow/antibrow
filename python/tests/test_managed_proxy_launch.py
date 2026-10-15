@@ -148,7 +148,8 @@ class TestPerProfileSwitches:
     def test_defaults_write_the_same_config_as_before_the_switches_existed(
         self, tmp_path, fake_kernel, free_license
     ):
-        config = self.read_config(plan_for(tmp_path))
+        # Pinned: on a Windows host the default is host hardware, which sends no webgl block.
+        config = self.read_config(plan_for(tmp_path, hardware="generated"))
 
         assert config["apilog"] == {"enabled": False, "mode": "off", "path": ""}
         assert "mode" not in config["canvas"]
