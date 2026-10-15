@@ -154,6 +154,12 @@ describe('AntiDetectBrowser.launch (engine)', () => {
     expect(openProfileSpy).not.toHaveBeenCalled()
   })
 
+  it('accepts os and hardware as launch options', async () => {
+    const ab = new AntiDetectBrowser({ key: 'k' })
+    await ab.launch({ profile: 'p-os', os: 'macos', hardware: 'host' })
+    expect(openProfileSpy.mock.calls.at(-1)![0]).toMatchObject({ os: 'macos', hardware: 'host' })
+  })
+
   it('prevents duplicate sessions on the same profile', async () => {
     const ab = new AntiDetectBrowser({ key: 'k' })
     await ab.launch({ profile: 'dup' })

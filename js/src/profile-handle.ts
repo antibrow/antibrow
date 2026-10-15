@@ -30,6 +30,8 @@ export interface ProfileOptions extends AntiDetectBrowserOptions {
   group?: string
   userDataDir?: string
   deviceType?: 'desktop' | 'android'
+  os?: 'windows' | 'macos'
+  hardware?: 'host' | 'generated'
   realFingerprint?: boolean
 }
 
@@ -144,6 +146,8 @@ export class ProfileHandle {
       group: this.group,
       userDataDir: this.options.userDataDir,
       deviceType: this.options.deviceType,
+      os: this.options.os,
+      hardware: this.options.hardware,
       realFingerprint: this.options.realFingerprint,
       ...(managed ? { proxyId: managed } : url ? { proxy: url } : {}),
     })

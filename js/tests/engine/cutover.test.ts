@@ -37,7 +37,7 @@ describe('engine SDK cutover guards', () => {
   it('removes legacy fingerprint/kernel launch options from public types', () => {
     const types = read('src/types.ts')
     const launchOptions = interfaceBody(types, 'LaunchOptions')
-    for (const retired of [/fingerprint\??:/, /kernel\??:/, /kernelVersion\??:/, /\bos\??:/]) {
+    for (const retired of [/fingerprint\??:/, /kernel\??:/, /kernelVersion\??:/]) {
       expect(launchOptions).not.toMatch(retired)
     }
     // The dual-kernel filter type is gone outright, so this one stays file-wide.

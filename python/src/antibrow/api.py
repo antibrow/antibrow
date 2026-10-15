@@ -115,6 +115,8 @@ class ProfileConfig:
     api_log: Optional[str] = None  # "off" | "curated" | "all"
     webauthn_capture: Optional[bool] = None
     device_type: Optional[str] = None  # "desktop" | "android"
+    os: Optional[str] = None  # "windows" | "macos"
+    hardware: Optional[str] = None  # "host" | "generated"
     real_fingerprint: Optional[bool] = None
     kernel_version: Optional[str] = None
 
@@ -134,6 +136,8 @@ class ProfileConfig:
             api_log=_as_str(raw.get("apiLog")),
             webauthn_capture=raw.get("webauthnCapture") if isinstance(raw.get("webauthnCapture"), bool) else None,
             device_type=_as_str(raw.get("deviceType")),
+            os=raw.get("os") if raw.get("os") in ("windows", "macos") else None,
+            hardware=raw.get("hardware") if raw.get("hardware") in ("host", "generated") else None,
             real_fingerprint=raw.get("realFingerprint") if isinstance(raw.get("realFingerprint"), bool) else None,
             kernel_version=_as_str(raw.get("kernelVersion")),
         )
@@ -151,6 +155,8 @@ class ProfileConfig:
                 "apiLog": self.api_log,
                 "webauthnCapture": self.webauthn_capture,
                 "deviceType": self.device_type,
+                "os": self.os,
+                "hardware": self.hardware,
                 "realFingerprint": self.real_fingerprint,
                 "kernelVersion": self.kernel_version,
             }

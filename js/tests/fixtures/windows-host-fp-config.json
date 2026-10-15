@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "seed": "0123456789abcdef",
+  "label": "fixture",
+  "timezone": "Europe/Berlin",
+  "navigator": {
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
+    "platform": "Win32",
+    "vendor": "Google Inc.",
+    "language": "de",
+    "languages": [
+      "de",
+      "de-DE",
+      "en"
+    ]
+  },
+  "canvas": {
+    "seed": "1111111111111111"
+  },
+  "audio": {
+    "seed": "2222222222222222"
+  },
+  "domrect": {
+    "seed": "3333333333333333"
+  },
+  "webrtc": {
+    "mode": "passthrough",
+    "publicIp": "203.0.113.7"
+  },
+  "apilog": {
+    "enabled": false,
+    "mode": "off",
+    "path": "/p/fp-api-log.jsonl"
+  }
+}

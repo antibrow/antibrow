@@ -20,7 +20,7 @@ See https://antibrow.com and the project README for the full API.
 
 from __future__ import annotations
 
-__version__ = "0.27.0"
+__version__ = "1.0.0"
 
 from .api import (
     DEFAULT_RELAY_HOST,
@@ -168,13 +168,18 @@ from .liveview import (
     unregister_live_session,
 )
 from .persona import (
+    HOST_HARDWARE_UNAVAILABLE,
+    MACOS_PERSONA_ON_FOREIGN_HOST,
+    PERSONA_OS_INVALID,
     DeviceType,
     Persona,
     generate_persona,
     load_or_generate_persona,
+    persona_host_warnings,
     persona_to_fp_config,
     read_persona,
     sanitize_persona_gpu,
+    uses_host_hardware,
     with_kernel_version,
     write_persona,
 )
@@ -303,6 +308,11 @@ __all__ = [
     "reconcile_kernel_version",
     "set_profile_kernel_version",
     "persona_to_fp_config",
+    "persona_host_warnings",
+    "MACOS_PERSONA_ON_FOREIGN_HOST",
+    "PERSONA_OS_INVALID",
+    "HOST_HARDWARE_UNAVAILABLE",
+    "uses_host_hardware",
     "list_profiles",
     "profile_exists",
     "profile_dir",

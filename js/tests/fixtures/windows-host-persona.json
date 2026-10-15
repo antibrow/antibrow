@@ -1,0 +1,23 @@
+{
+  "seed": "0123456789abcdef",
+  "canvasSeed": "1111111111111111",
+  "audioSeed": "2222222222222222",
+  "domrectSeed": "3333333333333333",
+  "chromeMajor": 153,
+  "kernelVersion": "153",
+  "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
+  "hardwareConcurrency": 8,
+  "deviceMemory": 8,
+  "screenW": 1920,
+  "screenH": 1080,
+  "devicePixelRatio": 1,
+  "gpuVendor": "Google Inc. (NVIDIA)",
+  "gpuRenderer": "ANGLE (NVIDIA, NVIDIA GeForce GTX 1650 Direct3D11 vs_5_0 ps_5_0, D3D11-31.0.15.3179)",
+  "languages": [
+    "de",
+    "de-DE",
+    "en"
+  ],
+  "timezone": "America/Los_Angeles",
+  "hardware": "host"
+}

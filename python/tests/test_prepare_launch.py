@@ -336,3 +336,73 @@ def test_passkey_store_is_wired_and_capture_is_opt_out(tmp_path, fake_kernel, fa
 
     off = plan_for(tmp_path, profile="p2", webauthn_capture=False)
     assert "--fp-webauthn-create=choose" in off.args
+
+
+def test_macos_profile_writes_a_mac_identity_and_warns_off_mac(tmp_path, fake_kernel, fake_license, monkeypatch):
+    monkeypatch.setattr(B._kernel, "current_platform", lambda: "win32")
+    plan = plan_for(tmp_path, os="macos")
+    persona = json.loads((plan.profile_dir / "persona.json").read_text())
+    assert persona["os"] == "macos"
+    assert "Macintosh" in persona["ua"]
+    assert plan.warnings == ["macos-persona-on-non-mac-host"]
+
+
+def test_macos_profile_on_a_mac_has_no_warning(tmp_path, fake_kernel, fake_license, monkeypatch):
+    monkeypatch.setattr(B._kernel, "current_platform", lambda: "darwin")
+    assert plan_for(tmp_path, os="macos").warnings == []
+
+
+def test_macos_with_real_fingerprint_is_refused_before_any_server_call(tmp_path, fake_kernel, fake_license, monkeypatch):
+    called = []
+    monkeypatch.setattr(B._devices, "fetch_real_device", lambda *a, **k: called.append(1))
+    with pytest.raises(ValueError, match="(?i)real"):
+        plan_for(tmp_path, os="macos", real_fingerprint=True)
+    assert called == []
+
+
+def test_new_windows_profile_on_a_windows_host_uses_host_hardware(tmp_path, fake_kernel, fake_license, monkeypatch):
+    monkeypatch.setattr(B._kernel, "current_platform", lambda: "win32")
+    plan = plan_for(tmp_path)
+    persona = json.loads((plan.profile_dir / "persona.json").read_text())
+    assert persona["hardware"] == "host"
+    assert plan.warnings == []
+
+
+def test_new_windows_profile_off_windows_has_no_hardware_key(tmp_path, fake_kernel, fake_license, monkeypatch):
+    monkeypatch.setattr(B._kernel, "current_platform", lambda: "darwin")
+    plan = plan_for(tmp_path)
+    assert "hardware" not in json.loads((plan.profile_dir / "persona.json").read_text())
+
+
+def test_generated_hardware_is_honoured_on_a_windows_host(tmp_path, fake_kernel, fake_license, monkeypatch):
+    monkeypatch.setattr(B._kernel, "current_platform", lambda: "win32")
+    plan = plan_for(tmp_path, hardware="generated")
+    assert "hardware" not in json.loads((plan.profile_dir / "persona.json").read_text())
+
+
+def test_host_hardware_default_skips_android_macos_and_real_fingerprint(tmp_path, fake_kernel, fake_license, monkeypatch):
+    monkeypatch.setattr(B._kernel, "current_platform", lambda: "win32")
+    resolve = lambda directory, **kw: B._resolve_persona_init(  # noqa: E731
+        directory, device_type=None, real_fingerprint=False, os=None, hardware=None, api_key=None, server=None
+    ) if not kw else B._resolve_persona_init(
+        directory,
+        **{"device_type": None, "real_fingerprint": False, "os": None, "hardware": None, "api_key": None, "server": None, **kw},
+    )
+    assert resolve(tmp_path / "a")[3] == "host"
+    assert resolve(tmp_path / "b", device_type="android")[3] is None
+    assert resolve(tmp_path / "c", os="macos")[3] is None
+    monkeypatch.setattr(B._devices, "fetch_real_device", lambda *a, **k: {})
+    assert resolve(tmp_path / "d", real_fingerprint=True)[3] is None
+    with pytest.raises(ValueError):
+        resolve(tmp_path / "e", hardware="host", device_type="android")
+    with pytest.raises(ValueError):
+        resolve(tmp_path / "f", hardware="nope")
+
+
+def test_an_existing_persona_ignores_the_hardware_option(tmp_path, fake_kernel, fake_license, monkeypatch):
+    monkeypatch.setattr(B._kernel, "current_platform", lambda: "darwin")
+    first = plan_for(tmp_path, profile="p")
+    monkeypatch.setattr(B._kernel, "current_platform", lambda: "win32")
+    again = plan_for(tmp_path, profile="p", hardware="host")
+    assert "hardware" not in json.loads((again.profile_dir / "persona.json").read_text())
+    assert again.profile_dir == first.profile_dir

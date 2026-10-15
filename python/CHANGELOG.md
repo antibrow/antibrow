@@ -4,6 +4,24 @@ All notable changes to the `antibrow` Python SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.0.0] - 2026-10-14
+
+### Changed
+
+- On a Windows computer, new Windows profiles now use the computer's own hardware by default (`hardware="host"`). Pass `hardware="generated"` for the previous invented hardware. Existing profiles are unchanged, and on a non-Windows computer the default stays generated.
+- Every machine that opens a macOS profile needs this version or newer: older versions open it as a broken Windows identity and can drop its OS setting.
+- Every machine that opens a Windows profile with `hardware="host"` needs this version or newer; older versions open it with its generated hardware.
+- An unknown `os` value raises `ValueError`.
+- New generated-hardware profiles always report `navigator.deviceMemory` as 8. Existing profiles keep their current value.
+
+### Added
+
+- `launch(hardware=...)` (also `launch_async()` and `prepare_launch()`) picks the desktop hardware for a new Windows profile. `ProfileConfig` gains a `hardware` field.
+- A `hardware="host"` profile opened on a non-Windows computer launches with its saved generated hardware and reports a `host-hardware-unavailable` warning.
+- `hardware="host"` cannot be combined with `device_type="android"` or a real fingerprint, and `hardware="generated"` cannot be combined with `os="macos"`; both raise `ValueError`.
+- `launch(os='macos')` (also `launch_async()` and `prepare_launch()`) creates a macOS identity that uses the Mac's own hardware. Meant for Mac hosts; elsewhere it still launches and reports a `macos-persona-on-non-mac-host` warning. Combining it with `device_type='android'` or a real fingerprint raises `ValueError`.
+- `session.warnings` and `LaunchPlan.warnings` list non-fatal launch warnings. New exports: `persona_host_warnings`, `MACOS_PERSONA_ON_FOREIGN_HOST`, `PERSONA_OS_INVALID`, `HOST_HARDWARE_UNAVAILABLE` and `uses_host_hardware`.
+
 ## [0.27.0] - 2026-09-30
 
 ### Changed

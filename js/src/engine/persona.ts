@@ -25,7 +25,9 @@ const SCREENS: readonly [number, number, number][] = [
 ]
 
 const HW_CONCURRENCY = [4, 8, 12, 16] as const
-const DEVICE_MEMORY = [8, 16] as const
+// 16 alone gets the profile flagged as an anti-detect browser by a commercial
+// fingerprinting service on a real Windows host, while 4/8/32 do not.
+const DEVICE_MEMORY = [8] as const
 
 function randHex16(): string {
   return randomBytes(8).toString('hex')
@@ -36,6 +38,61 @@ function pick<T>(items: readonly T[]): T {
 }
 
 export type DeviceType = 'desktop' | 'android'
+export type DesktopOs = 'windows' | 'macos'
+export type PersonaHardware = 'host' | 'generated'
+
+export const MACOS_PERSONA_ON_FOREIGN_HOST = 'macos-persona-on-non-mac-host'
+export const PERSONA_OS_INVALID = 'persona-os-invalid'
+export const HOST_HARDWARE_UNAVAILABLE = 'host-hardware-unavailable'
+
+const MAC_UA_PREFIX = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)'
+
+export function isMacPersona(p: Pick<Persona, 'os' | 'deviceType'>): boolean {
+  return p.os === 'macos' && p.deviceType !== 'android'
+}
+
+export function usesHostHardware(p: Pick<Persona, 'os' | 'deviceType' | 'hardware'>): boolean {
+  return isMacPersona(p) || (p.os !== 'macos' && p.deviceType !== 'android' && p.hardware === 'host')
+}
+
+/** A bad `os` or `hardware` in persona.json launches as the generated Windows default rather than locking the profile out. */
+export function personaHostWarnings(p: Pick<Persona, 'os' | 'deviceType' | 'hardware'>, hostPlatform: string): string[] {
+  const os: unknown = p.os
+  if (os !== undefined && os !== 'windows' && os !== 'macos') return [PERSONA_OS_INVALID]
+  if (isMacPersona(p) && hostPlatform !== 'darwin') return [MACOS_PERSONA_ON_FOREIGN_HOST]
+  if (p.os !== 'macos' && p.deviceType !== 'android' && p.hardware === 'host' && hostPlatform !== 'win32') {
+    return [HOST_HARDWARE_UNAVAILABLE]
+  }
+  return []
+}
+
+// The device library holds only Android and Windows machines, and a mac persona
+// takes its hardware from the host anyway, so there is nothing to replay.
+export function assertPersonaOs(init: PersonaInit | undefined, realFingerprint?: boolean): void {
+  assertPersonaHardware(init, realFingerprint)
+  const os: unknown = init?.os
+  if (os === undefined || os === 'windows') return
+  if (os !== 'macos') throw new Error(`Unknown os "${String(os)}": expected "windows" or "macos"`)
+  if (init?.deviceType === 'android' || init?.device?.os === 'android') {
+    throw new Error('os "macos" applies to desktop profiles only; drop deviceType "android" or os')
+  }
+  if (realFingerprint || init?.device) throw new Error('os "macos" cannot use realFingerprint: the library has no Mac machines')
+}
+
+function assertPersonaHardware(init: PersonaInit | undefined, realFingerprint?: boolean): void {
+  const hardware: unknown = init?.hardware
+  if (hardware === undefined || hardware === 'generated') {
+    if (hardware === 'generated' && init?.os === 'macos') {
+      throw new Error('hardware "generated" does not apply to a macOS persona: it always uses the host hardware')
+    }
+    return
+  }
+  if (hardware !== 'host') throw new Error(`Unknown hardware "${String(hardware)}": expected "host" or "generated"`)
+  if (init?.deviceType === 'android' || init?.device?.os === 'android') {
+    throw new Error('hardware "host" applies to desktop profiles only; drop deviceType "android" or hardware')
+  }
+  if (realFingerprint || init?.device) throw new Error('hardware "host" cannot use realFingerprint: a real device brings its own hardware')
+}
 
 /**
  * Facts lifted verbatim from one real device. Every entry maps to an existing
@@ -106,6 +163,10 @@ export interface Persona {
   capturedWebgpu?: WebgpuFacts
   /** Absent means desktop, so existing profiles keep their current behaviour. */
   deviceType?: DeviceType
+  /** Desktop OS the identity claims. Absent means Windows. */
+  os?: DesktopOs
+  /** Windows only: 'host' lets a Windows host answer hardware itself. Absent means generated. */
+  hardware?: PersonaHardware
   androidModel?: string
   androidOsMajor?: number
   captured?: CapturedFacts
@@ -209,6 +270,7 @@ const GPU_VENDOR_SUBSTITUTE = 'ARM'
 /** Returns the very same object when there is nothing to repair, so callers can
  *  tell a repair happened by identity. */
 export function sanitizePersonaGpu<T extends Persona>(persona: T): T {
+  if (isMacPersona(persona)) return persona
   const swap = (value: unknown): unknown =>
     typeof value === 'string' ? value.replaceAll(BLOCKED_GPU_VENDOR, GPU_VENDOR_SUBSTITUTE) : value
   const gpuVendor = swap(persona.gpuVendor) as string
@@ -219,11 +281,15 @@ export function sanitizePersonaGpu<T extends Persona>(persona: T): T {
 
 export interface PersonaInit {
   deviceType?: DeviceType
+  os?: DesktopOs
+  hardware?: PersonaHardware
   /** A device row from the library; absent means use the bundled table. */
   device?: RealDevice
 }
 
 export function generatePersona(chromeMajor = 149, kernelVersion = '149', init?: PersonaInit): Persona {
+  assertPersonaOs(init)
+  if (init?.os === 'macos') return generateMacPersona(chromeMajor, kernelVersion)
   const wantsAndroid = init?.deviceType === 'android' || init?.device?.os === 'android'
   const device = init?.device ?? (wantsAndroid ? pick(ANDROID_FALLBACK_DEVICES) : undefined)
   if (device) {
@@ -238,7 +304,9 @@ export function generatePersona(chromeMajor = 149, kernelVersion = '149', init?:
     }
     return sanitizePersonaGpu(base)
   }
-  return generateDesktopPersona(chromeMajor, kernelVersion)
+  const persona = generateDesktopPersona(chromeMajor, kernelVersion)
+  if (init?.hardware === 'host') persona.hardware = 'host'
+  return persona
 }
 
 function generateDesktopPersona(chromeMajor: number, kernelVersion: string): Persona {
@@ -263,6 +331,31 @@ function generateDesktopPersona(chromeMajor: number, kernelVersion: string): Per
     languages: ['en-US', 'en'],
     languagesPending: true,
     timezone: 'America/Los_Angeles',
+  }
+}
+
+// Hardware fields are placeholders, never emitted: the kernel answers them from
+// the host, which is the whole point of a mac identity on a mac.
+function generateMacPersona(chromeMajor: number, kernelVersion: string): Persona {
+  return {
+    seed: randHex16(),
+    canvasSeed: randHex16(),
+    audioSeed: randHex16(),
+    domrectSeed: randHex16(),
+    chromeMajor,
+    kernelVersion,
+    ua: `${MAC_UA_PREFIX} Chrome/${chromeMajor}.0.0.0 Safari/537.36`,
+    hardwareConcurrency: 0,
+    deviceMemory: 0,
+    screenW: 0,
+    screenH: 0,
+    devicePixelRatio: 0,
+    gpuVendor: '',
+    gpuRenderer: '',
+    languages: ['en-US', 'en'],
+    languagesPending: true,
+    timezone: 'America/Los_Angeles',
+    os: 'macos',
   }
 }
 
@@ -760,11 +853,49 @@ export interface FpConfigSettings {
   hostPlatform?: NodeJS.Platform
 }
 
+// Only what tells profiles apart is sent; every key left out resolves to the
+// host, so an identity matching its host has nothing to contradict.
+function hostFpConfig(
+  persona: Persona,
+  opts: { label: string; timezone: string; publicIp?: string } & FpConfigSettings,
+  platform: 'MacIntel' | 'Win32',
+): Record<string, unknown> {
+  const apiLog = opts.apiLog ?? 'off'
+  const canvas: Record<string, unknown> = { seed: persona.canvasSeed }
+  const config: Record<string, unknown> = {
+    version: 1,
+    seed: persona.seed,
+    label: opts.label,
+    timezone: opts.timezone,
+    navigator: {
+      userAgent: persona.ua,
+      platform,
+      vendor: 'Google Inc.',
+      language: persona.languages[0] ?? 'en-US',
+      languages: persona.languages,
+    },
+    canvas,
+    audio: { seed: persona.audioSeed },
+    domrect: { seed: persona.domrectSeed },
+    webrtc: opts.publicIp ? { mode: 'passthrough', publicIp: opts.publicIp } : { mode: 'disable' },
+    apilog: { enabled: apiLog !== 'off', mode: apiLog, path: opts.apiLogPath ?? '' },
+  }
+  if (opts.canvasNoise === false) {
+    canvas.mode = 'off'
+    config.webgl = { mode: 'off' }
+  }
+  return config
+}
+
 /** Serialize persona to the fp-config.json schema expected by the kernel. */
 export function personaToFpConfig(
   persona: Persona,
   opts: { label: string; timezone: string; publicIp?: string } & FpConfigSettings,
 ): Record<string, unknown> {
+  if (isMacPersona(persona)) return hostFpConfig(persona, opts, 'MacIntel')
+  if (persona.hardware === 'host' && persona.deviceType !== 'android' && (opts.hostPlatform ?? process.platform) === 'win32') {
+    return hostFpConfig(persona, opts, 'Win32')
+  }
   const android = persona.deviceType === 'android'
   // Android has no taskbar; the real avail size arrives via `captured` anyway.
   const availH = android ? persona.screenH : persona.screenH - 48

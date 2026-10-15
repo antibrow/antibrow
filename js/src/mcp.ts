@@ -209,6 +209,8 @@ export async function startMcpServer(): Promise<void> {
             headless: { type: 'boolean', description: 'Run in headless mode' },
             focusWindow: { type: 'boolean', description: 'Whether the new window takes focus. Default true. Pass false to open it behind whatever the user is looking at, without interrupting them; the window is still there.' },
             deviceType: { type: 'string', enum: ['desktop', 'android'], description: 'Simulate an Android phone (running on this desktop/server, not on a physical device) instead of a desktop browser. Applies only when the profile is first created; an existing profile keeps its own device type.' },
+            os: { type: 'string', enum: ['windows', 'macos'], description: 'Desktop OS for a new profile. macos uses this Mac\'s own hardware and should only be used on a Mac. Applies only when the profile is first created.' },
+            hardware: { type: 'string', enum: ['host', 'generated'], description: 'Desktop hardware for a new Windows profile: \'host\' uses this computer\'s own hardware (default on Windows), \'generated\' invents it. Applies only when the profile is first created.' },
             realFingerprint: { type: 'boolean', description: 'Draw the identity from the Real-device fingerprint library instead of generating one. Requires a paid plan; the server rejects this on free plans. Applies only when the profile is first created.' },
             temporary: { type: 'boolean', description: 'Use the temporary profile tree. Recommended for automation: temporary profiles are local-only and do not appear in the desktop app profile list. They persist on disk and are never deleted automatically.' },
           },
@@ -252,6 +254,8 @@ export async function startMcpServer(): Promise<void> {
           properties: {
             name: { type: 'string', description: 'Profile name (must be unique on this machine)' },
             deviceType: { type: 'string', enum: ['desktop', 'android'], description: 'Simulate an Android phone (running on this desktop/server, not on a physical device) instead of a desktop browser.' },
+            os: { type: 'string', enum: ['windows', 'macos'], description: 'Desktop OS for a new profile. macos uses this Mac\'s own hardware and should only be used on a Mac. Applies only when the profile is first created.' },
+            hardware: { type: 'string', enum: ['host', 'generated'], description: 'Desktop hardware for a new Windows profile: \'host\' uses this computer\'s own hardware (default on Windows), \'generated\' invents it. Applies only when the profile is first created.' },
             realFingerprint: { type: 'boolean', description: 'Draw the identity from the Real-device fingerprint library instead of generating one. Requires a paid plan; the server rejects this on free plans.' },
             temporary: { type: 'boolean', description: 'Use the temporary profile tree. Recommended for automation: temporary profiles are local-only and do not appear in the desktop app profile list. They persist on disk and are never deleted automatically.' },
           },
@@ -436,6 +440,7 @@ export async function startMcpServer(): Promise<void> {
           const temporary = mcpRootOptions(args).temporary
           const profile = args?.profile as string
           const launchKey = `${temporary ? 'temporary' : 'managed'}:${profile}`
+          let launchWarnings: string[] = []
           const { session, reused } = await launchOnce(sessions, launching, launchKey, async () => {
             const result = await ab.launch({
               profile,
@@ -446,10 +451,13 @@ export async function startMcpServer(): Promise<void> {
               headless: args?.headless as boolean | undefined,
               focusWindow: args?.focusWindow as boolean | undefined,
               deviceType: args?.deviceType as 'desktop' | 'android' | undefined,
+              os: args?.os as 'windows' | 'macos' | undefined,
+              hardware: args?.hardware as 'host' | 'generated' | undefined,
               realFingerprint: args?.realFingerprint as boolean | undefined,
               temporary,
               onProgress: launchProgress(extra, (m) => console.error(`[launch_browser ${profile}] ${m}`)),
               })
+              launchWarnings = result.warnings
               return {
                 id: `session_${++sessionCounter}`,
                 browser: result.browser,
@@ -468,6 +476,7 @@ export async function startMcpServer(): Promise<void> {
               text: JSON.stringify({
                 sessionId: session.id,
                 profileDir: session.profileDir,
+                ...(launchWarnings.length ? { warnings: launchWarnings } : {}),
                 ...(reused ? { reused: true, note: 'This profile already had a running browser; reusing its session.' } : {}),
               }, null, 2),
             }],
@@ -522,6 +531,8 @@ export async function startMcpServer(): Promise<void> {
           await refreshKernelVersions(resolvedCacheDir)
           const personaInit = await resolvePersonaInit(profileDir, {
             deviceType: args?.deviceType as 'desktop' | 'android' | undefined,
+            os: args?.os as 'windows' | 'macos' | undefined,
+            hardware: args?.hardware as 'host' | 'generated' | undefined,
             realFingerprint: args?.realFingerprint as boolean | undefined,
             key: apiKey,
             server,

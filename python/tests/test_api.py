@@ -97,6 +97,18 @@ class TestProfiles:
         # A null would clear the server's value; an absent key leaves it alone.
         assert server.calls[0]["body"] == {"config": {"label": "Main"}}
 
+    def test_config_os_round_trips_and_unknown_values_are_dropped(self):
+        assert api.ProfileConfig.from_dict({"os": "macos"}).os == "macos"
+        assert api.ProfileConfig.from_dict({"os": "mac"}).os is None
+        assert api.ProfileConfig(os="macos").to_dict() == {"os": "macos"}
+        assert api.ProfileConfig().to_dict() == {}
+
+    def test_config_hardware_round_trips_and_unknown_values_are_dropped(self):
+        assert api.ProfileConfig.from_dict({"hardware": "host"}).hardware == "host"
+        assert api.ProfileConfig.from_dict({"hardware": "generated"}).hardware == "generated"
+        assert api.ProfileConfig.from_dict({"hardware": "gpu"}).hardware is None
+        assert api.ProfileConfig(hardware="host").to_dict() == {"hardware": "host"}
+
     def test_a_name_needing_encoding_reaches_the_right_route(self, server):
         # The space is escaped, the @ is not: the server's double-encoding guard
         # refuses a segment that partially decodes and still holds a %xx, and its

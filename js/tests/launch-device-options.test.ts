@@ -103,4 +103,34 @@ describe('per-profile kernel switches reach the engine', () => {
     expect(built.webauthnCapture).toBeUndefined()
     expect(built.restoreTabs).toBeUndefined()
   })
+
+  it('forwards os into the openProfile call', () => {
+    const built = buildOpenProfileOptions({
+      key: 'adb_test',
+      server: 'https://antibrow.com',
+      profileName: 'p',
+      licenseToken: 'tok',
+      archive: {},
+      cacheDir: '/tmp/cache',
+      temporary: false,
+      licenseSync: true,
+      options: { profile: 'p', os: 'macos' },
+    })
+    expect(built.os).toBe('macos')
+  })
+
+  it('forwards hardware into the openProfile call', () => {
+    const built = buildOpenProfileOptions({
+      key: 'adb_test',
+      server: 'https://antibrow.com',
+      profileName: 'p',
+      licenseToken: 'tok',
+      archive: {},
+      cacheDir: '/tmp/cache',
+      temporary: false,
+      licenseSync: true,
+      options: { profile: 'p', hardware: 'host' },
+    })
+    expect(built.hardware).toBe('host')
+  })
 })

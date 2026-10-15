@@ -73,6 +73,16 @@ export interface LaunchOptions {
    */
   deviceType?: 'desktop' | 'android'
   /**
+   * Desktop OS for a new profile. `macos` uses this Mac's own hardware and is
+   * meant for Mac hosts; elsewhere it still launches, with a warning.
+   */
+  os?: 'windows' | 'macos'
+  /**
+   * Desktop hardware for a new Windows profile. `host` uses this computer's own
+   * hardware (default on a Windows host); `generated` invents it.
+   */
+  hardware?: 'host' | 'generated'
+  /**
    * Draw this profile's identity from the Real-device fingerprint library
    * instead of generating one (paid plans; the server rejects free-plan
    * requests). Applies only when the profile is first created.
@@ -146,6 +156,8 @@ export interface LaunchResult {
   profileDir: string
   /** Live view info (only present when Live View is enabled) */
   liveView?: { sessionKey: string; viewUrl: string }
+  /** Non-fatal launch warnings, e.g. a macOS profile on a non-Mac host. */
+  warnings: string[]
 }
 
 /** Reference to a proxy carried in a synced profile config. */
@@ -168,6 +180,8 @@ export interface ProfileConfig {
   /** Fixed when the profile was created; travels so every machine shows the
    *  same identity before the profile is ever launched there. */
   deviceType?: import('./engine/persona').DeviceType
+  os?: import('./engine/persona').DesktopOs
+  hardware?: import('./engine/persona').PersonaHardware
   realFingerprint?: boolean
   /** Chrome major (150/151). Travels for the same reason deviceType does: a
    *  machine that has never opened the profile still has to know which kernel

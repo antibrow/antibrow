@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { packProfileCache, unpackProfileCache, exportProfileArchive, importProfileArchive } from '../../src/engine/profile-cache'
-import { generatePersona, personaToFpConfig, type Persona } from '../../src/engine/persona'
+import { generatePersona, personaToFpConfig, writePersona, type Persona } from '../../src/engine/persona'
 import { DEFAULT_KERNEL_VERSION, kernelsForPlatform, normalizeKernelVersion } from '../../src/engine/downloader'
 
 function tmp(prefix: string): string {
@@ -707,5 +707,48 @@ describe('importProfileArchive - launcher format (.fpprofile)', () => {
 
     expect(fs.existsSync(path.join(parent, '..', 'pwned.txt'))).toBe(false)
     expect(fs.existsSync(path.join(dst, 'persona.json'))).toBe(true)
+  })
+})
+
+describe('portable archive os', () => {
+  it('round-trips a macOS persona and never invents os for an old one', () => {
+    for (const [persona, expectOs] of [
+      [generatePersona(153, '153', { os: 'macos' }), 'macos'],
+      [generatePersona(153, '153'), undefined],
+    ] as const) {
+      const src = tmp('os-src-')
+      writePersona(src, persona)
+      fs.mkdirSync(path.join(src, 'user-data', 'Default'), { recursive: true })
+      const buf = exportProfileArchive(src, { name: 'n', kernelVersion: '153' })
+      const dst = tmp('os-dst-')
+      importProfileArchive(buf, dst)
+      const back = JSON.parse(fs.readFileSync(path.join(dst, 'persona.json'), 'utf8'))
+      expect(back.os).toBe(expectOs)
+      if (expectOs) {
+        expect(back.ua).toContain('Macintosh')
+        expect(back.gpuVendor).toBe('')
+        expect(back.gpuRenderer).toBe('')
+      }
+    }
+  })
+})
+
+describe('portable archive hardware', () => {
+  it('keeps host and never invents the key for generated or old personas', () => {
+    for (const [persona, expected] of [
+      [generatePersona(153, '153', { hardware: 'host' }), 'host'],
+      [generatePersona(153, '153', { hardware: 'generated' }), undefined],
+      [generatePersona(153, '153'), undefined],
+    ] as const) {
+      const src = tmp('hw-src-')
+      writePersona(src, persona)
+      fs.mkdirSync(path.join(src, 'user-data', 'Default'), { recursive: true })
+      const buf = exportProfileArchive(src, { name: 'n', kernelVersion: '153' })
+      const dst = tmp('hw-dst-')
+      importProfileArchive(buf, dst)
+      const back = JSON.parse(fs.readFileSync(path.join(dst, 'persona.json'), 'utf8'))
+      expect(back.hardware).toBe(expected)
+      expect('hardware' in back).toBe(expected !== undefined)
+    }
   })
 })

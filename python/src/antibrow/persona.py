@@ -33,6 +33,14 @@ FP_CONFIG_FILE = "fp-config.json"
 API_LOG_FILE = "fp-api-log.jsonl"
 
 DeviceType = Literal["desktop", "android"]
+DesktopOs = Literal["windows", "macos"]
+PersonaHardware = Literal["host", "generated"]
+
+MACOS_PERSONA_ON_FOREIGN_HOST = "macos-persona-on-non-mac-host"
+HOST_HARDWARE_UNAVAILABLE = "host-hardware-unavailable"
+PERSONA_OS_INVALID = "persona-os-invalid"
+
+_MAC_UA_PREFIX = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)"
 
 #: Android majors the bundled devices vary across; the corpus rows themselves
 #: sit at 15-16.
@@ -76,7 +84,9 @@ SCREENS: Sequence[Tuple[int, int, float]] = (
 )
 
 HARDWARE_CONCURRENCY: Sequence[int] = (4, 8, 12, 16)
-DEVICE_MEMORY: Sequence[int] = (8, 16)
+# 16 alone gets the profile flagged as an anti-detect browser by a commercial
+# fingerprinting service on a real Windows host, while 4/8/32 do not.
+DEVICE_MEMORY: Sequence[int] = (8,)
 
 #: Taskbar height subtracted from screen height to get ``screen.availHeight``.
 _TASKBAR_HEIGHT = 48
@@ -221,6 +231,10 @@ class Persona:
     captured_webgpu: Optional[Dict[str, Any]] = None
     #: Absent means desktop, so existing profiles keep their current behaviour.
     device_type: Optional[DeviceType] = None
+    #: Desktop OS the identity claims. Absent means Windows.
+    os: Optional[str] = None
+    #: Windows only: "host" lets a Windows host answer hardware itself. Absent means generated.
+    hardware: Optional[str] = None
     android_model: Optional[str] = None
     android_os_major: Optional[int] = None
     captured: Optional[CapturedFacts] = None
@@ -236,6 +250,10 @@ class Persona:
             out["capturedWebgpu"] = self.captured_webgpu
         if self.device_type is not None:
             out["deviceType"] = self.device_type
+        if self.os is not None:
+            out["os"] = self.os
+        if self.hardware == "host":
+            out["hardware"] = "host"
         if self.android_model is not None:
             out["androidModel"] = self.android_model
         if self.android_os_major is not None:
@@ -260,6 +278,10 @@ class Persona:
             kwargs["captured_webgpu"] = captured_webgpu
         if "deviceType" in data:
             kwargs["device_type"] = data["deviceType"]
+        if "os" in data:
+            kwargs["os"] = data["os"]
+        if "hardware" in data:
+            kwargs["hardware"] = data["hardware"]
         if "androidModel" in data:
             kwargs["android_model"] = data["androidModel"]
         if "androidOsMajor" in data:
@@ -277,6 +299,86 @@ BLOCKED_GPU_VENDOR = "Imagination Technologies"
 GPU_VENDOR_SUBSTITUTE = "ARM"
 
 
+def is_mac_persona(persona: Persona) -> bool:
+    return persona.os == "macos" and persona.device_type != "android"
+
+
+def uses_host_hardware(persona: Persona) -> bool:
+    return is_mac_persona(persona) or (
+        persona.os != "macos" and persona.device_type != "android" and persona.hardware == "host"
+    )
+
+
+def persona_host_warnings(persona: Persona, host_platform: str) -> List[str]:
+    """A bad ``os`` or ``hardware`` in persona.json launches as the generated Windows default rather than locking the profile out."""
+    if persona.os is not None and persona.os not in ("windows", "macos"):
+        return [PERSONA_OS_INVALID]
+    if is_mac_persona(persona) and host_platform != "darwin":
+        return [MACOS_PERSONA_ON_FOREIGN_HOST]
+    if persona.os != "macos" and persona.device_type != "android" and persona.hardware == "host" and host_platform != "win32":
+        return [HOST_HARDWARE_UNAVAILABLE]
+    return []
+
+
+def _assert_persona_hardware(
+    os: Optional[str], device_type: Optional[str], real_fingerprint: bool, hardware: Optional[str]
+) -> None:
+    if hardware is None or hardware == "generated":
+        if hardware == "generated" and os == "macos":
+            raise ValueError('hardware "generated" does not apply to a macOS persona: it always uses the host hardware')
+        return
+    if hardware != "host":
+        raise ValueError('Unknown hardware "{0}": expected "host" or "generated"'.format(hardware))
+    if device_type == "android":
+        raise ValueError('hardware "host" applies to desktop profiles only; drop device_type "android" or hardware')
+    if real_fingerprint:
+        raise ValueError('hardware "host" cannot use real_fingerprint: a real device brings its own hardware')
+
+
+def assert_persona_os(
+    os: Optional[str],
+    device_type: Optional[str],
+    real_fingerprint: bool = False,
+    hardware: Optional[str] = None,
+) -> None:
+    # The device library holds only Android and Windows machines, and a mac
+    # persona takes its hardware from the host anyway.
+    _assert_persona_hardware(os, device_type, real_fingerprint, hardware)
+    if os is None or os == "windows":
+        return
+    if os != "macos":
+        raise ValueError('Unknown os "{0}": expected "windows" or "macos"'.format(os))
+    if device_type == "android":
+        raise ValueError('os "macos" applies to desktop profiles only; drop device_type "android" or os')
+    if real_fingerprint:
+        raise ValueError('os "macos" cannot use real_fingerprint: the library has no Mac machines')
+
+
+def _generate_mac_persona(chrome_major: int, kernel_version: str, rng: Optional[random.Random] = None) -> Persona:
+    # Hardware fields are placeholders, never emitted: the kernel answers them
+    # from the host.
+    return Persona(
+        seed=_rand_hex16(rng),
+        canvas_seed=_rand_hex16(rng),
+        audio_seed=_rand_hex16(rng),
+        domrect_seed=_rand_hex16(rng),
+        chrome_major=chrome_major,
+        kernel_version=kernel_version,
+        ua="{0} Chrome/{1}.0.0.0 Safari/537.36".format(_MAC_UA_PREFIX, chrome_major),
+        hardware_concurrency=0,
+        device_memory=0,
+        screen_w=0,
+        screen_h=0,
+        device_pixel_ratio=0,
+        gpu_vendor="",
+        gpu_renderer="",
+        languages=["en-US", "en"],
+        languages_pending=True,
+        timezone="America/Los_Angeles",
+        os="macos",
+    )
+
+
 def sanitize_persona_gpu(persona: Persona) -> Persona:
     """Move a profile off the ANGLE vendor token Cloudflare refuses to clear.
 
@@ -291,6 +393,8 @@ def sanitize_persona_gpu(persona: Persona) -> Persona:
     Returns the very same object when there is nothing to repair, so callers can
     tell a repair happened by identity.
     """
+    if is_mac_persona(persona):
+        return persona
     vendor = persona.gpu_vendor.replace(BLOCKED_GPU_VENDOR, GPU_VENDOR_SUBSTITUTE)
     renderer = persona.gpu_renderer.replace(BLOCKED_GPU_VENDOR, GPU_VENDOR_SUBSTITUTE)
     if vendor == persona.gpu_vendor and renderer == persona.gpu_renderer:
@@ -436,6 +540,8 @@ def generate_persona(
     rng: Optional[random.Random] = None,
     device_type: Optional[DeviceType] = None,
     device: Optional[Dict[str, Any]] = None,
+    os: Optional[str] = None,
+    hardware: Optional[str] = None,
 ) -> Persona:
     """Roll a new self-consistent persona, desktop or Android.
 
@@ -445,13 +551,24 @@ def generate_persona(
     ``rng`` makes generation reproducible in tests; production calls use
     :mod:`secrets` for the seeds and :mod:`random` for the picks.
     """
-    chooser = rng or random
     wants_android = device_type == "android" or (device is not None and device.get("os") == "android")
+    assert_persona_os(
+        os,
+        "android" if wants_android else device_type,
+        real_fingerprint=device is not None and (os == "macos" or hardware == "host"),
+        hardware=hardware,
+    )
+    if os == "macos":
+        return _generate_mac_persona(chrome_major, kernel_version, rng)
+    chooser = rng or random
     picked_device = device
     if picked_device is None and wants_android:
         picked_device = chooser.choice(list(ANDROID_FALLBACK_DEVICES))
     if picked_device is None:
-        return _generate_desktop_persona(chrome_major, kernel_version, rng)
+        persona = _generate_desktop_persona(chrome_major, kernel_version, rng)
+        if hardware == "host":
+            persona.hardware = "host"
+        return persona
 
     persona = _generate_desktop_persona(chrome_major, kernel_version, rng)
     # The bundled rows are fixed, so vary the Android major to keep free-tier
@@ -1106,6 +1223,44 @@ def _merge_fonts(base: Sequence[str], extra: Sequence[str]) -> List[str]:
     return out
 
 
+def _host_fp_config(
+    persona: Persona,
+    platform: str,
+    *,
+    label: str,
+    timezone: str,
+    public_ip: Optional[str],
+    canvas_noise: Optional[bool],
+    api_log: Optional[str],
+    api_log_path: Optional[str],
+) -> Dict[str, Any]:
+    # Only what tells profiles apart is sent; every key left out resolves to the host.
+    mode = api_log or "off"
+    canvas: Dict[str, Any] = {"seed": persona.canvas_seed}
+    config: Dict[str, Any] = {
+        "version": 1,
+        "seed": persona.seed,
+        "label": label,
+        "timezone": timezone,
+        "navigator": {
+            "userAgent": persona.ua,
+            "platform": platform,
+            "vendor": "Google Inc.",
+            "language": persona.languages[0] if persona.languages else "en-US",
+            "languages": list(persona.languages),
+        },
+        "canvas": canvas,
+        "audio": {"seed": persona.audio_seed},
+        "domrect": {"seed": persona.domrect_seed},
+        "webrtc": {"mode": "passthrough", "publicIp": public_ip} if public_ip else {"mode": "disable"},
+        "apilog": {"enabled": mode != "off", "mode": mode, "path": api_log_path or ""},
+    }
+    if canvas_noise is False:
+        canvas["mode"] = "off"
+        config["webgl"] = {"mode": "off"}
+    return config
+
+
 def persona_to_fp_config(
     persona: Persona,
     *,
@@ -1126,6 +1281,12 @@ def persona_to_fp_config(
     identity, and leaving them unset produces exactly the config this function
     produced before they existed.
     """
+    if is_mac_persona(persona):
+        return _host_fp_config(persona, "MacIntel", label=label, timezone=timezone, public_ip=public_ip,
+                               canvas_noise=canvas_noise, api_log=api_log, api_log_path=api_log_path)
+    if persona.hardware == "host" and persona.device_type != "android" and (host_platform or sys.platform) == "win32":
+        return _host_fp_config(persona, "Win32", label=label, timezone=timezone, public_ip=public_ip,
+                               canvas_noise=canvas_noise, api_log=api_log, api_log_path=api_log_path)
     android = persona.device_type == "android"
     # Android has no taskbar; the real avail size arrives via `captured` anyway.
     avail_h = persona.screen_h if android else persona.screen_h - _TASKBAR_HEIGHT
@@ -1384,6 +1545,8 @@ def load_or_generate_persona(
     rng: Optional[random.Random] = None,
     device_type: Optional[DeviceType] = None,
     device: Optional[Dict[str, Any]] = None,
+    os: Optional[str] = None,
+    hardware: Optional[str] = None,
 ) -> Persona:
     """Read ``persona.json`` from a profile, or create and persist a new one.
 
@@ -1420,6 +1583,8 @@ def load_or_generate_persona(
         rng=rng,
         device_type=device_type,
         device=device,
+        os=os,
+        hardware=hardware,
     )
     write_persona(directory, persona)
     return persona

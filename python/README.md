@@ -164,6 +164,8 @@ Starts the kernel and returns a handle that is ready to drive. Blocking (sync) A
 | `license_token` | `str` | `None` | Use a pre-minted token instead of calling the server. |
 | `license_provider` | `callable` | `None` | Return a token from your own issuer (self-hosted, vault, CI). |
 | `update_kernel` | `bool` | `False` | Check for a newer build of this profile's kernel and install it before launching. |
+| `os` | `"windows" \| "macos"` | `"windows"` | Desktop OS for a new profile. `"macos"` uses the Mac's own hardware and is meant for Mac hosts; elsewhere it launches with a warning. Applies only when the profile is **created**. |
+| `hardware` | `"host" \| "generated"` | `"host"` on Windows | Desktop hardware for a new Windows profile: `"host"` uses this computer's own hardware (the default on Windows), `"generated"` invents it. Host-hardware profiles on one computer share its GPU, screen and fonts. Applies only when the profile is **created**. |
 | `device_type` | `"desktop" \| "android"` | `"desktop"` | Simulate an Android phone instead of a desktop browser. Applies only when the profile is **created**; see [Android profiles](#android-profiles). |
 | `real_fingerprint` | `bool` | `False` | Draw the identity from the fingerprint library on the server instead of generating one (paid plans). Also creation-time only. |
 | `sync` | `bool` | plan default | Cloud profile sync: restore before launching, save after closing. `None` follows the plan the key is on, `False` keeps the launch local, `True` attempts it regardless. |
@@ -264,7 +266,7 @@ user-data/       Chromium's profile: cookies, storage, history, extensions
 
 The cache directory is shared with the [Node SDK](https://www.npmjs.com/package/anti-detect-browser) and the AntiBrow desktop app, so a profile created from Python shows up in the desktop app's list and vice versa. Override it with `ANTIBROW_CACHE_DIR` or `cache_dir=`.
 
-What a persona pins:
+What a persona pins. The Screen, GPU, Fonts, `hardwareConcurrency` and `deviceMemory` rows apply to generated hardware; host-hardware profiles (the Windows default on Windows, and macOS profiles) take those from the computer, so all such profiles on one computer share them:
 
 | Surface | Example |
 |---|---|
@@ -284,6 +286,8 @@ Inspect a live identity:
 browser = launch(profile="p1")
 print(browser.persona.ua, browser.persona.gpu_renderer, browser.persona.screen_w)
 ```
+
+Under host hardware, the GPU and screen values on the persona are fallbacks; the browser reports the computer's own.
 
 Sanity checks worth running once: [creepjs](https://abrahamjuliot.github.io/creepjs/), [whoer.net](https://whoer.net), [browserleaks.com/canvas](https://browserleaks.com/canvas), [pixelscan.net](https://pixelscan.net).
 

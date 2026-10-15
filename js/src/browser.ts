@@ -117,6 +117,8 @@ export function buildOpenProfileOptions(input: BuildOpenProfileOptionsInput): Op
     focusWindow: options.focusWindow,
     updateKernelBeforeLaunch: options.updateKernelBeforeLaunch,
     deviceType: options.deviceType,
+    os: options.os,
+    hardware: options.hardware,
     realFingerprint: options.realFingerprint,
     label: options.label,
     // Per-profile kernel switches. Undefined leaves the kernel on its defaults,
@@ -184,7 +186,7 @@ export class AntiDetectBrowser {
     if (!options.profile) {
       throw new Error('The "profile" option is required. Pass a profile name to launch().')
     }
-    if ('kernel' in options || 'kernelVersion' in options || 'os' in options || 'seed' in options || 'fingerprint' in options) {
+    if ('kernel' in options || 'kernelVersion' in options || 'seed' in options || 'fingerprint' in options) {
       throw new Error('Legacy fingerprint/kernel launch options were removed. engine generates the browser identity locally per profile.')
     }
     for (const [, s] of this.activeSessions) {
@@ -378,6 +380,7 @@ export class AntiDetectBrowser {
       context,
       page,
       profileDir: session.profileDir,
+      warnings: session.warnings ?? [],
       ...(liveViewInfo ? { liveView: liveViewInfo } : {}),
     }
   }

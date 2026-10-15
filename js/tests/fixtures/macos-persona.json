@@ -1,0 +1,19 @@
+{
+  "seed": "0123456789abcdef",
+  "canvasSeed": "1111111111111111",
+  "audioSeed": "2222222222222222",
+  "domrectSeed": "3333333333333333",
+  "chromeMajor": 153,
+  "kernelVersion": "153",
+  "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
+  "hardwareConcurrency": 0,
+  "deviceMemory": 0,
+  "screenW": 0,
+  "screenH": 0,
+  "devicePixelRatio": 0,
+  "gpuVendor": "",
+  "gpuRenderer": "",
+  "languages": ["de", "de-DE", "en"],
+  "timezone": "America/Los_Angeles",
+  "os": "macos"
+}

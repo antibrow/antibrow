@@ -159,6 +159,10 @@ def _persona_to_manifest(persona: Persona) -> Dict[str, Any]:
     out: Dict[str, Any] = {field_name: getattr(persona, field_name) for field_name in _PERSONA_FIELDS}
     if persona.captured_webgl:
         out["captured_webgl"] = persona.captured_webgl
+    if persona.os:
+        out["os"] = persona.os
+    if persona.hardware == "host":
+        out["hardware"] = "host"
     if persona.device_type:
         out["device_type"] = persona.device_type
     if persona.android_model:
@@ -686,7 +690,8 @@ def _manifest_to_persona(entry: Dict[str, Any], kernel_version: str) -> Persona:
     except ValueError:
         major = int(entry.get("chrome_major") or 0) or 150
 
-    persona = generate_persona(major, kernel_version)
+    # A mac archive keeps its empty GPU strings and zero hardware only over a mac base.
+    persona = generate_persona(major, kernel_version, os="macos" if entry.get("os") == "macos" else None)
     for field_name in _PERSONA_FIELDS:
         if field_name in ("chrome_major", "ua"):
             continue
@@ -700,6 +705,11 @@ def _manifest_to_persona(entry: Dict[str, Any], kernel_version: str) -> Persona:
     if isinstance(captured_webgl, dict):
         persona.captured_webgl = captured_webgl
 
+    os_value = entry.get("os")
+    if os_value in ("windows", "macos"):
+        persona.os = os_value
+    if entry.get("hardware") == "host":
+        persona.hardware = "host"
     device_type = entry.get("device_type")
     if device_type in ("android", "desktop"):
         persona.device_type = device_type

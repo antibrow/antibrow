@@ -270,3 +270,26 @@ def test_entries_pointing_outside_the_profile_are_ignored(tmp_path):
 
     assert (dest / "passkeys.json").exists()
     assert not (tmp_path / "escaped.json").exists()
+
+
+def test_os_round_trips_and_is_never_invented(tmp_path):
+    for persona, expect in ((generate_persona(153, "153", os="macos"), "macos"), (generate_persona(153, "153"), None)):
+        source = make_profile(tmp_path / ("src-" + str(expect)), persona)
+        data = P.export_profile_archive(source, P.PortableProfileMeta(name="n"))
+        dest = tmp_path / ("dst-" + str(expect))
+        P.import_profile_archive(data, dest)
+        back = json.loads((dest / "persona.json").read_text())
+        assert back.get("os") == expect
+        if expect == "macos":
+            assert back["gpuVendor"] == ""
+            assert back["gpuRenderer"] == ""
+
+
+def test_hardware_host_round_trips_and_is_never_invented(tmp_path):
+    host = generate_persona(153, "153", hardware="host")
+    for persona, expect in ((host, "host"), (generate_persona(153, "153"), None)):
+        source = make_profile(tmp_path / ("hw-src-" + str(expect)), persona)
+        data = P.export_profile_archive(source, P.PortableProfileMeta(name="n"))
+        dest = tmp_path / ("hw-dst-" + str(expect))
+        P.import_profile_archive(data, dest)
+        assert json.loads((dest / "persona.json").read_text()).get("hardware") == expect

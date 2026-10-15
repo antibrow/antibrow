@@ -90,6 +90,10 @@ await same.launch()                       // same exit IP, timezone and geo
 
 `p.launch()` resolves to `{ browser, context, page, profileDir }` — `context` and `page` are the real Playwright objects.
 
+Pass `os: 'macos'` to `launch()` for a new profile's desktop OS (`'windows'` is the default). `'macos'` uses the Mac's own hardware and is meant for Mac hosts; elsewhere it launches with a warning.
+
+Pass `hardware` to `launch()` for a new Windows profile's desktop hardware: `'host'` uses this computer's own hardware (the default on Windows), `'generated'` invents it. Host-hardware profiles on one computer share its GPU, screen and fonts.
+
 ## Android profiles
 
 Ask for a phone and the profile becomes one - on the same Windows, macOS or Linux machine you already run:
@@ -208,7 +212,7 @@ click, the agent asks for `reddit/hot` and gets JSON. All three take a `jq`
 filter, so it can ask for two fields instead of a whole payload. See
 [Recipes](#recipes).
 
-`launch_browser` and `create_profile` both take `deviceType` (`"desktop"` / `"android"`) and `realFingerprint`, so an agent can ask for a phone profile in the same call that starts it.
+`launch_browser` and `create_profile` both take `deviceType` (`"desktop"` / `"android"`), `realFingerprint`, `os` (`"windows"` / `"macos"`) and `hardware` (`"host"` / `"generated"`), so an agent can ask for a phone profile in the same call that starts it.
 
 The first `launch_browser` on a machine downloads the browser kernel (a few hundred MB), which can take longer than a client's tool-call timeout. The launch keeps going in the background, and calling `launch_browser` again for the same profile joins it (or returns the session it produced) instead of starting a second browser. Clients that send a progress token get progress notifications while it runs. On Windows, a client that reports `spawn npx ENOENT` needs `"command": "cmd"` with `"/c", "npx"` in front of the other args.
 
@@ -433,7 +437,7 @@ await same.launch()
 `profile()` accepts everything the `AntiDetectBrowser` constructor does, plus
 `name` (required), `proxy`, `sync`, `temporary`, `tags`, `group`,
 `userDataDir` and, applying only the first time the profile is created (same
-as on `launch()`), `deviceType` and `realFingerprint`. `tags` and `group`
+as on `launch()`), `deviceType`, `os`, `hardware` and `realFingerprint`. `tags` and `group`
 follow the passed/omitted rule described below; `userDataDir` picks the
 profile's directory on whichever call passes it. The handle exposes `name`,
 `id`, `synced`, `dir` and `proxy` as read state, plus:

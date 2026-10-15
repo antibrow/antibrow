@@ -25,6 +25,8 @@ vi.mock('../../src/engine/downloader', () => ({
 
 vi.mock('../../src/engine/persona', () => ({
   settlePersonaLanguages: (_dir: string, p: unknown) => p,
+  personaHostWarnings: () => [],
+  assertPersonaOs: () => {},
   readPersona: () => undefined,
   loadOrGeneratePersona: () => ({
     kernelVersion: '152.0.0.0',

@@ -65,7 +65,9 @@ from .persona import (
     PERSONA_FILE,
     DeviceType,
     Persona,
+    assert_persona_os,
     load_or_generate_persona,
+    persona_host_warnings,
     read_persona,
     settle_persona_languages,
     with_kernel_version,
@@ -170,6 +172,8 @@ class LaunchPlan:
     #: The short-lived managed-proxy credential this launch minted, if any. Handed
     #: back when the session closes; it also expires on its own.
     proxy_ticket: Optional[ProxyTicketRef] = None
+    #: Non-fatal findings, e.g. a macOS profile launched on a non-Mac host.
+    warnings: List[str] = field(default_factory=list)
 
     @property
     def cdp_url(self) -> str:
@@ -216,6 +220,8 @@ def prepare_launch(
     webauthn_capture: Optional[bool] = None,
     restore_tabs: bool = True,
     device_type: Optional[DeviceType] = None,
+    os: Optional[str] = None,
+    hardware: Optional[str] = None,
     real_fingerprint: bool = False,
     canvas_noise: Optional[bool] = None,
     api_log: Optional[str] = None,
@@ -321,10 +327,12 @@ def prepare_launch(
     budget.check("refreshing the kernel catalogue")
     _kernel.refresh_kernel_versions(root, force=update_kernel)
 
-    init_device_type, init_device = _resolve_persona_init(
+    init_device_type, init_device, init_os, init_hardware = _resolve_persona_init(
         directory,
         device_type=device_type,
         real_fingerprint=real_fingerprint,
+        os=os,
+        hardware=hardware,
         api_key=api_key,
         server=server,
     )
@@ -345,7 +353,12 @@ def prepare_launch(
     # here is seeded from the very version the caller asked for.
     had_persona = read_persona(directory) is not None
     persona = load_or_generate_persona(
-        directory, default_kv.version, device_type=init_device_type, device=init_device
+        directory,
+        default_kv.version,
+        device_type=init_device_type,
+        device=init_device,
+        os=init_os,
+        hardware=init_hardware,
     )
     if had_persona:
         persona = reconcile_kernel_version(
@@ -428,6 +441,9 @@ def prepare_launch(
                     public_ip = geo.ip
 
         persona = settle_persona_languages(directory, persona, geo.country_code if geo else None)
+        warnings = persona_host_warnings(persona, _kernel.current_platform())
+        for warning in warnings:
+            notify("Warning: " + warning)
 
         display_label = label or resolved_name
         fp_config_path = write_fp_config(
@@ -495,6 +511,7 @@ def prepare_launch(
         archive=archive,
         proxy_ticket=ticket,
         cache_dir=root,
+        warnings=warnings,
     )
 
 
@@ -634,9 +651,11 @@ def _resolve_persona_init(
     *,
     device_type: Optional[DeviceType],
     real_fingerprint: bool,
+    os: Optional[str],
+    hardware: Optional[str],
     api_key: Optional[str],
     server: Optional[str],
-) -> Tuple[Optional[DeviceType], Optional[Dict[str, Any]]]:
+) -> Tuple[Optional[DeviceType], Optional[Dict[str, Any]], Optional[str], Optional[str]]:
     """Decide what identity a brand-new profile gets.
 
     Runs after the archive is restored, because persona.json travels inside
@@ -644,9 +663,14 @@ def _resolve_persona_init(
     that already has one on another machine.
     """
     if (directory / PERSONA_FILE).exists():
-        return None, None
-    if not device_type and not real_fingerprint:
-        return None, None
+        return None, None, None, None
+    # A real-device replay brings its own hardware, so it never defaults to the host's.
+    wants_windows_desktop = device_type != "android" and os != "macos" and not real_fingerprint
+    if hardware is None and wants_windows_desktop and _kernel.current_platform() == "win32":
+        hardware = "host"
+    if not device_type and not real_fingerprint and not os and not hardware:
+        return None, None, None, None
+    assert_persona_os(os, device_type, real_fingerprint=real_fingerprint, hardware=hardware)
     device = None
     if real_fingerprint:
         device = _devices.fetch_real_device(
@@ -654,7 +678,7 @@ def _resolve_persona_init(
             key=resolve_api_key(api_key),
             server=server,
         )
-    return device_type, device
+    return device_type, device, os, hardware
 
 
 def _assert_android_kernel(version: Optional[str]) -> None:
@@ -1040,6 +1064,11 @@ class _BaseSession:
             _reaper.unregister_kernel(self._plan.cache_dir, self._process.pid)
 
     # -- introspection ----------------------------------------------------
+    @property
+    def warnings(self) -> List[str]:
+        """Non-fatal launch warnings, e.g. a macOS profile on a non-Mac host."""
+        return list(self._plan.warnings)
+
     @property
     def plan(self) -> LaunchPlan:
         """Everything that was resolved for this launch."""
@@ -1533,6 +1562,8 @@ def launch(
     webauthn_capture: Optional[bool] = None,
     restore_tabs: bool = True,
     device_type: Optional[DeviceType] = None,
+    os: Optional[str] = None,
+    hardware: Optional[str] = None,
     real_fingerprint: bool = False,
     canvas_noise: Optional[bool] = None,
     api_log: Optional[str] = None,
@@ -1613,6 +1644,12 @@ def launch(
             portable store (the default), so they travel with an export or a
             cloud sync. ``False`` lets the browser ask where to save instead
             (phone / security key) and those stay on this device.
+        hardware: Desktop hardware for a new Windows profile: "host" uses this
+            computer's own hardware (the default on Windows), "generated" invents
+            it. Applies only when the profile is first created.
+        os: Desktop OS for a new profile, "windows" (default) or "macos". "macos"
+            uses this Mac's own hardware; on other hosts it still launches, with a
+            warning in ``session.warnings``.
         device_type: Simulate an Android phone instead of a desktop browser.
             Applies only when the profile is first created; an existing
             profile keeps the device type frozen in its own persona.
@@ -1679,6 +1716,8 @@ def launch(
                 webauthn_capture=webauthn_capture,
                 restore_tabs=restore_tabs,
                 device_type=device_type,
+                os=os,
+                hardware=hardware,
                 real_fingerprint=real_fingerprint,
                 sync=sync,
                 temporary=temporary,
@@ -1755,6 +1794,8 @@ async def launch_async(
     webauthn_capture: Optional[bool] = None,
     restore_tabs: bool = True,
     device_type: Optional[DeviceType] = None,
+    os: Optional[str] = None,
+    hardware: Optional[str] = None,
     real_fingerprint: bool = False,
     canvas_noise: Optional[bool] = None,
     api_log: Optional[str] = None,
@@ -1820,6 +1861,8 @@ async def launch_async(
             webauthn_capture=webauthn_capture,
             restore_tabs=restore_tabs,
             device_type=device_type,
+            os=os,
+            hardware=hardware,
             real_fingerprint=real_fingerprint,
             sync=sync,
             temporary=temporary,

@@ -42,6 +42,8 @@ vi.mock('../../src/engine/downloader', () => ({
 
 vi.mock('../../src/engine/persona', () => ({
   settlePersonaLanguages: (_dir: string, p: unknown) => p,
+  personaHostWarnings: () => [],
+  assertPersonaOs: () => {},
   loadOrGeneratePersona: () => ({ kernelVersion: '151', chromeMajor: 151, timezone: 'UTC', languages: ['en-US'] }),
   readPersona: () => undefined,
   writePersona: () => undefined,

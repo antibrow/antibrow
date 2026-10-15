@@ -4,6 +4,26 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [3.0.0] - 2026-10-14
+
+### Changed
+
+- On a Windows computer, new Windows profiles now use the computer's own hardware by default (`hardware: 'host'`). Pass `hardware: 'generated'` for the previous invented hardware. Existing profiles are unchanged, and on a non-Windows computer the default stays generated.
+- Every machine that opens a macOS profile needs this version or newer: older versions open it as a broken Windows identity and can drop its OS setting.
+- Every machine that opens a Windows profile with `hardware: 'host'` needs this version or newer; older versions open it with its generated hardware.
+- `os` is now a desktop OS option (`'windows' | 'macos'`). A legacy value such as `'mac'` or `'linux'` now throws when creating a new profile.
+- New generated-hardware profiles always report `navigator.deviceMemory` as 8. Existing profiles keep their current value.
+
+### Added
+
+- `launch({ hardware: 'host' | 'generated' })` (also `profile()`, `openProfile()` and MCP `launch_browser` / `create_profile`) picks the desktop hardware for a new Windows profile.
+- A `hardware: 'host'` profile opened on a non-Windows computer launches with its saved generated hardware and reports a `host-hardware-unavailable` warning.
+- `hardware: 'host'` cannot be combined with `deviceType: 'android'` or `realFingerprint`, and `hardware: 'generated'` cannot be combined with `os: 'macos'`.
+- `launch({ os: 'macos' })` (also `profile()`, `openProfile()` and MCP `launch_browser` / `create_profile`) creates a macOS identity that uses the Mac's own hardware. It is meant for Mac hosts; elsewhere it still launches and reports a `macos-persona-on-non-mac-host` warning.
+- `os: 'macos'` cannot be combined with `deviceType: 'android'` or `realFingerprint`.
+- `LaunchResult.warnings` and `OpenedProfile.warnings` list non-fatal launch warnings.
+- New exports: `personaHostWarnings`, `MACOS_PERSONA_ON_FOREIGN_HOST`, `PERSONA_OS_INVALID`, `HOST_HARDWARE_UNAVAILABLE`, `usesHostHardware` and types `DesktopOs` and `PersonaHardware`.
+
 ## [2.33.0] - 2026-09-30
 
 ### Changed

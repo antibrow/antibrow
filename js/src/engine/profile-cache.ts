@@ -394,6 +394,8 @@ function personaToLauncher(p: Persona): Record<string, unknown> {
   }
   if (p.capturedWebgl) out.captured_webgl = p.capturedWebgl
   if (p.deviceType) out.device_type = p.deviceType
+  if (p.os) out.os = p.os
+  if (p.hardware === 'host') out.hardware = 'host'
   if (p.androidModel) out.android_model = p.androidModel
   if (p.androidOsMajor != null) out.android_os_major = p.androidOsMajor
   if (p.captured) out.captured = capturedToLauncher(p.captured)
@@ -615,6 +617,8 @@ interface LauncherPersona {
   timezone?: string
   captured_webgl?: Record<string, unknown>
   device_type?: string
+  os?: string
+  hardware?: string
   android_model?: string
   android_os_major?: number
   captured?: unknown
@@ -688,7 +692,8 @@ function resolveImportedKernelVersion(wanted: string, android = false): string {
  *  fingerprint; omitted fields fall back to freshly generated values. */
 function launcherPersonaToPersona(lp: LauncherPersona, kernelVersion: string): Persona {
   const chromeMajor = parseInt(kernelVersion.split('.')[0] ?? '', 10) || lp.chrome_major || 149
-  const base = generatePersona(chromeMajor, kernelVersion)
+  // A mac archive carries empty GPU strings and zero hardware on purpose; a Windows base would fill them in.
+  const base = generatePersona(chromeMajor, kernelVersion, lp.os === 'macos' ? { os: 'macos' } : undefined)
   const persona: Persona = {
     ...base,
     seed: lp.seed || base.seed,
@@ -713,6 +718,8 @@ function launcherPersonaToPersona(lp: LauncherPersona, kernelVersion: string): P
   if (lp.languages?.length) delete persona.languagesPending
   if (lp.captured_webgl) persona.capturedWebgl = lp.captured_webgl
   if (lp.device_type === 'android' || lp.device_type === 'desktop') persona.deviceType = lp.device_type
+  if (lp.os === 'macos' || lp.os === 'windows') persona.os = lp.os
+  if (lp.hardware === 'host') persona.hardware = 'host'
   if (typeof lp.android_model === 'string') persona.androidModel = lp.android_model
   if (typeof lp.android_os_major === 'number') persona.androidOsMajor = lp.android_os_major
   if (lp.captured && typeof lp.captured === 'object') {

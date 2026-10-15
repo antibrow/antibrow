@@ -17,7 +17,7 @@ import {
   installedKernelBuild,
   type KernelVersion,
 } from './downloader'
-import { loadOrGeneratePersona, readPersona, settlePersonaLanguages, writePersona, withKernelVersion, type ApiLogMode, type DeviceType, type Persona, type PersonaInit } from './persona'
+import { assertPersonaOs, personaHostWarnings, loadOrGeneratePersona, readPersona, settlePersonaLanguages, writePersona, withKernelVersion, type ApiLogMode, type DesktopOs, type DeviceType, type Persona, type PersonaHardware, type PersonaInit } from './persona'
 import { fetchRealDevice } from './devices'
 import { lookupDirectGeo, lookupProxyGeo, type ProxyGeo } from './geoip'
 import { getLicenseToken } from './license'
@@ -41,8 +41,8 @@ export type { KernelSession as EngineSession } from './launcher'
 export { downloadProfileCache, uploadProfileCache, packProfileCache, packProfileCacheWithReport, lastProfilePackReport, unpackProfileCache, exportProfileArchive, importProfileArchive, PROFILE_ARCHIVE_EXT, ARCHIVE_VERSION_FILE, readArchiveVersion, writeArchiveVersion, clearArchiveVersion, normalizeArchiveVersion } from './profile-cache'
 export type { ProfilePackReport, ProfilePackResult } from './profile-cache'
 export type { PortableProfileMeta, ImportedProfileMeta } from './profile-cache'
-export { generatePersona, loadOrGeneratePersona, readPersona, writePersona, withKernelVersion, sanitizePersonaGpu } from './persona'
-export type { Persona, ApiLogMode, DeviceType, CapturedFacts, PersonaInit } from './persona'
+export { generatePersona, loadOrGeneratePersona, readPersona, writePersona, withKernelVersion, sanitizePersonaGpu, personaHostWarnings, MACOS_PERSONA_ON_FOREIGN_HOST, HOST_HARDWARE_UNAVAILABLE, usesHostHardware, PERSONA_OS_INVALID } from './persona'
+export type { Persona, ApiLogMode, DeviceType, DesktopOs, PersonaHardware, CapturedFacts, PersonaInit } from './persona'
 export { fetchRealDevice } from './devices'
 export type { RealDevice } from './devices'
 export { getLicenseToken, fetchLicenseToken, type LicenseInfo } from './license'
@@ -121,6 +121,10 @@ export interface OpenProfileOptions {
   restoreTabs?: boolean
   /** Device profile. New profiles only; an existing one keeps its own. */
   deviceType?: DeviceType
+  /** Desktop OS for a new profile; `macos` takes its hardware from a Mac host. New profiles only. */
+  os?: DesktopOs
+  /** Desktop hardware for a new Windows profile; `host` uses this computer's own. Defaults to `host` on a Windows host. New profiles only. */
+  hardware?: PersonaHardware
   /** Draw the identity from the real-device library (paid). New profiles only. */
   realFingerprint?: boolean
   onProgress?: (message: string) => void
@@ -164,6 +168,8 @@ export interface OpenedProfile extends KernelSession {
   /** The kernel major this launch settled on, after the archive restore and any
    *  version reconciliation. The caller's requested version is not it. */
   kernelVersion: string
+  /** Stable ids such as `macos-persona-on-non-mac-host`; the launch still went ahead. */
+  warnings: string[]
   /** The exit-triggered upload; prefer `onArchiveSync` over polling it. */
   archiveUpload?: Promise<void>
 }
@@ -176,10 +182,14 @@ export interface OpenedProfile extends KernelSession {
  */
 export async function resolvePersonaInit(
   profileDir: string,
-  opts: Pick<OpenProfileOptions, 'deviceType' | 'realFingerprint' | 'key' | 'server'>,
+  opts: Pick<OpenProfileOptions, 'deviceType' | 'os' | 'hardware' | 'realFingerprint' | 'key' | 'server'>,
+  hostPlatform: string = process.platform,
 ): Promise<PersonaInit | undefined> {
   if (fs.existsSync(path.join(profileDir, 'persona.json'))) return undefined
-  if (!opts.deviceType && !opts.realFingerprint) return undefined
+  const wantsWindowsDesktop = opts.deviceType !== 'android' && opts.os !== 'macos' && !opts.realFingerprint
+  const hardware = opts.hardware ?? (wantsWindowsDesktop && hostPlatform === 'win32' ? 'host' : undefined)
+  if (!opts.deviceType && !opts.realFingerprint && !opts.os && !hardware) return undefined
+  assertPersonaOs({ deviceType: opts.deviceType, os: opts.os, hardware }, opts.realFingerprint)
   const device = opts.realFingerprint
     ? await fetchRealDevice({
         os: opts.deviceType === 'android' ? 'android' : 'windows',
@@ -187,7 +197,7 @@ export async function resolvePersonaInit(
         server: opts.server,
       })
     : undefined
-  return { deviceType: opts.deviceType, device }
+  return { deviceType: opts.deviceType, device, os: opts.os, hardware }
 }
 
 /** An Android config on a pre-mobile kernel is worse than no Android at all. */
@@ -533,6 +543,8 @@ async function openProfileWithin(opts: OpenProfileOptions, budget: Deadline): Pr
   }
 
   persona = settlePersonaLanguages(profileDir, persona, (geo ?? direct)?.countryCode)
+  const warnings = personaHostWarnings(persona, process.platform)
+  for (const w of warnings) opts.onProgress?.(`Warning: ${w}`)
 
   opts.onProgress?.('Obtaining license token')
   budget.check('obtaining the license token')
@@ -564,6 +576,7 @@ async function openProfileWithin(opts: OpenProfileOptions, budget: Deadline): Pr
     onProgress: opts.onProgress,
   })) as OpenedProfile
   session.kernelVersion = persona.kernelVersion
+  session.warnings = warnings
   if (geo) session.geo = geo
 
   // Two guards, because they fail differently: the hook closes this session on
