@@ -913,7 +913,7 @@ Yes: `launch(profile_dir="/data/profiles/acct-17")`, or set `ANTIBROW_CACHE_DIR`
 Real headless Chromium is, which is why `headless=True` on Windows moves the window off-screen instead. On Linux, run headful under Xvfb (as the Dockerfile does).
 
 **How do I keep the kernel up to date?**
-`python -m antibrow install --force`, or `launch(update_kernel=True)`. Installed kernels are never swapped under you.
+`python -m antibrow install --force`, or `launch(update_kernel=True)`. Installed kernels are never swapped under you; a launch says once per process when the profile's kernel has a newer build or a newer Chrome major exists (to `on_progress`, or stderr).
 
 **Something fails on launch — what do I send?**
 `python -m antibrow info` and `prepare_launch(...).redacted_args()`. Both are safe to paste; the license token and proxy password are masked.

@@ -426,7 +426,9 @@ def wait_for_cdp(
 def shutdown_kernel(
     request_close: Callable[[], None],
     process: Optional[subprocess.Popen],
-    grace: float = 15.0,
+    # Chromium's own shutdown waits up to 10s for the network service to flush
+    # cookies and cache, longer on a busy disk; killing inside that loses them.
+    grace: float = 30.0,
     poll: float = 0.1,
 ) -> str:
     """Ask the browser to shut itself down, and kill it only if it will not.

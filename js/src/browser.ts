@@ -164,7 +164,6 @@ export class AntiDetectBrowser {
   /** Cloud config per name, so `config.kernelVersion` can be reconciled after a
    *  launch without a second GET. Rewritten on every PUT this class makes. */
   private cloudProfileConfigs: Map<string, ProfileConfig> = new Map()
-  private kernelUpdateChecked = false
   /** Local-only notice already printed for this name, so a relaunch loop prints it once. */
   private localOnlyNotified: Set<string> = new Set()
 
@@ -220,10 +219,6 @@ export class AntiDetectBrowser {
 
   private async launchChecked(options: LaunchOptions, outcome: LaunchOutcome): Promise<LaunchResult> {
     await this.ensureVersionOk()
-
-    // Advisory only: never blocks the launch, and never updates behind the
-    // caller's back. With the flag on, openProfile updates before launching.
-    if (!options.updateKernelBeforeLaunch) this.maybeNotifyKernelUpdate()
 
     // Cached locally and only refetched near expiry, so this is cheap in loops.
     // Concurrency is capped by the kernel, not here.
@@ -302,6 +297,7 @@ export class AntiDetectBrowser {
         cloudProfileDenied: syncMode !== 'off' && this.syncedProfiles.get(`${syncMode}:${profileName}`) === false,
         options,
         }),
+        onNotice: this.notify,
         onKernelResolved: (version) => {
           outcome.kernelVersion = version
         },
@@ -509,23 +505,6 @@ export class AntiDetectBrowser {
   /** True when any installed kernel has a newer build available. */
   async hasKernelUpdate(): Promise<boolean> {
     return (await this.checkKernelUpdates()).some((k) => k.updateAvailable)
-  }
-
-  /** Once per process, print a notice if an installed kernel is out of date. */
-  private maybeNotifyKernelUpdate(): void {
-    if (this.kernelUpdateChecked) return
-    this.kernelUpdateChecked = true
-    void this.checkKernelUpdates()
-      .then((updates) => {
-        const outdated = updates.filter((u) => u.updateAvailable)
-        if (!outdated.length) return
-        const list = outdated.map((u) => u.label || u.version).join(', ')
-        this.notify(
-          `[anti-detect-browser] A newer browser kernel build is available for: ${list}. ` +
-          'Run browser.updateKernel() to update now, or launch with { updateKernelBeforeLaunch: true }.',
-        )
-      })
-      .catch(() => { /* offline: stay quiet */ })
   }
 
   /** Update installed kernels (or just `version`); returns what was updated. */

@@ -4,6 +4,19 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [3.1.0] - 2026-10-26
+
+### Changed
+
+- Each launch now says when a newer build of the profile's own kernel is published, or when a newer Chrome major is available for it, once per process. `launch()` prints it through `notify`; `openProfile()` sends it to `onProgress`, or to stderr when none is set. Nothing is installed or switched for you.
+- The previous notice that listed every installed kernel with a newer build is gone; `checkKernelUpdates()` and `updateKernel()` are unchanged.
+- Closing a browser now waits up to 30s (was 15s) for it to exit on its own before force-killing it, so a slow disk no longer cuts off the browser's final cookie and cache write.
+- Closing on Windows is about a second faster: the leftover-process sweep now runs only after a force-kill.
+
+### Added
+
+- `openProfile({ onNotice })` receives that advice separately from progress messages.
+
 ## [3.0.0] - 2026-10-14
 
 ### Changed

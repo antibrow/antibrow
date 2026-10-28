@@ -15,6 +15,7 @@ vi.mock('../../src/engine/geoip', () => ({
 const ensureSpy = vi.fn(async () => '/kernels/chrome')
 const refreshSpy = vi.fn(async () => undefined)
 vi.mock('../../src/engine/downloader', () => ({
+  newerKernelThan: () => ({}),
   defaultKernelVersion: () => ({ version: '152.0.0.0', label: 'Chrome 152', platforms: {} }),
   KERNEL_VERSIONS: [],
   findKernelVersion: (v: string) => ({ version: v, label: `Chrome ${v}`, platforms: {} }),

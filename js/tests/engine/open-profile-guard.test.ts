@@ -13,6 +13,7 @@ vi.mock('../../src/engine/geoip', () => ({
 }))
 
 vi.mock('../../src/engine/downloader', () => ({
+  newerKernelThan: () => ({}),
   defaultKernelVersion: () => ({ version: '152.0.0.0', label: 'Chrome 152', platforms: {} }),
   KERNEL_VERSIONS: [],
   findKernelVersion: (v: string) => ({ version: v, label: `Chrome ${v}`, platforms: {} }),

@@ -82,3 +82,32 @@ def test_returns_and_kills_within_the_grace_period_when_request_close_never_sett
     assert outcome == "killed"
     assert killed == [proc]
     assert elapsed < 1.0
+
+
+def test_by_default_outlasts_the_network_service_flush_chromium_waits_up_to_10s_for(monkeypatch):
+    killed = []
+    monkeypatch.setattr(L, "kill_process_tree", lambda process: killed.append(process))
+    clock = {"now": 1000.0}
+
+    class _FakeTime:
+        @staticmethod
+        def time():
+            return clock["now"]
+
+        @staticmethod
+        def sleep(seconds):
+            clock["now"] += seconds
+
+    monkeypatch.setattr(L, "time", _FakeTime)
+    start = clock["now"]
+
+    class _SlowExit(_FakeProcess):
+        def poll(self):
+            return 0 if clock["now"] - start >= 20 else None
+
+    proc = _SlowExit()
+
+    outcome = L.shutdown_kernel(lambda: None, proc)
+
+    assert outcome == "graceful"
+    assert killed == []

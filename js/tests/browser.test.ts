@@ -208,21 +208,13 @@ describe('AntiDetectBrowser.launch (engine)', () => {
     expect(openProfileSpy.mock.calls.at(-1)![0]).toMatchObject({ skipServerLookup: false })
   })
 
-  it('prints a notice (once per process) when an installed kernel has an update and the flag is off', async () => {
-    installedKernelUpdatesSpy.mockReturnValue([
-      { version: '150', label: 'Chrome 150', installed: true, updateAvailable: true },
-    ])
+  it('routes the engine\'s kernel notices to notify', async () => {
     const notify = vi.fn()
     const ab = new AntiDetectBrowser({ key: 'k', notify })
-
     await ab.launch({ profile: 'a' })
-    await ab.launch({ profile: 'b' })
-    await flushMicrotasks()
-
-    expect(notify).toHaveBeenCalledTimes(1) // once per process, not per launch
-    expect(notify.mock.calls[0][0]).toMatch(/kernel build is available/i)
-    expect(notify.mock.calls[0][0]).toContain('Chrome 150')
-    // advisory only — never updates behind the user's back
+    const params = openProfileSpy.mock.calls[0][0] as { onNotice?: (m: string) => void }
+    params.onNotice?.('A newer build of kernel Chrome 150 is available')
+    expect(notify).toHaveBeenCalledWith('A newer build of kernel Chrome 150 is available')
     expect(ensureKernelSpy).not.toHaveBeenCalled()
   })
 

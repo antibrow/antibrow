@@ -149,11 +149,14 @@ const status = await ab.checkKernelUpdates()
 await ab.updateKernel('150', msg => console.log(msg))
 ```
 
-Even without that, `launch()` quietly checks (once per process, in the background) and prints a one-line notice if a newer kernel build exists — so you'll know, without it ever updating behind your back or slowing the launch:
+Even without that, each launch tells you (once per process) when the profile's kernel has a newer build or a newer Chrome major exists, without updating anything behind your back:
 
 ```
-[anti-detect-browser] A newer browser kernel build is available for: Chrome 150. Run browser.updateKernel() to update now, or launch with { updateKernelBeforeLaunch: true }.
+A newer build of kernel Chrome 150 is available (installed 2026-10-14, latest 2026-10-22). Launch with updateKernelBeforeLaunch: true to install it.
+Chrome 155 is available; this profile stays on Chrome 150 until you move it with setProfileKernelVersion().
 ```
+
+`launch()` prints it through the `notify` option; `openProfile()` sends it to `onNotice`, then `onProgress`, then stderr.
 
 Prefer it hands-off? Let `launch()` check **and update** the profile's kernel before it starts — **off by default**:
 
@@ -164,7 +167,7 @@ await ab.launch({
 })
 ```
 
-If the machine is offline the check is skipped silently and the browser launches with the installed kernel — updates never block a launch. (The notice goes to stdout; the MCP server routes it to stderr to keep the JSON-RPC channel clean.)
+If the machine is offline the check is skipped silently and the browser launches with the installed kernel — updates never block a launch. (The default `notify` writes to stdout; the MCP server routes it to stderr to keep the JSON-RPC channel clean.)
 
 ### Moving a profile to another Chrome major
 

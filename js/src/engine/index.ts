@@ -10,6 +10,7 @@ import {
   normalizeKernelVersion,
   refreshKernelVersions,
   kernelUpdateStatus,
+  newerKernelThan,
   kernelSupportsAndroid,
   kernelReadsAppLocaleFromConfig,
   resolveAndroidKernel,
@@ -35,8 +36,8 @@ import { Deadline, withDeadline } from './deadline'
 import { killPidTree, registerKernel, reapOrphans, unregisterKernel } from './reaper'
 import { fetchProfileCryptKey, resolveCryptKey } from './crypt-key'
 
-export { KERNEL_VERSIONS, DEFAULT_KERNEL_VERSION, defaultKernelVersion, ensureKernel, isKernelInstalled, findKernelVersion, findKernelVersionStrict, normalizeKernelVersion, migrateLegacyKernelDirs, listInstalledKernels, kernelDirSize, deleteKernel, kernelDir, kernelAvailableOnPlatform, kernelsForPlatform, allKernelVersions, registerKernelVersions, fetchRemoteKernelVersions, refreshKernelVersions, loadCachedKernelVersions, KERNEL_MANIFEST_URL, KERNEL_MANIFEST_TTL_MS, KERNEL_VERSION_CACHE_FILE, currentPlatform, installedKernelBuild, writeInstalledKernelBuild, kernelUpdateStatus, installedKernelUpdates, kernelSupportsAndroid, kernelReadsAppLocaleFromConfig, kernelVersionAtLeast, androidCapableKernels, resolveAndroidKernel, ANDROID_MIN_KERNEL_VERSION, APP_LOCALE_MIN_KERNEL_VERSION, APP_LOCALE_MIN_KERNEL_BUILD } from './downloader'
-export type { KernelVersion, KernelUpdateStatus } from './downloader'
+export { KERNEL_VERSIONS, DEFAULT_KERNEL_VERSION, defaultKernelVersion, ensureKernel, isKernelInstalled, findKernelVersion, findKernelVersionStrict, normalizeKernelVersion, migrateLegacyKernelDirs, listInstalledKernels, kernelDirSize, deleteKernel, kernelDir, kernelAvailableOnPlatform, kernelsForPlatform, allKernelVersions, registerKernelVersions, fetchRemoteKernelVersions, refreshKernelVersions, loadCachedKernelVersions, KERNEL_MANIFEST_URL, KERNEL_MANIFEST_TTL_MS, KERNEL_VERSION_CACHE_FILE, currentPlatform, installedKernelBuild, writeInstalledKernelBuild, kernelUpdateStatus, installedKernelUpdates, newerKernelThan, kernelSupportsAndroid, kernelReadsAppLocaleFromConfig, kernelVersionAtLeast, androidCapableKernels, resolveAndroidKernel, ANDROID_MIN_KERNEL_VERSION, APP_LOCALE_MIN_KERNEL_VERSION, APP_LOCALE_MIN_KERNEL_BUILD } from './downloader'
+export type { KernelVersion, KernelUpdateStatus, NewerKernel } from './downloader'
 export type { KernelSession as EngineSession } from './launcher'
 export { downloadProfileCache, uploadProfileCache, packProfileCache, packProfileCacheWithReport, lastProfilePackReport, unpackProfileCache, exportProfileArchive, importProfileArchive, PROFILE_ARCHIVE_EXT, ARCHIVE_VERSION_FILE, readArchiveVersion, writeArchiveVersion, clearArchiveVersion, normalizeArchiveVersion } from './profile-cache'
 export type { ProfilePackReport, ProfilePackResult } from './profile-cache'
@@ -128,6 +129,8 @@ export interface OpenProfileOptions {
   /** Draw the identity from the real-device library (paid). New profiles only. */
   realFingerprint?: boolean
   onProgress?: (message: string) => void
+  /** Advice worth seeing without a progress listener, such as a newer kernel. Defaults to `onProgress`, else stderr. */
+  onNotice?: (message: string) => void
   /** Fires once per kernel download this launch had to do (first install or forced update). */
   onKernelDownload?: (e: { ok: boolean; version: string; error?: unknown }) => void
   /** Fires once the kernel version this launch will run is settled, before it is installed or started. */
@@ -253,6 +256,37 @@ export interface SetProfileKernelVersionOptions extends ProfileRootOptions {
  * hold everywhere, including a second cache directory on this same machine:
  * they all restore from the archive, and the archive now carries it.
  */
+const kernelNoticesShown = new Set<string>()
+
+/** Once per process per finding: a launch loop must not repeat it every time. */
+export function noticeNewerKernel(
+  cacheDir: string,
+  kv: KernelVersion,
+  opts: Pick<OpenProfileOptions, 'updateKernelBeforeLaunch' | 'onNotice' | 'onProgress'>,
+): void {
+  const newer = newerKernelThan(cacheDir, kv.version)
+  const messages: [string, string][] = []
+  if (newer.build && !opts.updateKernelBeforeLaunch) {
+    messages.push([
+      `build:${kv.version}:${newer.build.available}`,
+      `A newer build of kernel ${kv.label} is available (installed ${newer.build.installed}, latest ${newer.build.available}). ` +
+        'Launch with updateKernelBeforeLaunch: true to install it.',
+    ])
+  }
+  if (newer.version) {
+    messages.push([
+      `version:${kv.version}:${newer.version}`,
+      `Chrome ${newer.version} is available; this profile stays on ${kv.label} until you move it with setProfileKernelVersion().`,
+    ])
+  }
+  const sink = opts.onNotice ?? opts.onProgress ?? ((m: string) => console.error(`[anti-detect-browser] ${m}`))
+  for (const [id, message] of messages) {
+    if (kernelNoticesShown.has(id)) continue
+    kernelNoticesShown.add(id)
+    sink(message)
+  }
+}
+
 export async function setProfileKernelVersion(opts: SetProfileKernelVersionOptions): Promise<Persona> {
   const cacheDir = opts.cacheDir ?? defaultCacheDir()
   const dir = opts.profileDir
@@ -494,6 +528,7 @@ async function openProfileWithin(opts: OpenProfileOptions, budget: Deadline): Pr
     ? findKernelVersionStrict(persona.kernelVersion)
     : findKernelVersion(persona.kernelVersion)
   opts.onKernelResolved?.(kv.version)
+  noticeNewerKernel(cacheDir, kv, opts)
 
   const onDownload = opts.onKernelDownload
     ? (e: { ok: boolean; error?: unknown }) => opts.onKernelDownload?.({ ...e, version: kv.version })

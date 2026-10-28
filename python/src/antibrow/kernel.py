@@ -27,7 +27,7 @@ import urllib.request
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from .config import USER_AGENT
 from .errors import KernelDownloadError, UnsupportedPlatformError
@@ -682,6 +682,33 @@ def kernel_update_status(
     return KernelUpdateStatus(
         kv.version, kv.label, True, have, available, bool(available and have != available)
     )
+
+
+@dataclass
+class NewerKernel:
+    """What is newer than the kernel a launch is about to run."""
+
+    #: (installed, available) when the installed build of this version is older.
+    build: Optional[Tuple[str, str]] = None
+    #: Newest version in the catalogue, when it is above this one.
+    version: Optional[str] = None
+
+
+def newer_kernel_than(
+    cache_dir: Path | str, version: str, platform: Optional[str] = None
+) -> NewerKernel:
+    """Offline like :func:`kernel_update_status`; read it after a catalogue refresh."""
+    plat = platform or current_platform()
+    out = NewerKernel()
+    status = kernel_update_status(cache_dir, version, plat)
+    if status is not None and status.update_available and status.installed_build and status.available_build:
+        out.build = (status.installed_build, status.available_build)
+    kernels = kernels_for_platform(plat)
+    newest = kernels[0].version if kernels else None
+    current = normalize_kernel_version(version)
+    if newest and newest != current and kernel_version_at_least(newest, current):
+        out.version = newest
+    return out
 
 
 def installed_kernel_updates(

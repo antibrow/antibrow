@@ -4,6 +4,16 @@ All notable changes to the `antibrow` Python SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] - 2026-10-26
+
+### Added
+
+- Each launch now says when a newer build of the profile's own kernel is published (`update_kernel=True` installs it), or when a newer Chrome major is available for it (`set_profile_kernel_version()` moves the profile), once per process. It goes to `on_progress`, or to stderr when none is set. Nothing is installed or switched for you.
+
+### Changed
+
+- Closing a browser now waits up to 30s (was 15s) for it to exit on its own before force-killing it, so a slow disk no longer cuts off the browser's final cookie and cache write.
+
 ## [1.0.0] - 2026-10-14
 
 ### Changed

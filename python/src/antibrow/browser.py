@@ -370,6 +370,7 @@ def prepare_launch(
         kv = _kernel.find_kernel_version(persona.kernel_version)
     if on_kernel_resolved is not None:
         on_kernel_resolved(kv.version)
+    _notice_newer_kernel(root, kv, update_kernel, on_progress)
 
     on_download = (
         (lambda ok, error: on_kernel_download(kv.version, ok, error))
@@ -886,6 +887,40 @@ def _notify_unreachable(
         on_progress(message)
     else:
         print("[antibrow] " + message)
+
+
+_kernel_notices_shown: set = set()
+
+
+def _notice_newer_kernel(
+    root: Path, kv: "_kernel.KernelVersion", update_kernel: bool, on_progress: Optional[ProgressCallback]
+) -> None:
+    """Once per process per finding, printed when nobody listens: a launch loop
+    must not repeat it, and a caller with no callback is who needs to hear it."""
+    newer = _kernel.newer_kernel_than(root, kv.version)
+    messages = []
+    if newer.build is not None and not update_kernel:
+        messages.append((
+            "build:{0}:{1}".format(kv.version, newer.build[1]),
+            "A newer build of kernel {0} is available (installed {1}, latest {2}). "
+            "Launch with update_kernel=True to install it.".format(kv.label, newer.build[0], newer.build[1]),
+        ))
+    if newer.version is not None:
+        messages.append((
+            "version:{0}:{1}".format(kv.version, newer.version),
+            "Chrome {0} is available; this profile stays on {1} until you move it "
+            "with set_profile_kernel_version().".format(newer.version, kv.label),
+        ))
+    for key, message in messages:
+        with _local_only_notified_lock:
+            if key in _kernel_notices_shown:
+                continue
+            _kernel_notices_shown.add(key)
+        if on_progress is not None:
+            on_progress(message)
+        else:
+            # stderr: CLI output such as recipe JSON goes to stdout.
+            print("[antibrow] " + message, file=sys.stderr)
 
 
 def _notify_local_only(name: str, on_progress: Optional[ProgressCallback]) -> None:

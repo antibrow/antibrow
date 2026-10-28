@@ -91,6 +91,24 @@ describe('shutdownKernel', () => {
     expect(kill).not.toHaveBeenCalled()
   })
 
+  it('by default outlasts the network-service flush Chromium itself waits up to 10s for', async () => {
+    vi.useFakeTimers()
+    try {
+      const start = Date.now()
+      const kill = vi.fn()
+      const pending = shutdownKernel({
+        requestClose: async () => {},
+        hasExited: () => Date.now() - start >= 20_000,
+        kill,
+      })
+      await vi.advanceTimersByTimeAsync(21_000)
+      expect(await pending).toBe('graceful')
+      expect(kill).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('still returns and kills within the grace period when requestClose never settles', async () => {
     const kill = vi.fn()
     const start = Date.now()

@@ -101,7 +101,9 @@ export async function shutdownKernel(opts: {
   graceMs?: number
   pollMs?: number
 }): Promise<'graceful' | 'killed'> {
-  const graceMs = opts.graceMs ?? 15_000
+  // Chromium's own shutdown waits up to 10s for the network service to flush
+  // cookies and cache, longer on a busy disk; killing inside that loses them.
+  const graceMs = opts.graceMs ?? 30_000
   const pollMs = opts.pollMs ?? 100
   const deadline = Date.now() + graceMs
   // requestClose (Browser.close over CDP) can hang forever if the browser wedges
@@ -853,12 +855,16 @@ export async function launchKernel(opts: KernelLaunchOptions): Promise<KernelSes
           await cdp.send('Browser.close')
         },
         hasExited: () => exit.hasExited(),
-        kill: () => killProcessTree(child.pid),
+        // A clean exit already took its children down; the PowerShell sweep
+        // costs ~1s per close, and ~20s on a busy disk.
+        kill: async () => {
+          killProcessTree(child.pid)
+          await killByUserDataDir(userDataDir)
+        },
       })
       await pw.close().catch(() => {})
       localProxyClose?.()
       if (outcome === 'killed') opts.onProgress?.('Browser did not exit in time; killed')
-      await killByUserDataDir(userDataDir)
     }),
   }
 }

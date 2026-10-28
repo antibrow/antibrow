@@ -571,6 +571,27 @@ export function kernelUpdateStatus(
   }
 }
 
+export interface NewerKernel {
+  /** The installed build of this version is older than the published one. */
+  build?: { installed: string; available: string }
+  /** Newest version in the catalogue, when it is above this one. */
+  version?: string
+}
+
+/** What is newer than the kernel a launch is about to run. Local only, like `kernelUpdateStatus`. */
+export function newerKernelThan(cacheDir: string, version: string, platform?: SupportedPlatform): NewerKernel {
+  const plat = platform ?? currentPlatform()
+  const out: NewerKernel = {}
+  const status = kernelUpdateStatus(cacheDir, version, plat)
+  if (status?.updateAvailable && status.installedBuild && status.availableBuild) {
+    out.build = { installed: status.installedBuild, available: status.availableBuild }
+  }
+  const newest = kernelsForPlatform(plat)[0]?.version
+  const current = normalizeKernelVersion(version)
+  if (newest && newest !== current && kernelVersionAtLeast(newest, current)) out.version = newest
+  return out
+}
+
 export function installedKernelUpdates(cacheDir: string, platform?: SupportedPlatform): KernelUpdateStatus[] {
   const plat = platform ?? currentPlatform()
   return kernelsForPlatform(plat)
