@@ -163,6 +163,8 @@ def _persona_to_manifest(persona: Persona) -> Dict[str, Any]:
         out["os"] = persona.os
     if persona.hardware == "host":
         out["hardware"] = "host"
+    if persona.host_screen:
+        out["host_screen"] = True
     if persona.device_type:
         out["device_type"] = persona.device_type
     if persona.android_model:
@@ -710,6 +712,8 @@ def _manifest_to_persona(entry: Dict[str, Any], kernel_version: str) -> Persona:
         persona.os = os_value
     if entry.get("hardware") == "host":
         persona.hardware = "host"
+    if entry.get("host_screen") is True:
+        persona.host_screen = True
     device_type = entry.get("device_type")
     if device_type in ("android", "desktop"):
         persona.device_type = device_type

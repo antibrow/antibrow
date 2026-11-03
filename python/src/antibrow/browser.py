@@ -17,6 +17,7 @@ One call does the whole sequence:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import subprocess
 import sys
 import threading
@@ -1514,6 +1515,33 @@ async def _close_stray_locale_tab_async(context: Any, plan: LaunchPlan, timeout:
         await asyncio.sleep(0.1)
 
 
+def _cdp_connect_options(browser_type: Any, playwright_downloads: bool) -> dict:
+    # Without no_defaults Playwright reroutes every download into a temp folder
+    # under GUID names and deletes it on disconnect. Older drivers lack the kwarg.
+    if playwright_downloads:
+        return {}
+    try:
+        params = inspect.signature(browser_type.connect_over_cdp).parameters
+    except (TypeError, ValueError):
+        return {}
+    return {"no_defaults": True} if "no_defaults" in params else {}
+
+
+def _restore_browser_downloads(browser: Any) -> None:
+    try:
+        browser.new_browser_cdp_session().send("Browser.setDownloadBehavior", {"behavior": "default"})
+    except Exception:
+        pass
+
+
+async def _restore_browser_downloads_async(browser: Any) -> None:
+    try:
+        cdp = await browser.new_browser_cdp_session()
+        await cdp.send("Browser.setDownloadBehavior", {"behavior": "default"})
+    except Exception:
+        pass
+
+
 def _ensure_startup_page(context: Any) -> None:
     """Open the first page when the kernel handed over none.
 
@@ -1596,6 +1624,7 @@ def launch(
     update_kernel: bool = False,
     webauthn_capture: Optional[bool] = None,
     restore_tabs: bool = True,
+    playwright_downloads: bool = False,
     device_type: Optional[DeviceType] = None,
     os: Optional[str] = None,
     hardware: Optional[str] = None,
@@ -1626,6 +1655,9 @@ def launch(
         headless: Hide the window. On Windows the window is moved off-screen
             rather than using ``--headless=new`` (headless Chromium has its own
             detectable fingerprint). On Linux, run under Xvfb.
+        playwright_downloads: Let Playwright take over downloads so
+            ``page.expect_download()`` works. ``False`` (default) leaves them to
+            the browser: real file names, the usual download folder.
         focus_window: Whether the new window takes focus. ``False`` opens it
             behind whatever is in front, so a launch does not interrupt what you
             are doing - the window is still there, just not focused. Decided in
@@ -1769,8 +1801,12 @@ def launch(
             try:
                 budget.check("connecting to CDP")
                 browser = playwright.chromium.connect_over_cdp(
-                    endpoint, timeout=budget.budget(timeout) * 1000
+                    endpoint,
+                    timeout=budget.budget(timeout) * 1000,
+                    **_cdp_connect_options(playwright.chromium, playwright_downloads),
                 )
+                if not playwright_downloads:
+                    _restore_browser_downloads(browser)
                 contexts = list(browser.contexts)
                 context = contexts[0] if contexts else browser.new_context()
                 # Order matters: the guard runs first so a kernel that did open the
@@ -1828,6 +1864,7 @@ async def launch_async(
     update_kernel: bool = False,
     webauthn_capture: Optional[bool] = None,
     restore_tabs: bool = True,
+    playwright_downloads: bool = False,
     device_type: Optional[DeviceType] = None,
     os: Optional[str] = None,
     hardware: Optional[str] = None,
@@ -1919,8 +1956,12 @@ async def launch_async(
         try:
             budget.check("connecting to CDP")
             browser = await playwright.chromium.connect_over_cdp(
-                endpoint, timeout=budget.budget(timeout) * 1000
+                endpoint,
+                timeout=budget.budget(timeout) * 1000,
+                **_cdp_connect_options(playwright.chromium, playwright_downloads),
             )
+            if not playwright_downloads:
+                await _restore_browser_downloads_async(browser)
             contexts = list(browser.contexts)
             context = contexts[0] if contexts else await browser.new_context()
             await _close_stray_locale_tab_async(context, plan)

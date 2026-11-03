@@ -20,7 +20,7 @@ See https://antibrow.com and the project README for the full API.
 
 from __future__ import annotations
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 from .api import (
     DEFAULT_RELAY_HOST,
@@ -181,6 +181,7 @@ from .persona import (
     sanitize_persona_gpu,
     uses_host_hardware,
     with_kernel_version,
+    with_screen_scale,
     write_persona,
 )
 from .portable import (
@@ -305,6 +306,7 @@ __all__ = [
     "sanitize_persona_gpu",
     "write_persona",
     "with_kernel_version",
+    "with_screen_scale",
     "reconcile_kernel_version",
     "set_profile_kernel_version",
     "persona_to_fp_config",

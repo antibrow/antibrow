@@ -101,6 +101,12 @@ export interface LaunchOptions {
    */
   restoreTabs?: boolean
   /**
+   * Let Playwright take over downloads so `page.waitForEvent('download')` works.
+   * Default false: files go where the browser itself puts them, under their real
+   * names. With true they land in a temporary folder that is removed on disconnect.
+   */
+  playwrightDownloads?: boolean
+  /**
    * Extra Chromium switches, appended after everything this SDK sets. Cross-origin
    * iframes are not exposed as debugger targets, so Playwright cannot reach inside
    * one; pass `['--fp-cdp-attach-iframes']` on the rare page that needs it.

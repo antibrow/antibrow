@@ -127,6 +127,7 @@ export function buildOpenProfileOptions(input: BuildOpenProfileOptionsInput): Op
     canvasNoise: options.canvasNoise,
     webauthnCapture: options.webauthnCapture,
     restoreTabs: options.restoreTabs,
+    playwrightDownloads: options.playwrightDownloads,
     args: options.args,
     detached: options.detached,
     timeoutMs: options.timeoutMs,

@@ -396,6 +396,7 @@ function personaToLauncher(p: Persona): Record<string, unknown> {
   if (p.deviceType) out.device_type = p.deviceType
   if (p.os) out.os = p.os
   if (p.hardware === 'host') out.hardware = 'host'
+  if (p.hostScreen) out.host_screen = true
   if (p.androidModel) out.android_model = p.androidModel
   if (p.androidOsMajor != null) out.android_os_major = p.androidOsMajor
   if (p.captured) out.captured = capturedToLauncher(p.captured)
@@ -619,6 +620,7 @@ interface LauncherPersona {
   device_type?: string
   os?: string
   hardware?: string
+  host_screen?: boolean
   android_model?: string
   android_os_major?: number
   captured?: unknown
@@ -720,6 +722,7 @@ function launcherPersonaToPersona(lp: LauncherPersona, kernelVersion: string): P
   if (lp.device_type === 'android' || lp.device_type === 'desktop') persona.deviceType = lp.device_type
   if (lp.os === 'macos' || lp.os === 'windows') persona.os = lp.os
   if (lp.hardware === 'host') persona.hardware = 'host'
+  if (lp.host_screen === true) persona.hostScreen = true
   if (typeof lp.android_model === 'string') persona.androidModel = lp.android_model
   if (typeof lp.android_os_major === 'number') persona.androidOsMajor = lp.android_os_major
   if (lp.captured && typeof lp.captured === 'object') {

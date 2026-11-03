@@ -72,16 +72,24 @@ GPUS: Sequence[Tuple[str, str]] = (
     ),
 )
 
-#: (cssWidth, cssHeight, devicePixelRatio) for mainstream Windows laptops.
-#: devicePixelRatio is deliberately never 1.0 — a scaled display is both the
-#: common case and what gates the kernel's DOMRect noise.
-SCREENS: Sequence[Tuple[int, int, float]] = (
-    (1536, 864, 1.25),   # 1920x1080 @125% - the most common Windows fingerprint
-    (1280, 720, 1.5),    # 1920x1080 @150%
-    (1707, 960, 1.5),    # 2560x1440 @150%
-    (1280, 800, 1.5),    # 1920x1200 @150%
-    (1440, 900, 1.25),   # 1800x1125
+#: CSS-pixel sizes of real panels at each Windows display scale, so the size
+#: and dpr always multiply back to a resolution somebody actually sells.
+SCREENS_BY_SCALE: Dict[int, Sequence[Tuple[int, int]]] = {
+    100: ((1920, 1080), (1366, 768), (1600, 900), (2560, 1440)),
+    125: ((1536, 864), (1536, 960), (2048, 1152)),
+    150: ((1280, 720), (1280, 800), (1707, 960), (1707, 1067)),
+}
+
+#: The unasked-for default stays off dpr 1: the kernel turns DOMRect noise off
+#: there, so every 100% profile on one host shares a DOMRect hash.
+DEFAULT_SCALES: Sequence[int] = (125, 150)
+
+#: (cssWidth, cssHeight, devicePixelRatio) the default draws from.
+SCREENS: Sequence[Tuple[int, int, float]] = tuple(
+    (w, h, scale / 100) for scale in DEFAULT_SCALES for w, h in SCREENS_BY_SCALE[scale]
 )
+
+SCREEN_SCALES = ("host", 100, 125, 150)
 
 HARDWARE_CONCURRENCY: Sequence[int] = (4, 8, 12, 16)
 # 16 alone gets the profile flagged as an anti-detect browser by a commercial
@@ -235,6 +243,9 @@ class Persona:
     os: Optional[str] = None
     #: Windows only: "host" lets a Windows host answer hardware itself. Absent means generated.
     hardware: Optional[str] = None
+    #: Generated Windows only: the kernel reports the host's own screen.
+    #: screen_w/h/dpr stay as a fallback for older SDKs.
+    host_screen: bool = False
     android_model: Optional[str] = None
     android_os_major: Optional[int] = None
     captured: Optional[CapturedFacts] = None
@@ -254,6 +265,8 @@ class Persona:
             out["os"] = self.os
         if self.hardware == "host":
             out["hardware"] = "host"
+        if self.host_screen:
+            out["hostScreen"] = True
         if self.android_model is not None:
             out["androidModel"] = self.android_model
         if self.android_os_major is not None:
@@ -282,6 +295,8 @@ class Persona:
             kwargs["os"] = data["os"]
         if "hardware" in data:
             kwargs["hardware"] = data["hardware"]
+        if data.get("hostScreen") is True:
+            kwargs["host_screen"] = True
         if "androidModel" in data:
             kwargs["android_model"] = data["androidModel"]
         if "androidOsMajor" in data:
@@ -402,11 +417,26 @@ def sanitize_persona_gpu(persona: Persona) -> Persona:
     return replace(persona, gpu_vendor=vendor, gpu_renderer=renderer)
 
 
+def _assert_screen_scale(
+    screen_scale: Any, os: Optional[str], device_type: Optional[str], real_fingerprint: bool, hardware: Optional[str]
+) -> None:
+    if screen_scale is None:
+        return
+    if screen_scale not in SCREEN_SCALES or isinstance(screen_scale, bool):
+        raise ValueError('Unknown screen_scale {0!r}: expected "host", 100, 125 or 150'.format(screen_scale))
+    if os == "macos" or hardware == "host":
+        raise ValueError("screen_scale does not apply to host hardware: the screen is already the host's")
+    if device_type == "android" or real_fingerprint:
+        raise ValueError("screen_scale applies to generated Windows profiles only: a device brings its own screen")
+
+
 def _generate_desktop_persona(
-    chrome_major: int, kernel_version: str, rng: Optional[random.Random] = None
+    chrome_major: int, kernel_version: str, rng: Optional[random.Random] = None, scale: Optional[int] = None
 ) -> Persona:
     chooser = rng or random
-    screen_w, screen_h, dpr = chooser.choice(list(SCREENS))
+    picked_scale = scale if scale is not None else chooser.choice(list(DEFAULT_SCALES))
+    screen_w, screen_h = chooser.choice(list(SCREENS_BY_SCALE[picked_scale]))
+    dpr = picked_scale / 100
     gpu_vendor, gpu_renderer = chooser.choice(list(GPUS))
     return Persona(
         seed=_rand_hex16(rng),
@@ -542,12 +572,16 @@ def generate_persona(
     device: Optional[Dict[str, Any]] = None,
     os: Optional[str] = None,
     hardware: Optional[str] = None,
+    screen_scale: Any = None,
 ) -> Persona:
     """Roll a new self-consistent persona, desktop or Android.
 
     ``device`` replays one real device's facts verbatim (a row from the device
     library, or a bundled fallback); passing only ``device_type="android"``
     with no ``device`` picks one of the three bundled devices at random.
+    ``screen_scale`` (generated Windows only) is the Windows display scale:
+    100, 125 or 150 picks a matching size and dpr, "host" reports this
+    computer's own screen; absent means 125% or 150% at random.
     ``rng`` makes generation reproducible in tests; production calls use
     :mod:`secrets` for the seeds and :mod:`random` for the picks.
     """
@@ -558,6 +592,7 @@ def generate_persona(
         real_fingerprint=device is not None and (os == "macos" or hardware == "host"),
         hardware=hardware,
     )
+    _assert_screen_scale(screen_scale, os, "android" if wants_android else device_type, device is not None, hardware)
     if os == "macos":
         return _generate_mac_persona(chrome_major, kernel_version, rng)
     chooser = rng or random
@@ -565,9 +600,12 @@ def generate_persona(
     if picked_device is None and wants_android:
         picked_device = chooser.choice(list(ANDROID_FALLBACK_DEVICES))
     if picked_device is None:
-        persona = _generate_desktop_persona(chrome_major, kernel_version, rng)
+        scale = None if screen_scale == "host" else screen_scale
+        persona = _generate_desktop_persona(chrome_major, kernel_version, rng, scale)
         if hardware == "host":
             persona.hardware = "host"
+        if screen_scale == "host":
+            persona.host_screen = True
         return persona
 
     persona = _generate_desktop_persona(chrome_major, kernel_version, rng)
@@ -1440,6 +1478,9 @@ def persona_to_fp_config(
         "apilog": {"enabled": mode != "off", "mode": mode, "path": api_log_path or ""},
     }
 
+    # No screen key at all: the kernel then answers from the host display.
+    if persona.host_screen and not android:
+        del config["screen"]
     if android:
         # Only Android writes this key. A desktop profile that suddenly grew
         # one would read as changed to the full-sync diff.
@@ -1457,7 +1498,7 @@ def persona_to_fp_config(
     if cap is not None:
         nav = config["navigator"]
         cap_ua_data = nav["uaData"]
-        screen = config["screen"]
+        screen = config.get("screen", {})
         if cap.platform:
             nav["platform"] = cap.platform
         if cap.vendor:
@@ -1631,6 +1672,21 @@ def with_kernel_version(persona: Persona, version: str) -> Persona:
     moved.kernel_version = kernel_version
     moved.chrome_major = chrome_major
     moved.ua = re.sub(r"Chrome/\d+", "Chrome/{0}".format(chrome_major), moved.ua, count=1)
+    return moved
+
+
+def with_screen_scale(persona: Persona, screen_scale: Any) -> Persona:
+    """The same identity on another Windows display scale.
+
+    Only the screen moves, but sites still read that as a different device
+    behind the same cookies.
+    """
+    _assert_screen_scale(screen_scale, persona.os, persona.device_type, persona.captured is not None, persona.hardware)
+    moved = Persona.from_dict(persona.to_dict())
+    moved.host_screen = screen_scale == "host"
+    if screen_scale != "host":
+        moved.screen_w, moved.screen_h = random.choice(list(SCREENS_BY_SCALE[screen_scale]))
+        moved.device_pixel_ratio = screen_scale / 100
     return moved
 
 

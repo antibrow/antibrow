@@ -3,7 +3,7 @@ import http from 'node:http'
 import path from 'node:path'
 import net from 'node:net'
 import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { chromium, type BrowserContext, type Page } from 'playwright-core'
+import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core'
 import { SocksClient } from 'socks'
 import { personaToFpConfig, API_LOG_FILE, type FpConfigSettings, type Persona } from './persona'
 import { writeWindowIcon } from './icon'
@@ -39,6 +39,7 @@ export interface KernelLaunchOptions extends Omit<FpConfigSettings, 'apiLogPath'
   webauthnCapture?: boolean
   /** Reopen the previous session's tabs. Default true. */
   restoreTabs?: boolean
+  playwrightDownloads?: boolean
   /** How long to wait for the CDP endpoint. Callers pass what the launch budget has left. */
   cdpTimeoutMs?: number
   /** Extra Chromium switches, appended after everything this SDK sets. */
@@ -644,6 +645,11 @@ export async function ensureStartupPage(context: BrowserContext): Promise<void> 
  * it: the startup navigation may not have committed when CDP starts answering,
  * and `page.url()` would still read `about:blank`.
  */
+export async function restoreBrowserDownloads(pw: Pick<Browser, 'newBrowserCDPSession'>): Promise<void> {
+  const cdp = await pw.newBrowserCDPSession()
+  await cdp.send('Browser.setDownloadBehavior', { behavior: 'default' })
+}
+
 async function closeStrayLocaleTab(context: BrowserContext, language: string, timeoutMs = 3000): Promise<void> {
   const deadline = Date.now() + timeoutMs
   for (;;) {
@@ -824,7 +830,11 @@ export async function launchKernel(opts: KernelLaunchOptions): Promise<KernelSes
   const { child, exit, wsEndpoint } = await retryKernelStart(startOnce)
 
   onProgress?.(`Connecting Playwright over CDP to ${wsEndpoint}`)
-  const pw = await chromium.connectOverCDP(wsEndpoint)
+  // Without noDefaults Playwright reroutes every download into a temp folder
+  // under GUID names and deletes it on disconnect: to a person it looks broken.
+  const pw = await chromium.connectOverCDP(wsEndpoint, { noDefaults: !opts.playwrightDownloads })
+  // playwright-core before 1.60 drops noDefaults silently; undo its takeover by hand.
+  if (!opts.playwrightDownloads) await restoreBrowserDownloads(pw).catch(() => {})
   const context = pw.contexts()[0] ?? (await pw.newContext())
 
   if (process.platform === 'darwin') {

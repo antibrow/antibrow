@@ -18,7 +18,7 @@ import {
   installedKernelBuild,
   type KernelVersion,
 } from './downloader'
-import { assertPersonaOs, personaHostWarnings, loadOrGeneratePersona, readPersona, settlePersonaLanguages, writePersona, withKernelVersion, type ApiLogMode, type DesktopOs, type DeviceType, type Persona, type PersonaHardware, type PersonaInit } from './persona'
+import { assertPersonaOs, personaHostWarnings, loadOrGeneratePersona, readPersona, settlePersonaLanguages, writePersona, withKernelVersion, type ApiLogMode, type DesktopOs, type DeviceType, type Persona, type PersonaHardware, type PersonaInit, type ScreenScale } from './persona'
 import { fetchRealDevice } from './devices'
 import { lookupDirectGeo, lookupProxyGeo, type ProxyGeo } from './geoip'
 import { getLicenseToken } from './license'
@@ -42,8 +42,8 @@ export type { KernelSession as EngineSession } from './launcher'
 export { downloadProfileCache, uploadProfileCache, packProfileCache, packProfileCacheWithReport, lastProfilePackReport, unpackProfileCache, exportProfileArchive, importProfileArchive, PROFILE_ARCHIVE_EXT, ARCHIVE_VERSION_FILE, readArchiveVersion, writeArchiveVersion, clearArchiveVersion, normalizeArchiveVersion } from './profile-cache'
 export type { ProfilePackReport, ProfilePackResult } from './profile-cache'
 export type { PortableProfileMeta, ImportedProfileMeta } from './profile-cache'
-export { generatePersona, loadOrGeneratePersona, readPersona, writePersona, withKernelVersion, sanitizePersonaGpu, personaHostWarnings, MACOS_PERSONA_ON_FOREIGN_HOST, HOST_HARDWARE_UNAVAILABLE, usesHostHardware, PERSONA_OS_INVALID } from './persona'
-export type { Persona, ApiLogMode, DeviceType, DesktopOs, PersonaHardware, CapturedFacts, PersonaInit } from './persona'
+export { generatePersona, loadOrGeneratePersona, readPersona, writePersona, withKernelVersion, withScreenScale, sanitizePersonaGpu, personaHostWarnings, MACOS_PERSONA_ON_FOREIGN_HOST, HOST_HARDWARE_UNAVAILABLE, usesHostHardware, PERSONA_OS_INVALID } from './persona'
+export type { Persona, ApiLogMode, DeviceType, DesktopOs, PersonaHardware, ScreenScale, CapturedFacts, PersonaInit } from './persona'
 export { fetchRealDevice } from './devices'
 export type { RealDevice } from './devices'
 export { getLicenseToken, fetchLicenseToken, type LicenseInfo } from './license'
@@ -120,12 +120,16 @@ export interface OpenProfileOptions {
   webauthnCapture?: boolean
   /** Reopen the previous session's tabs. Default true. */
   restoreTabs?: boolean
+  /** Hand downloads to Playwright (download events) instead of the browser. Default false. */
+  playwrightDownloads?: boolean
   /** Device profile. New profiles only; an existing one keeps its own. */
   deviceType?: DeviceType
   /** Desktop OS for a new profile; `macos` takes its hardware from a Mac host. New profiles only. */
   os?: DesktopOs
   /** Desktop hardware for a new Windows profile; `host` uses this computer's own. Defaults to `host` on a Windows host. New profiles only. */
   hardware?: PersonaHardware
+  /** Windows display scale for a new generated Windows profile; `host` reports this computer's own screen. New profiles only. */
+  screenScale?: ScreenScale
   /** Draw the identity from the real-device library (paid). New profiles only. */
   realFingerprint?: boolean
   onProgress?: (message: string) => void
@@ -185,14 +189,15 @@ export interface OpenedProfile extends KernelSession {
  */
 export async function resolvePersonaInit(
   profileDir: string,
-  opts: Pick<OpenProfileOptions, 'deviceType' | 'os' | 'hardware' | 'realFingerprint' | 'key' | 'server'>,
+  opts: Pick<OpenProfileOptions, 'deviceType' | 'os' | 'hardware' | 'screenScale' | 'realFingerprint' | 'key' | 'server'>,
   hostPlatform: string = process.platform,
 ): Promise<PersonaInit | undefined> {
   if (fs.existsSync(path.join(profileDir, 'persona.json'))) return undefined
   const wantsWindowsDesktop = opts.deviceType !== 'android' && opts.os !== 'macos' && !opts.realFingerprint
-  const hardware = opts.hardware ?? (wantsWindowsDesktop && hostPlatform === 'win32' ? 'host' : undefined)
-  if (!opts.deviceType && !opts.realFingerprint && !opts.os && !hardware) return undefined
-  assertPersonaOs({ deviceType: opts.deviceType, os: opts.os, hardware }, opts.realFingerprint)
+  // A chosen screen scale implies generated hardware, which is the only kind it applies to.
+  const hardware = opts.hardware ?? (wantsWindowsDesktop && hostPlatform === 'win32' && opts.screenScale === undefined ? 'host' : undefined)
+  if (!opts.deviceType && !opts.realFingerprint && !opts.os && !hardware && opts.screenScale === undefined) return undefined
+  assertPersonaOs({ deviceType: opts.deviceType, os: opts.os, hardware, screenScale: opts.screenScale }, opts.realFingerprint)
   const device = opts.realFingerprint
     ? await fetchRealDevice({
         os: opts.deviceType === 'android' ? 'android' : 'windows',
@@ -200,7 +205,7 @@ export async function resolvePersonaInit(
         server: opts.server,
       })
     : undefined
-  return { deviceType: opts.deviceType, device, os: opts.os, hardware }
+  return { deviceType: opts.deviceType, device, os: opts.os, hardware, screenScale: opts.screenScale }
 }
 
 /** An Android config on a pre-mobile kernel is worse than no Android at all. */
@@ -605,6 +610,7 @@ async function openProfileWithin(opts: OpenProfileOptions, budget: Deadline): Pr
     apiLog: opts.apiLog,
     webauthnCapture: opts.webauthnCapture,
     restoreTabs: opts.restoreTabs,
+    playwrightDownloads: opts.playwrightDownloads,
     rttMs: geo?.rttMs ?? rttMs,
     cdpTimeoutMs: budget.budget(DEFAULT_LAUNCH_TIMEOUT_MS),
     extraArgs: opts.args,

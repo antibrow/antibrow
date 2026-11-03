@@ -15,14 +15,25 @@ const GPUS = [
   ['Google Inc. (AMD)', 'ANGLE (AMD, AMD Radeon(TM) Graphics Direct3D11 vs_5_0 ps_5_0, D3D11-31.0.12027.9001)'],
 ] as const
 
-// Mainstream Windows laptop resolutions; dpr is never 1.
-const SCREENS: readonly [number, number, number][] = [
-  [1536, 864, 1.25],
-  [1280, 720, 1.5],
-  [1707, 960, 1.5],
-  [1280, 800, 1.5],
-  [1440, 900, 1.25],
-]
+export type ScreenScale = 'host' | 100 | 125 | 150
+
+// CSS-pixel sizes of real panels at each Windows scale, so the size and dpr
+// always multiply back to a resolution somebody actually sells.
+const SCREENS_BY_SCALE: Record<100 | 125 | 150, readonly [number, number][]> = {
+  100: [[1920, 1080], [1366, 768], [1600, 900], [2560, 1440]],
+  125: [[1536, 864], [1536, 960], [2048, 1152]],
+  150: [[1280, 720], [1280, 800], [1707, 960], [1707, 1067]],
+}
+
+// The unasked-for default stays off dpr 1: the kernel turns DOMRect noise off
+// there, so every 100% profile on one host shares a DOMRect hash.
+const DEFAULT_SCALES = [125, 150] as const
+
+function pickScreen(scale?: 100 | 125 | 150): [number, number, number] {
+  const s = scale ?? pick(DEFAULT_SCALES)
+  const [w, h] = pick(SCREENS_BY_SCALE[s])
+  return [w, h, s / 100]
+}
 
 const HW_CONCURRENCY = [4, 8, 12, 16] as const
 // 16 alone gets the profile flagged as an anti-detect browser by a commercial
@@ -70,6 +81,7 @@ export function personaHostWarnings(p: Pick<Persona, 'os' | 'deviceType' | 'hard
 // takes its hardware from the host anyway, so there is nothing to replay.
 export function assertPersonaOs(init: PersonaInit | undefined, realFingerprint?: boolean): void {
   assertPersonaHardware(init, realFingerprint)
+  assertScreenScale(init, realFingerprint)
   const os: unknown = init?.os
   if (os === undefined || os === 'windows') return
   if (os !== 'macos') throw new Error(`Unknown os "${String(os)}": expected "windows" or "macos"`)
@@ -92,6 +104,18 @@ function assertPersonaHardware(init: PersonaInit | undefined, realFingerprint?: 
     throw new Error('hardware "host" applies to desktop profiles only; drop deviceType "android" or hardware')
   }
   if (realFingerprint || init?.device) throw new Error('hardware "host" cannot use realFingerprint: a real device brings its own hardware')
+}
+
+function assertScreenScale(init: PersonaInit | undefined, realFingerprint?: boolean): void {
+  const scale: unknown = init?.screenScale
+  if (scale === undefined) return
+  if (scale !== 'host' && scale !== 100 && scale !== 125 && scale !== 150) {
+    throw new Error(`Unknown screenScale "${String(scale)}": expected "host", 100, 125 or 150`)
+  }
+  if (init?.os === 'macos' || init?.hardware === 'host') throw new Error('screenScale does not apply to host hardware: the screen is already the host\'s')
+  if (init?.deviceType === 'android' || realFingerprint || init?.device) {
+    throw new Error('screenScale applies to generated Windows profiles only: a device brings its own screen')
+  }
 }
 
 /**
@@ -167,6 +191,8 @@ export interface Persona {
   os?: DesktopOs
   /** Windows only: 'host' lets a Windows host answer hardware itself. Absent means generated. */
   hardware?: PersonaHardware
+  /** Generated Windows only: the kernel reports the host's own screen. screenW/H/dpr stay as a fallback for older SDKs. */
+  hostScreen?: boolean
   androidModel?: string
   androidOsMajor?: number
   captured?: CapturedFacts
@@ -283,6 +309,8 @@ export interface PersonaInit {
   deviceType?: DeviceType
   os?: DesktopOs
   hardware?: PersonaHardware
+  /** Generated Windows only: Windows display scale, which picks a matching size and dpr. Absent means 125% or 150% at random. */
+  screenScale?: ScreenScale
   /** A device row from the library; absent means use the bundled table. */
   device?: RealDevice
 }
@@ -304,13 +332,15 @@ export function generatePersona(chromeMajor = 149, kernelVersion = '149', init?:
     }
     return sanitizePersonaGpu(base)
   }
-  const persona = generateDesktopPersona(chromeMajor, kernelVersion)
+  const scale = init?.screenScale
+  const persona = generateDesktopPersona(chromeMajor, kernelVersion, scale === 'host' ? undefined : scale)
   if (init?.hardware === 'host') persona.hardware = 'host'
+  if (scale === 'host') persona.hostScreen = true
   return persona
 }
 
-function generateDesktopPersona(chromeMajor: number, kernelVersion: string): Persona {
-  const [screenW, screenH, devicePixelRatio] = pick(SCREENS)
+function generateDesktopPersona(chromeMajor: number, kernelVersion: string, scale?: 100 | 125 | 150): Persona {
+  const [screenW, screenH, devicePixelRatio] = pickScreen(scale)
   const [gpuVendor, gpuRenderer] = pick(GPUS)
   const ua = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeMajor}.0.0.0 Safari/537.36`
   return {
@@ -1032,6 +1062,8 @@ export function personaToFpConfig(
     },
     apilog: { enabled: apiLog !== 'off', mode: apiLog, path: opts.apiLogPath ?? '' },
   }
+  // No screen key at all: the kernel then answers from the host display.
+  if (persona.hostScreen && !android) delete config.screen
   if (android) {
     // Only Android writes this key. A desktop profile that suddenly grows one
     // would read as changed to the full-sync diff.
@@ -1049,7 +1081,7 @@ export function personaToFpConfig(
   if (cap) {
     const nav = config.navigator as Record<string, unknown>
     const uaData = nav.uaData as Record<string, unknown>
-    const screen = config.screen as Record<string, unknown>
+    const screen = config.screen as Record<string, unknown> | undefined
     if (cap.platform) nav.platform = cap.platform
     if (cap.vendor) nav.vendor = cap.vendor
     if (cap.maxTouchPoints != null) nav.maxTouchPoints = cap.maxTouchPoints
@@ -1060,9 +1092,9 @@ export function personaToFpConfig(
     if (cap.uaBitness !== undefined) uaData.bitness = cap.uaBitness
     if (cap.uaModel !== undefined) uaData.model = cap.uaModel
     if (cap.uaMobile !== undefined) uaData.mobile = cap.uaMobile
-    if (cap.availW) screen.availWidth = cap.availW
-    if (cap.availH) screen.availHeight = cap.availH
-    if (cap.colorDepth) {
+    if (screen && cap.availW) screen.availWidth = cap.availW
+    if (screen && cap.availH) screen.availHeight = cap.availH
+    if (screen && cap.colorDepth) {
       screen.colorDepth = cap.colorDepth
       screen.pixelDepth = cap.colorDepth
     }
@@ -1131,6 +1163,18 @@ export function withKernelVersion(persona: Persona, version: string): Persona {
     chromeMajor,
     ua: persona.ua.replace(/Chrome\/\d+/, `Chrome/${chromeMajor}`),
   }
+}
+
+/**
+ * The same identity on another Windows display scale. Only the screen moves,
+ * but sites still read that as a different device behind the same cookies.
+ */
+export function withScreenScale(persona: Persona, scale: ScreenScale): Persona {
+  assertScreenScale({ os: persona.os, deviceType: persona.deviceType, hardware: persona.hardware, screenScale: scale }, !!persona.captured)
+  const { hostScreen: _, ...rest } = persona
+  if (scale === 'host') return { ...rest, hostScreen: true }
+  const [screenW, screenH, devicePixelRatio] = pickScreen(scale)
+  return { ...rest, screenW, screenH, devicePixelRatio }
 }
 
 /**

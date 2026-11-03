@@ -4,6 +4,17 @@ All notable changes to the `antibrow` Python SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-10-29
+
+### Added
+
+- `generate_persona()` takes `screen_scale` (`"host"`, `100`, `125` or `150`) for generated Windows personas. A number picks a resolution and pixel ratio that match that Windows display scale; `"host"` reports this computer's own screen. Profiles created this way by either SDK open the same in the other.
+- `with_screen_scale(persona, screen_scale)` moves an existing generated Windows persona to another scale; seeds and GPU stay, only the screen changes.
+
+### Fixed
+
+- Files downloaded in a launched browser now go to the browser's normal download folder under their real names. Before, Playwright redirected them to a temporary folder with random names and deleted it on disconnect. If you rely on `page.expect_download()`, pass `playwright_downloads=True` to `launch()` / `launch_async()`.
+
 ## [1.1.0] - 2026-10-26
 
 ### Added

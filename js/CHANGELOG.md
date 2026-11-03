@@ -4,6 +4,17 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [3.2.0] - 2026-10-29
+
+### Added
+
+- `generatePersona()` and `openProfile()` take `screenScale` (`'host'`, `100`, `125` or `150`, exported type `ScreenScale`) for new generated Windows profiles. A number picks a resolution and pixel ratio that match that Windows display scale; `'host'` reports this computer's own screen. Without it, new profiles still land on 125% or 150%.
+- `withScreenScale(persona, scale)` moves an existing generated Windows persona to another scale; seeds and GPU stay, only the screen changes.
+
+### Fixed
+
+- Files downloaded in a launched browser now go to the browser's normal download folder under their real names. Before, Playwright redirected them to a temporary folder with random names and deleted it on disconnect. If you rely on `page.waitForEvent('download')`, pass `playwrightDownloads: true` to `launch()` / `openProfile()`.
+
 ## [3.1.0] - 2026-10-26
 
 ### Changed
