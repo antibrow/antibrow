@@ -1,0 +1,54 @@
+---
+import Admin from '../../layouts/Admin.astro'
+
+export const prerender = false
+---
+
+<Admin title="Releases" active="releases">
+  <h1>Desktop releases</h1>
+  <section>
+    <form id="form" class="stack">
+      <label>Latest version<input name="latest" placeholder="1.2.0" /></label>
+      <label>Minimum supported version<input name="minSupported" placeholder="1.0.0" /></label>
+      <label>Download URL<input name="downloadUrl" type="url" placeholder="https://..." /></label>
+      <label>Notes<textarea name="notes" rows="3"></textarea></label>
+      <p class="muted">Clients older than the minimum are told to upgrade. Leave both versions empty to disable the gate.</p>
+      <div><button type="submit">Save</button></div>
+    </form>
+  </section>
+  <script>
+    import { api, attempt, toast } from '../../scripts/admin-api'
+
+    type Policy = { latest?: string; minSupported?: string; downloadUrl?: string; notes?: string }
+    type File = { clients?: Record<string, Policy> } & Record<string, unknown>
+    const form = document.getElementById('form') as HTMLFormElement
+    let file: File = {}
+
+    attempt(async () => {
+      file = await api<File>('GET', 'releases')
+      const p = file.clients?.desktop ?? {}
+      for (const k of ['latest', 'minSupported', 'downloadUrl', 'notes'] as const) {
+        ;(form.elements.namedItem(k) as HTMLInputElement).value = p[k] ?? ''
+      }
+    })
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault()
+      const f = new FormData(form)
+      const policy: Policy = {}
+      for (const k of ['latest', 'minSupported', 'downloadUrl', 'notes'] as const) {
+        const v = String(f.get(k) ?? '').trim()
+        if (v) policy[k] = v
+      }
+      if ((policy.latest === undefined) !== (policy.minSupported === undefined)) {
+        toast('Set both latest and minimum version, or neither', true)
+        return
+      }
+      const clients = { ...file.clients }
+      if (Object.keys(policy).length) clients.desktop = policy
+      else delete clients.desktop
+      const next: File = { ...file, clients }
+      if (await attempt(async () => { file = await api<File>('PUT', 'releases', next) })) toast('Saved')
+    })
+  </script>
+</Admin>

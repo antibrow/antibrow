@@ -1632,18 +1632,27 @@ def load_or_generate_persona(
 
 
 def settle_persona_languages(
-    profile_dir: Path | str, persona: Persona, country_code: Optional[str]
+    profile_dir: Path | str,
+    persona: Persona,
+    country_code: Optional[str],
+    follow: bool = False,
 ) -> Persona:
     """Settle a pending persona's languages from the exit country and persist them.
 
     A country outside the table still settles (on the default): the exit was
     known, so waiting for another launch would only let the language change later.
+    ``follow`` re-derives settled languages too, but only from a country in the
+    table: an unknown exit is no reason to drop to the default.
     """
-    if not persona.languages_pending or not country_code:
+    if not country_code:
         return persona
+    derived = languages_for_country(country_code)
+    if not persona.languages_pending:
+        if not follow or not derived or list(derived) == list(persona.languages):
+            return persona
     settled = replace(
         persona,
-        languages=languages_for_country(country_code) or list(persona.languages),
+        languages=derived or list(persona.languages),
         languages_pending=False,
     )
     path = Path(profile_dir) / PERSONA_FILE

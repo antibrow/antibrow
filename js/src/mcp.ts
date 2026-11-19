@@ -17,6 +17,7 @@ import { fanoutRecipe } from './recipe/fanout'
 import { applyFilter } from './recipe/select'
 import { rmSync } from 'node:fs'
 import { setTelemetryClient } from './telemetry'
+import { DEFAULT_LIVEVIEW_RELAY_URL, FeatureUnavailableError, assertServerFeature, isDefaultServer, resolveServer } from './server-config'
 import type { McpSession } from './types'
 
 /**
@@ -653,10 +654,19 @@ export async function startMcpServer(): Promise<void> {
 
         case 'start_live_view': {
           const session = getSession(sessions, args?.sessionId as string)
-          const relayUrl = process.env.ANTI_DETECT_BROWSER_RELAY_URL || 'wss://liveview-relay.antibrow.com'
+          await assertServerFeature(server, 'liveView', { cacheDir: resolvedCacheDir })
+          const relayUrl = process.env.ANTI_DETECT_BROWSER_RELAY_URL
+            || (isDefaultServer(server) ? DEFAULT_LIVEVIEW_RELAY_URL : undefined)
+          if (!relayUrl) {
+            throw new FeatureUnavailableError(
+              'liveView',
+              `No Live View relay is known for ${resolveServer(server)}; set ANTI_DETECT_BROWSER_RELAY_URL.`,
+            )
+          }
           const lvSession = await registerLiveSession({
             key: apiKey,
             server,
+            cacheDir: resolvedCacheDir,
             sessionKey: session.id,
             profileName: readProfileMeta(session.profileDir)?.name ?? session.profileDir.split(/[/\\]/).pop(),
             ua: '',
@@ -700,7 +710,7 @@ export async function startMcpServer(): Promise<void> {
         }
 
         case 'list_recipes': {
-          const registry = await loadRegistry({ cacheDir: resolvedCacheDir })
+          const registry = await loadRegistry({ cacheDir: resolvedCacheDir, server })
           const site = args?.site as string | undefined
           const query = (args?.query as string | undefined)?.toLowerCase()
           const rows = registry.recipes

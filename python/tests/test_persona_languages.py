@@ -86,6 +86,20 @@ def test_waits_for_a_country_and_settles_on_the_default_for_an_unlisted_one(tmp_
     assert not settled.languages_pending
 
 
+def test_follows_a_new_exit_only_when_asked_and_never_onto_the_default(tmp_path):
+    raw = generate_persona(152, "152").to_dict()
+    del raw["languagesPending"]
+    raw["languages"] = ["en-US", "en", "zh"]
+    (tmp_path / "persona.json").write_text(json.dumps(raw), encoding="utf-8")
+    persona = Persona.from_dict(raw)
+    assert settle_persona_languages(tmp_path, persona, "JP") is persona
+    assert settle_persona_languages(tmp_path, persona, "ZZ", follow=True) is persona
+    assert settle_persona_languages(tmp_path, persona, "SG", follow=True) is persona
+    moved = settle_persona_languages(tmp_path, persona, "JP", follow=True)
+    assert moved.languages == ["ja", "en"]
+    assert _on_disk(tmp_path)["languages"] == ["ja", "en"]
+
+
 @pytest.fixture
 def fake_launch(tmp_path, monkeypatch):
     exe = tmp_path / "chrome"
@@ -115,8 +129,26 @@ def test_the_first_exit_country_sticks_when_the_proxy_changes(tmp_path, fake_lau
     assert "--lang=zh-CN" in second.args
 
 
+def test_follow_exit_language_moves_with_the_exit(tmp_path, fake_launch, monkeypatch):
+    proxy = "http://gate.example.com:8080"
+    _exit(monkeypatch, "lookup_proxy_geo", "CN", "Asia/Shanghai")
+    B.prepare_launch(cache_dir=tmp_path, profile="p1", proxy=proxy)
+    _exit(monkeypatch, "lookup_proxy_geo", "JP", "Asia/Tokyo")
+    second = B.prepare_launch(cache_dir=tmp_path, profile="p1", proxy=proxy, follow_exit_language=True)
+    assert _languages(second) == ["ja", "en"]
+    assert "--lang=ja" in second.args
+
+
 def test_a_failed_lookup_leaves_it_pending_for_the_next_launch(tmp_path, fake_launch, monkeypatch):
     monkeypatch.setattr(B, "lookup_direct_geo", lambda *a, **k: None)
     assert _languages(B.prepare_launch(cache_dir=tmp_path, profile="p1")) == ["en-US", "en"]
     _exit(monkeypatch, "lookup_direct_geo", "DE", "Europe/Berlin")
     assert _languages(B.prepare_launch(cache_dir=tmp_path, profile="p1")) == ["de", "en"]
+
+
+def test_a_slow_proxy_gets_a_second_geo_lookup(tmp_path, fake_launch, monkeypatch):
+    geo = ProxyGeo(ip="203.0.113.7", country="", timezone="Asia/Tokyo", country_code="JP")
+    answers = iter([None, geo])
+    monkeypatch.setattr(B, "lookup_proxy_geo", lambda *a, **k: next(answers))
+    plan = B.prepare_launch(cache_dir=tmp_path, profile="p1", proxy="http://gate.example.com:8080")
+    assert json.loads((plan.profile_dir / "fp-config.json").read_text(encoding="utf-8"))["timezone"] == "Asia/Tokyo"

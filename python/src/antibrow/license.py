@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Union
 
 from .config import (
+    DEFAULT_SERVER,
     ENV_API_KEY,
     ENV_API_KEY_LEGACY,
     ENV_LICENSE_TOKEN,
@@ -214,7 +215,7 @@ def fetch_license_token(api_key: str, server: Optional[str] = None) -> LicenseIn
         if exc.code == 401:
             raise LicenseError(
                 "Authentication failed: the API key was rejected by {0}. "
-                "Check it at https://antibrow.com or run `python -m antibrow login`.".format(base)
+                "Check it at {0} or run `python -m antibrow login`.".format(base)
             ) from exc
         detail = ""
         try:
@@ -255,9 +256,17 @@ _NO_KEY_MESSAGE = (
     "     already have a minted token, or launch(license_provider=callable) to plug in\n"
     "     your own issuer.\n"
     "\n"
-    "A free key (1 concurrent browser, unlimited local profiles) is available at "
-    "https://antibrow.com."
+    "{0}"
 )
+
+
+def _no_key_message(server: Optional[str]) -> str:
+    base = (server or default_server()).rstrip("/")
+    if base == DEFAULT_SERVER:
+        where = "A free key (1 concurrent browser, unlimited local profiles) is available at {0}.".format(base)
+    else:
+        where = "Get an API key from {0}.".format(base)
+    return _NO_KEY_MESSAGE.format(where)
 
 
 def get_license_token(
@@ -291,7 +300,7 @@ def get_license_token(
 
     key = resolve_api_key(api_key)
     if not key:
-        raise LicenseError(_NO_KEY_MESSAGE)
+        raise LicenseError(_no_key_message(server))
 
     base = server or default_server()
     cache_path = _cache_file(key, base)

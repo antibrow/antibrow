@@ -1,8 +1,7 @@
 import type { ProfileConfig, SyncedProfile, ProfileSyncPage, ProxyConfig, SyncedProxy, ProxySyncPage } from './types'
 import { encodePathSegment } from './url-path'
 import { retryFetch } from './retry-fetch'
-
-const DEFAULT_SERVER = 'https://antibrow.com'
+import { assertServerFeature, resolveServer } from './server-config'
 
 function safeJson(text: string): unknown {
   try {
@@ -39,7 +38,7 @@ function jsonHeaders(key: string): Record<string, string> {
 
 export async function createProfile(options: ProfileOptions): Promise<SyncedProfile> {
   const { key, name, tags, id, config } = options
-  const server = options.server || DEFAULT_SERVER
+  const server = resolveServer(options.server)
   const url = new URL('/api/v1/profiles', server)
 
   const response = await retryFetch(url.toString(), {
@@ -68,7 +67,7 @@ export interface UpdateProfileOptions {
 
 export async function updateProfile(options: UpdateProfileOptions): Promise<SyncedProfile> {
   const { key, id, name, tags, config } = options
-  const server = options.server || DEFAULT_SERVER
+  const server = resolveServer(options.server)
   const url = new URL(`/api/v1/profiles/${encodePathSegment(id)}`, server)
 
   const response = await retryFetch(url.toString(), {
@@ -87,7 +86,7 @@ export async function updateProfile(options: UpdateProfileOptions): Promise<Sync
 
 export async function getProfile(options: Omit<ProfileOptions, 'tags'>): Promise<SyncedProfile> {
   const { key, name } = options
-  const server = options.server || DEFAULT_SERVER
+  const server = resolveServer(options.server)
   const url = new URL(`/api/v1/profiles/${encodePathSegment(name)}`, server)
 
   const response = await retryFetch(url.toString(), { method: 'GET', headers: authHeaders(key) })
@@ -125,7 +124,7 @@ export async function listServerProfiles(options: { key: string; server?: string
 
 export async function syncPullProfiles(options: { key: string; server?: string; since?: string }): Promise<ProfileSyncPage> {
   const { key, since } = options
-  const server = options.server || DEFAULT_SERVER
+  const server = resolveServer(options.server)
   const url = new URL('/api/v1/profiles', server)
   if (since) url.searchParams.set('since', since)
 
@@ -143,7 +142,7 @@ export async function deleteProfile(options: { key: string; server?: string; id?
   const { key, id, name } = options
   const ident = id ?? name
   if (!ident) throw new Error('deleteProfile requires an id or name')
-  const server = options.server || DEFAULT_SERVER
+  const server = resolveServer(options.server)
   const url = new URL(`/api/v1/profiles/${encodePathSegment(ident)}`, server)
 
   const response = await retryFetch(url.toString(), { method: 'DELETE', headers: authHeaders(key) })
@@ -166,7 +165,7 @@ export async function getProfileForLaunch(options: { key: string; server?: strin
   const { key, id, name } = options
   const ident = id ?? name
   if (!ident) throw new Error('getProfileForLaunch requires an id or name')
-  const server = options.server || DEFAULT_SERVER
+  const server = resolveServer(options.server)
   const url = new URL(`/api/v1/profiles/${encodePathSegment(ident)}`, server)
 
   const response = await retryFetch(url.toString(), { method: 'GET', headers: authHeaders(key) })
@@ -191,7 +190,7 @@ export async function getProfileForLaunch(options: { key: string; server?: strin
 }
 
 function archiveUrl(options: { key: string; server?: string; name: string }): string {
-  const server = options.server || DEFAULT_SERVER
+  const server = resolveServer(options.server)
   return new URL(`/api/v1/profiles/${encodePathSegment(options.name)}/archive`, server).toString()
 }
 
@@ -267,7 +266,7 @@ export async function uploadProfileState(options: {
   serviceWorkers?: string | null
 }): Promise<void> {
   const { key, name, cookies } = options
-  const server = options.server || DEFAULT_SERVER
+  const server = resolveServer(options.server)
   const apiUrl = new URL(`/api/v1/profiles/${encodePathSegment(name)}/state`, server)
   const apiResponse = await retryFetch(apiUrl.toString(), { method: 'POST', headers: authHeaders(key) })
 
@@ -300,7 +299,7 @@ export async function downloadProfileState(options: {
   name: string
 }): Promise<ProfileState | null> {
   const { key, name } = options
-  const server = options.server || DEFAULT_SERVER
+  const server = resolveServer(options.server)
   const apiUrl = new URL(`/api/v1/profiles/${encodePathSegment(name)}/state`, server)
   const apiResponse = await retryFetch(apiUrl.toString(), { method: 'GET', headers: authHeaders(key) })
 
@@ -334,7 +333,7 @@ export interface ProxyQuota {
 }
 
 
-/** Default host for managed `relay://` proxies. */
+/** Relay host for managed `relay://` proxies on the default server. */
 export const DEFAULT_RELAY_HOST = 'proxy.antibrow.com'
 
 /**
@@ -358,7 +357,8 @@ interface ProxyApiOptions {
 export async function listProxies(
   options: ProxyApiOptions,
 ): Promise<{ proxies: ManagedProxy[]; quota: ProxyQuota }> {
-  const server = options.server || DEFAULT_SERVER
+  const server = resolveServer(options.server)
+  await assertServerFeature(server, 'managedProxy')
   const url = new URL('/api/v1/proxies', server)
   const response = await retryFetch(url.toString(), { method: 'GET', headers: authHeaders(options.key) })
   if (!response.ok) {
@@ -372,7 +372,8 @@ async function proxyAction(
   options: ProxyApiOptions,
   body: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
-  const server = options.server || DEFAULT_SERVER
+  const server = resolveServer(options.server)
+  await assertServerFeature(server, 'managedProxy')
   const url = new URL('/api/v1/proxies', server)
   const response = await retryFetch(url.toString(), {
     method: 'POST',
@@ -413,7 +414,8 @@ function throwIfProxyAccessDenied(response: Response): void {
 export async function activateProxy(
   options: ProxyApiOptions & { proxyId: string },
 ): Promise<{ allowed: boolean; proxy?: ManagedProxy; quota?: ProxyQuota }> {
-  const server = options.server || DEFAULT_SERVER
+  const server = resolveServer(options.server)
+  await assertServerFeature(server, 'managedProxy')
   const url = new URL(`/api/v1/proxies/${encodeURIComponent(options.proxyId)}/activate`, server)
   const response = await retryFetch(url.toString(), { method: 'POST', headers: authHeaders(options.key) })
   throwIfProxyAccessDenied(response)
@@ -435,7 +437,8 @@ export interface ProxyTicket {
 export async function issueProxyTicket(
   options: ProxyApiOptions & { proxyId: string; label?: string; ttlMinutes?: number },
 ): Promise<ProxyTicket> {
-  const server = options.server || DEFAULT_SERVER
+  const server = resolveServer(options.server)
+  await assertServerFeature(server, 'managedProxy')
   const url = new URL(`/api/v1/proxies/${encodeURIComponent(options.proxyId)}/ticket`, server)
   const body: Record<string, unknown> = {}
   if (options.label !== undefined) body.label = options.label
@@ -465,7 +468,7 @@ export async function issueProxyTicket(
 export async function revokeProxyTicket(
   options: ProxyApiOptions & { proxyId: string; ticketId: string },
 ): Promise<void> {
-  const server = options.server || DEFAULT_SERVER
+  const server = resolveServer(options.server)
   const url = new URL(`/api/v1/proxies/${encodeURIComponent(options.proxyId)}/ticket`, server)
   url.searchParams.set('ticketId', options.ticketId)
   await retryFetch(url.toString(), { method: 'DELETE', headers: authHeaders(options.key) })
@@ -487,7 +490,7 @@ export interface AccountInfo {
 }
 
 export async function getAccount(options: { key: string; server?: string }): Promise<AccountInfo> {
-  const server = options.server || DEFAULT_SERVER
+  const server = resolveServer(options.server)
   const url = new URL('/api/v1/account', server)
   const response = await retryFetch(url.toString(), { method: 'GET', headers: authHeaders(options.key) })
   if (!response.ok) {
@@ -510,7 +513,7 @@ export function proxyConfigToUrl(c: ProxyConfig): string {
 
 export async function createUserProxy(options: { key: string; server?: string; id?: string; config: ProxyConfig }): Promise<SyncedProxy> {
   const { key, id, config } = options
-  const server = options.server || DEFAULT_SERVER
+  const server = resolveServer(options.server)
   const url = new URL('/api/v1/proxy-library', server)
   const response = await retryFetch(url.toString(), {
     method: 'POST',
@@ -526,7 +529,7 @@ export async function createUserProxy(options: { key: string; server?: string; i
 
 export async function updateUserProxy(options: { key: string; server?: string; id: string; config: ProxyConfig }): Promise<SyncedProxy> {
   const { key, id, config } = options
-  const server = options.server || DEFAULT_SERVER
+  const server = resolveServer(options.server)
   const url = new URL(`/api/v1/proxy-library/${encodeURIComponent(id)}`, server)
   const response = await retryFetch(url.toString(), {
     method: 'PUT',
@@ -542,7 +545,7 @@ export async function updateUserProxy(options: { key: string; server?: string; i
 
 export async function deleteUserProxy(options: { key: string; server?: string; id: string }): Promise<void> {
   const { key, id } = options
-  const server = options.server || DEFAULT_SERVER
+  const server = resolveServer(options.server)
   const url = new URL(`/api/v1/proxy-library/${encodeURIComponent(id)}`, server)
   const response = await retryFetch(url.toString(), { method: 'DELETE', headers: authHeaders(key) })
   if (!response.ok) {
@@ -553,7 +556,7 @@ export async function deleteUserProxy(options: { key: string; server?: string; i
 
 export async function syncPullUserProxies(options: { key: string; server?: string; since?: string }): Promise<ProxySyncPage> {
   const { key, since } = options
-  const server = options.server || DEFAULT_SERVER
+  const server = resolveServer(options.server)
   const url = new URL('/api/v1/proxy-library', server)
   if (since) url.searchParams.set('since', since)
   const response = await retryFetch(url.toString(), { method: 'GET', headers: authHeaders(key) })

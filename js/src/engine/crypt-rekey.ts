@@ -174,6 +174,8 @@ export interface ExportProfileArchiveOptions {
   onProgress?: (message: string) => void
   /** Replace the conversion step (tests, or a caller that runs its own kernel). */
   rekey?: RekeyRunner
+  /** Download kernels only from these hosts over https. */
+  trustedKernelHosts?: string[]
 }
 
 /**
@@ -281,5 +283,5 @@ async function resolveKernelExe(
   // compiled in, rather than the one this profile is actually pinned to.
   await refreshKernelVersions(options.cacheDir)
   const kv = findKernelVersionStrict(normalizeKernelVersion(kernelVersion))
-  return ensureKernel(options.cacheDir, kv, options.onProgress)
+  return ensureKernel(options.cacheDir, kv, options.onProgress, { trustedKernelHosts: options.trustedKernelHosts })
 }

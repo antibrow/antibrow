@@ -21,7 +21,7 @@ import urllib.request
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Tuple
 
-from .errors import ConcurrencyLimitError, LaunchError
+from .errors import ConcurrencyLimitError, LaunchError, ProfileInUseError
 from .profile_cache import PASSKEYS_ENTRY
 from .proxy import ProxySpec, proxy_args
 
@@ -72,20 +72,48 @@ def retry_kernel_start(attempt, attempts: int = 3, delay: float = 0.3):
 SINGLETON_FILES = ("SingletonLock", "SingletonCookie", "SingletonSocket")
 
 
+def assert_profile_not_in_use(user_data_dir: Path | str) -> None:
+    """Two kernels on one user-data dir corrupt it (profile error dialogs, blank
+    transparent windows), and Chromium's own guard is gone once the lock is
+    deleted. So a lock naming this host and a live pid whose command line holds
+    the same dir stops the launch. Anything else (other host, dead pid, a reused
+    pid, no ``ps``, Windows where the lock is not a symlink) counts as stale.
+    """
+    try:
+        target = os.readlink(os.path.join(str(user_data_dir), "SingletonLock"))
+    except (OSError, NotImplementedError):
+        return
+    host, _, pid_text = target.rpartition("-")
+    if not host or not pid_text.isdigit():
+        return
+    pid = int(pid_text)
+    if pid <= 0 or pid == os.getpid() or host != socket.gethostname():
+        return
+    try:
+        command = subprocess.run(
+            ["ps", "-ww", "-o", "command=", "-p", str(pid)],
+            capture_output=True, text=True, check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return
+    if "--user-data-dir={0}".format(user_data_dir) in command:
+        raise ProfileInUseError(str(user_data_dir), pid)
+
+
 def clear_singleton_locks(user_data_dir: Path | str) -> None:
     """Drop the profile's singleton lock before spawning.
 
     Chromium records the owning ``<hostname>-<pid>`` in SingletonLock and refuses
     a profile whose lock names another computer - which is every start when the
     profile lives on shared storage and the host name changes per container, so
-    the profile becomes permanently unopenable. Removing it trades that for the
-    guard against two kernels writing one user-data dir at once; the SDK's own
-    session bookkeeping is what keeps that from happening now.
+    the profile becomes permanently unopenable. A lock held by a live kernel on
+    this machine is the one case that is not removed: see ``assert_profile_not_in_use``.
 
     unlink(missing_ok), never ``Path.exists()``: the lock is a symlink to a name
     that was never created, so following it reports the file as absent and
     nothing gets deleted.
     """
+    assert_profile_not_in_use(user_data_dir)
     root = Path(user_data_dir)
     for name in SINGLETON_FILES:
         try:

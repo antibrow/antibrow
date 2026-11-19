@@ -31,6 +31,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from .config import USER_AGENT
 from .errors import KernelDownloadError, UnsupportedPlatformError
+from .server_config import DEFAULT_KERNEL_MANIFEST_URL, effective_server_config
 
 ProgressCallback = Callable[[str], None]
 
@@ -67,7 +68,7 @@ def _default_exe_rel_path(platform: str) -> str:
 
 
 #: Where new kernel builds are announced (same origin as the zips).
-KERNEL_MANIFEST_URL = "https://download.antibrow.com/fp-browser-versions.json"
+KERNEL_MANIFEST_URL = DEFAULT_KERNEL_MANIFEST_URL
 
 #: Filename of the build marker written inside an installed kernel directory.
 BUILD_MARKER = ".fp-build"
@@ -384,10 +385,13 @@ def refresh_kernel_versions(
     cache_dir: Path | str,
     force: bool = False,
     ttl_seconds: Optional[float] = None,
-    manifest_url: str = KERNEL_MANIFEST_URL,
+    manifest_url: Optional[str] = None,
+    server: Optional[str] = None,
 ) -> bool:
     """Register the cached catalogue, then re-fetch once it is older than
     ``ttl_seconds``. Never raises; True only when a fetch actually happened.
+
+    Without ``manifest_url`` the manifest is the one ``server`` names.
     """
     migrate_legacy_kernel_dirs(cache_dir)
     cached = load_cached_kernel_versions(cache_dir)
@@ -399,7 +403,8 @@ def refresh_kernel_versions(
         return False
 
     try:
-        remote = fetch_remote_kernel_versions(manifest_url)
+        url = manifest_url or effective_server_config(server, str(cache_dir))["kernelManifestUrl"] or KERNEL_MANIFEST_URL
+        remote = fetch_remote_kernel_versions(url)
     except Exception:
         return False  # offline / CDN hiccup: baseline + cache still resolve
     register_kernel_versions(remote)

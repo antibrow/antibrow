@@ -207,13 +207,13 @@ export async function runRecipeSource(
 /** Fetch a published recipe, then run it. */
 export async function runRecipe(options: RunRecipeOptions): Promise<RecipeRunResult> {
   const cacheDir = ensureCacheDir(options.cacheDir)
-  const registry = await loadRegistry({ cacheDir })
+  const registry = await loadRegistry({ cacheDir, server: options.server })
   const entry = findRecipe(registry, options.id)
   assertRunnable(entry, {
     allowUnreviewed: options.allowUnreviewed,
     temporary: !!options.temporary,
     cacheDir,
   })
-  const source = await ensureRecipeSource({ cacheDir, entry })
+  const source = await ensureRecipeSource({ cacheDir, entry, server: options.server })
   return runRecipeSource(entry, source, { ...options, cacheDir })
 }

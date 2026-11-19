@@ -1,0 +1,118 @@
+// Two builds of the same client: the workerd one inlines its query compiler and
+// is bundled into the Cloudflare worker, the nodejs one serves Docker and tests.
+// astro.config.mjs and vitest.config.ts alias 'prisma-generated' to the right one.
+generator client {
+  provider     = "prisma-client"
+  output       = "../node_modules/prisma-generated"
+  runtime      = "workerd"
+  moduleFormat = "esm"
+}
+
+generator clientNode {
+  provider     = "prisma-client"
+  output       = "../node_modules/prisma-generated-node"
+  runtime      = "nodejs"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Plan {
+  id                String   @id @default(cuid())
+  // Reserved codes: FREE (builtin default) and GRANT (never usable).
+  code              String   @unique
+  name              String
+  // Concurrent browser limit written into the license token.
+  mi                Int
+  // 0 disables cloud sync for the plan.
+  maxSyncedProfiles Int      @map("max_synced_profiles")
+  isDefault         Boolean  @default(false) @map("is_default")
+  builtin           Boolean  @default(false)
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  users User[]
+
+  @@map("plans")
+}
+
+model User {
+  id            String    @id @default(cuid())
+  label         String?
+  planId        String    @map("plan_id")
+  // After this moment the user falls back to the default plan.
+  planExpiresAt DateTime? @map("plan_expires_at")
+  disabled      Boolean   @default(false)
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  plan        Plan        @relation(fields: [planId], references: [id], onDelete: Restrict)
+  apiKeys     ApiKey[]
+  profiles    Profile[]
+  userProxies UserProxy[]
+
+  @@index([planId])
+  @@map("users")
+}
+
+model ApiKey {
+  id         String    @id @default(cuid())
+  // sha256 hex of the key; the plaintext is only shown once, at creation.
+  keyHash    String    @unique @map("key_hash")
+  last4      String
+  userId     String    @map("user_id")
+  name       String    @default("Default")
+  lastUsedAt DateTime? @map("last_used_at")
+  revokedAt  DateTime? @map("revoked_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("api_keys")
+}
+
+model Profile {
+  id             String    @id @default(cuid())
+  clientId       String?   @map("client_id")
+  userId         String    @map("user_id")
+  name           String
+  tags           String
+  ua             String?
+  browserVersion Int?      @map("browser_version")
+  width          Int?
+  height         Int?
+  proxyId        String?   @map("proxy_id")
+  config         String?
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at")
+  deletedAt      DateTime? @map("deleted_at")
+  // Kernel --fp-crypt-key (32 bytes hex). Generated once at row creation and
+  // never rewritten: the kernel binds it to the profile data.
+  cryptKey       String?   @map("crypt_key")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, clientId])
+  @@index([userId])
+  @@index([userId, updatedAt])
+  @@map("profiles")
+}
+
+model UserProxy {
+  id        String    @id @default(cuid())
+  clientId  String?   @map("client_id")
+  userId    String    @map("user_id")
+  config    String?
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, clientId])
+  @@index([userId, updatedAt])
+  @@map("user_proxies")
+}

@@ -1,8 +1,9 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
+import { spawn, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { clearSingletonLocks } from '../../src/engine/launcher'
+import { clearSingletonLocks, ProfileInUseError } from '../../src/engine/launcher'
 
 function tmpUserDataDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'singleton-'))
@@ -54,5 +55,47 @@ describe('clearSingletonLocks', () => {
   it('does nothing when the profile has never been launched', () => {
     const dir = path.join(tmpUserDataDir(), 'user-data')
     expect(() => clearSingletonLocks(dir)).not.toThrow()
+  })
+})
+
+describe.skipIf(process.platform === 'win32')('a lock held by a live kernel on this machine', () => {
+  const children: ChildProcess[] = []
+  afterEach(() => { for (const c of children.splice(0)) c.kill('SIGKILL') })
+
+  // Stands in for the kernel: a live process whose command line names the dir.
+  async function holder(arg: string): Promise<number> {
+    const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)', '--', arg], { stdio: 'ignore' })
+    children.push(child)
+    await new Promise((r) => setTimeout(r, 200))
+    return child.pid!
+  }
+
+  it('refuses to launch and keeps the lock', async () => {
+    // Two kernels on one dir: profile error dialogs, then a transparent window.
+    const dir = tmpUserDataDir()
+    const pid = await holder(`--user-data-dir=${dir}`)
+    fs.symlinkSync(`${os.hostname()}-${pid}`, path.join(dir, 'SingletonLock'))
+
+    expect(() => clearSingletonLocks(dir)).toThrow(ProfileInUseError)
+    expect(fs.lstatSync(path.join(dir, 'SingletonLock')).isSymbolicLink()).toBe(true)
+  })
+
+  it('treats a reused pid as stale', async () => {
+    const dir = tmpUserDataDir()
+    const pid = await holder('--user-data-dir=/somewhere/else')
+    fs.symlinkSync(`${os.hostname()}-${pid}`, path.join(dir, 'SingletonLock'))
+
+    clearSingletonLocks(dir)
+
+    expect(fs.readdirSync(dir)).toEqual([])
+  })
+
+  it('treats a dead pid on this host as stale', () => {
+    const dir = tmpUserDataDir()
+    fs.symlinkSync(`${os.hostname()}-999999`, path.join(dir, 'SingletonLock'))
+
+    clearSingletonLocks(dir)
+
+    expect(fs.readdirSync(dir)).toEqual([])
   })
 })

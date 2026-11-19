@@ -28,6 +28,7 @@ from .registry import (
     recipe_lock_path,
     recipes_dir,
     registry_url,
+    resolve_registry_url,
     update_recipes,
 )
 from .runtime import (
@@ -89,6 +90,7 @@ __all__ = [
     "recipe_lock_path",
     "recipes_dir",
     "registry_url",
+    "resolve_registry_url",
     "resolve_entry",
     "resolve_published",
     "run_recipe",

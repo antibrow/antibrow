@@ -1,7 +1,7 @@
-/** Version gate: the client reads a static policy manifest and decides locally. */
-export const SDK_VERSION = '3.2.0'
+import { effectiveServerConfig } from './server-config'
 
-const DEFAULT_MANIFEST_URL = 'https://download.antibrow.com/app-versions.json'
+/** Version gate: the client reads a static policy manifest and decides locally. */
+export const SDK_VERSION = '3.3.0'
 
 export interface VersionCheckResult {
   status: 'ok' | 'recommended' | 'required'
@@ -49,13 +49,17 @@ export async function checkClientVersion(options: {
   client: string
   version: string
   manifestUrl?: string
-  /** Ignored - kept so existing call sites that build `{ ..., server }` still typecheck. */
+  /** Decides the manifest when `manifestUrl` is not given. */
   server?: string
+  cacheDir?: string
 }): Promise<VersionCheckResult> {
   const { client, version } = options
-  const url = cacheBustUrl(options.manifestUrl || DEFAULT_MANIFEST_URL)
 
   try {
+    const manifestUrl = options.manifestUrl
+      || (await effectiveServerConfig(options.server, { cacheDir: options.cacheDir })).appVersionsUrl
+    if (!manifestUrl) return { status: 'ok', current: version }
+    const url = cacheBustUrl(manifestUrl)
     const res = await fetch(url, { headers: { Accept: 'application/json' } })
     if (!res.ok) return { status: 'ok', current: version }
 

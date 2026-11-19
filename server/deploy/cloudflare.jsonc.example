@@ -1,0 +1,18 @@
+{
+  "name": "antibrow-server",
+  "compatibility_date": "2024-09-23",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "./dist/_worker.js/index.js",
+  "assets": { "binding": "ASSETS", "directory": "./dist", "not_found_handling": "none" },
+  "observability": { "logs": { "enabled": true } },
+  "vars": {
+    "OEM_PUBLIC_URL": "https://api.example.com",
+    "OEM_BRAND_NAME": "AntiBrow",
+    "S3_REGION": "auto",
+    "S3_ADDRESSING": "path",
+    "S3_PUBLIC_ENDPOINT": "https://s3.example.com"
+  }
+  // Secrets (set with your Cloudflare CLI, never in this file):
+  // DATABASE_URL, FP_LICENSE_PRIVKEY, OEM_ADMIN_PASSWORD, OEM_SESSION_SECRET,
+  // S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY
+}

@@ -1,0 +1,53 @@
+services:
+  app:
+    build: .
+    ports:
+      - '4321:4321'
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql://antibrow@postgres:5432/antibrow
+      FP_LICENSE_PRIVKEY: ${FP_LICENSE_PRIVKEY:?set FP_LICENSE_PRIVKEY}
+      S3_ENDPOINT: http://rustfs:9000
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:9000}
+      S3_REGION: us-east-1
+      S3_BUCKET: antibrow
+      S3_ACCESS_KEY_ID: rustfsadmin
+      S3_SECRET_ACCESS_KEY: rustfsadmin
+      S3_CREATE_BUCKET: '1'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rustfs:
+        condition: service_started
+
+  postgres:
+    image: postgres:17
+    ports:
+      - '127.0.0.1:5433:5432'
+    environment:
+      POSTGRES_USER: antibrow
+      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_DB: antibrow
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U antibrow']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  rustfs:
+    image: rustfs/rustfs:1.0.6
+    ports:
+      - '9000:9000'
+    environment:
+      RUSTFS_ACCESS_KEY: rustfsadmin
+      RUSTFS_SECRET_KEY: rustfsadmin
+    volumes:
+      - rustfsdata:/data
+
+volumes:
+  pgdata:
+  rustfsdata:

@@ -84,6 +84,9 @@ from .profile_cache import (
 )
 from .profile_dir import read_profile_meta, resolve_profile_dir, settle_crypt_state
 from .proxy import ProxyLike, ProxySpec, parse_proxy
+from .server_config import FeatureUnavailableError, assert_server_feature, is_default_server, resolve_server
+
+_GEO_RETRY_TIMEOUT = 20.0
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from playwright.async_api import BrowserContext as AsyncBrowserContext
@@ -219,6 +222,7 @@ def prepare_launch(
     get_crypt_key: Optional[Callable[[], Optional[str]]] = None,
     update_kernel: bool = False,
     webauthn_capture: Optional[bool] = None,
+    follow_exit_language: bool = False,
     restore_tabs: bool = True,
     device_type: Optional[DeviceType] = None,
     os: Optional[str] = None,
@@ -247,6 +251,11 @@ def prepare_launch(
     # so a typo'd combination costs nothing instead of leaving an orphaned
     # profiles-temp/<name>/ behind.
     _reject_temporary_sync(temporary, sync)
+
+    # Before any kernel install or server-side side effect: a feature this
+    # server lacks has to fail the launch, not quietly route elsewhere.
+    if proxy_id:
+        assert_server_feature(server, "managedProxy", str(cache_dir) if cache_dir else None)
 
     # The license comes first because its `sync` flag decides whether there is a
     # cloud archive to restore, and because rejecting an unsupported plan has to
@@ -326,7 +335,7 @@ def prepare_launch(
     # set, or the Android pin resolves against an empty catalogue. `update_kernel`
     # acts on the published build, so it cannot read a cached manifest.
     budget.check("refreshing the kernel catalogue")
-    _kernel.refresh_kernel_versions(root, force=update_kernel)
+    _kernel.refresh_kernel_versions(root, force=update_kernel, server=server)
 
     init_device_type, init_device, init_os, init_hardware = _resolve_persona_init(
         directory,
@@ -336,6 +345,7 @@ def prepare_launch(
         hardware=hardware,
         api_key=api_key,
         server=server,
+        cache_dir=cache_dir,
     )
 
     # A profile that already exists keeps the kernel version frozen into its
@@ -363,7 +373,7 @@ def prepare_launch(
     )
     if had_persona:
         persona = reconcile_kernel_version(
-            directory, persona, kernel_version, cache_dir=cache_dir, on_progress=notify
+            directory, persona, kernel_version, cache_dir=cache_dir, on_progress=notify, server=server
         )
     if persona.device_type == "android":
         kv = _kernel.find_kernel_version_strict(persona.kernel_version)
@@ -423,7 +433,16 @@ def prepare_launch(
         if proxy_spec is not None and geoip:
             notify("Looking up proxy geo")
             budget.check("looking up the proxy exit geo")
-            geo = lookup_proxy_geo(proxy_spec, timeout=budget.budget(_GEO_TIMEOUT))
+            geo = lookup_proxy_geo(
+                proxy_spec, timeout=budget.budget(_GEO_TIMEOUT), server_url=resolve_server(server)
+            )
+            # Mobile exits routinely need 5-10s on a cold session. Launching without
+            # geo means the persona's default timezone and WebRTC off, so pay once more.
+            if geo is None:
+                notify("Proxy geo lookup failed, retrying")
+                geo = lookup_proxy_geo(
+                    proxy_spec, timeout=budget.budget(_GEO_RETRY_TIMEOUT), server_url=resolve_server(server)
+                )
             if geo is not None:
                 if geo.timezone and not timezone:
                     resolved_timezone = geo.timezone
@@ -435,14 +454,18 @@ def prepare_launch(
             # off, which no real browser is.
             notify("Looking up exit geo")
             budget.check("looking up this machine's exit geo")
-            geo = lookup_direct_geo(timeout=budget.budget(_DIRECT_GEO_TIMEOUT))
+            geo = lookup_direct_geo(
+                timeout=budget.budget(_DIRECT_GEO_TIMEOUT), server_url=resolve_server(server)
+            )
             if geo is not None:
                 if geo.timezone and not timezone:
                     resolved_timezone = geo.timezone
                 if geo.ip:
                     public_ip = geo.ip
 
-        persona = settle_persona_languages(directory, persona, geo.country_code if geo else None)
+        persona = settle_persona_languages(
+            directory, persona, geo.country_code if geo else None, follow=follow_exit_language
+        )
         warnings = persona_host_warnings(persona, _kernel.current_platform())
         for warning in warnings:
             notify("Warning: " + warning)
@@ -563,9 +586,11 @@ def _resolve_managed_proxy(
     if activation.proxy is None:
         raise ProxyError("Proxy activation did not return a proxy")
     issued = _api.issue_proxy_ticket(key, server, proxy_id=activation.proxy.id, label=label)
-    url = _api.managed_proxy_to_relay_url(
-        issued.username, issued.password, proxy_host or issued.host or _api.DEFAULT_RELAY_HOST
-    )
+    # Our relay only serves our own server; a custom one names its relay host in the ticket.
+    host = proxy_host or issued.host or (_api.DEFAULT_RELAY_HOST if is_default_server(server) else None)
+    if not host:
+        raise ProxyError("The server did not name a relay host for this proxy; pass proxy_host=")
+    url = _api.managed_proxy_to_relay_url(issued.username, issued.password, host)
     ref = ProxyTicketRef(proxy_id=activation.proxy.id, ticket_id=issued.ticket_id)
     ref.revoke = lambda: _api.revoke_proxy_ticket(
         key, server, proxy_id=ref.proxy_id, ticket_id=ref.ticket_id
@@ -581,6 +606,22 @@ def _revoke_ticket(ticket: Optional[ProxyTicketRef]) -> None:
         ticket.revoke()
     except Exception:
         pass
+
+
+def _assert_live_view_available(
+    live_view: "bool | LiveViewOptions",
+    relay_url: Optional[str],
+    server: Optional[str],
+    cache_dir: Optional[Path | str],
+) -> None:
+    """Raised before the launch begins: ``_start_live_view`` only reports and carries on."""
+    if not live_view:
+        return
+    assert_server_feature(server, "liveView", str(cache_dir) if cache_dir else None)
+    if not relay_url and not is_default_server(server):
+        raise FeatureUnavailableError(
+            "liveView", "No Live View relay is known for {0}; pass relay_url.".format(resolve_server(server))
+        )
 
 
 def _start_live_view(
@@ -657,6 +698,7 @@ def _resolve_persona_init(
     hardware: Optional[str],
     api_key: Optional[str],
     server: Optional[str],
+    cache_dir: Optional[Path | str] = None,
 ) -> Tuple[Optional[DeviceType], Optional[Dict[str, Any]], Optional[str], Optional[str]]:
     """Decide what identity a brand-new profile gets.
 
@@ -679,6 +721,7 @@ def _resolve_persona_init(
             "android" if device_type == "android" else "windows",
             key=resolve_api_key(api_key),
             server=server,
+            cache_dir=str(cache_dir) if cache_dir else None,
         )
     return device_type, device, os, hardware
 
@@ -714,6 +757,7 @@ def reconcile_kernel_version(
     *,
     cache_dir: Optional[Union[str, Path]] = None,
     on_progress: Optional[ProgressCallback] = None,
+    server: Optional[str] = None,
 ) -> Persona:
     """Bring a profile's persona onto the kernel version its caller believes it
     is running, and report either way.
@@ -737,7 +781,7 @@ def reconcile_kernel_version(
         return persona
     try:
         moved = set_profile_kernel_version(
-            wanted, profile_dir=directory, cache_dir=cache_dir
+            wanted, profile_dir=directory, cache_dir=cache_dir, server=server
         )
     except Exception as error:  # noqa: BLE001 - any refusal keeps the launch alive
         if on_progress:
@@ -776,6 +820,7 @@ def set_profile_kernel_version(
     cache_dir: Optional[Path | str] = None,
     temporary: bool = False,
     archive: Optional["ArchiveCommit"] = None,
+    server: Optional[str] = None,
 ) -> Persona:
     """Move an existing profile to another kernel major, keeping its identity.
 
@@ -818,7 +863,7 @@ def set_profile_kernel_version(
     # answering with the compiled-in default would leave the profile on its old
     # kernel while reporting the new one.
     root = Path(cache_dir).expanduser() if cache_dir else _config.default_cache_dir()
-    _kernel.refresh_kernel_versions(root)
+    _kernel.refresh_kernel_versions(root, server=server)
     kv = _kernel.find_kernel_version_strict(version)
     if persona.device_type == "android":
         _assert_android_kernel(kv.version)
@@ -1623,6 +1668,7 @@ def launch(
     get_crypt_key: Optional[Callable[[], Optional[str]]] = None,
     update_kernel: bool = False,
     webauthn_capture: Optional[bool] = None,
+    follow_exit_language: bool = False,
     restore_tabs: bool = True,
     playwright_downloads: bool = False,
     device_type: Optional[DeviceType] = None,
@@ -1711,6 +1757,10 @@ def launch(
             portable store (the default), so they travel with an export or a
             cloud sync. ``False`` lets the browser ask where to save instead
             (phone / security key) and those stay on this device.
+        follow_exit_language: Re-derive the browser languages from the exit
+            country on every launch. Off by default: languages are fixed by the
+            first launch's exit, since a sudden change on a logged-in identity
+            stands out.
         hardware: Desktop hardware for a new Windows profile: "host" uses this
             computer's own hardware (the default on Windows), "generated" invents
             it. Applies only when the profile is first created.
@@ -1755,6 +1805,7 @@ def launch(
     _reap_before_launch(cache_dir)
     report = _telemetry.LaunchReport(api_key, server, enabled=telemetry)
     try:
+        _assert_live_view_available(live_view, relay_url, server, cache_dir)
         with budget.active():
             plan = prepare_launch(
                 profile,
@@ -1781,6 +1832,7 @@ def launch(
                 api_log=api_log,
                 update_kernel=update_kernel,
                 webauthn_capture=webauthn_capture,
+                follow_exit_language=follow_exit_language,
                 restore_tabs=restore_tabs,
                 device_type=device_type,
                 os=os,
@@ -1863,6 +1915,7 @@ async def launch_async(
     get_crypt_key: Optional[Callable[[], Optional[str]]] = None,
     update_kernel: bool = False,
     webauthn_capture: Optional[bool] = None,
+    follow_exit_language: bool = False,
     restore_tabs: bool = True,
     playwright_downloads: bool = False,
     device_type: Optional[DeviceType] = None,
@@ -1903,6 +1956,7 @@ async def launch_async(
         # Activated inside the worker thread: the budget is thread-local, and
         # this is the thread that will make the calls.
         with budget.active():
+            _assert_live_view_available(live_view, relay_url, server, cache_dir)
             return _prepare_in_thread()
 
     def _prepare_in_thread() -> LaunchPlan:
@@ -1931,6 +1985,7 @@ async def launch_async(
             api_log=api_log,
             update_kernel=update_kernel,
             webauthn_capture=webauthn_capture,
+            follow_exit_language=follow_exit_language,
             restore_tabs=restore_tabs,
             device_type=device_type,
             os=os,

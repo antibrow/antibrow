@@ -18,14 +18,24 @@ from urllib.parse import urljoin
 
 from .. import _http
 from ..config import default_cache_dir
+from ..server_config import DEFAULT_RECIPE_REGISTRY_URL, assert_server_feature
 from .source import RecipeEntry, RecipeError, assert_source_matches_entry, entry_from_row
 
-RECIPE_REGISTRY_URL = "https://raw.githubusercontent.com/antibrow/recipes/main/registry.json"
+RECIPE_REGISTRY_URL = DEFAULT_RECIPE_REGISTRY_URL
 ENV_REGISTRY_URL = "ANTIBROW_RECIPES_URL"
 
 
 def registry_url() -> str:
     return os.environ.get(ENV_REGISTRY_URL) or RECIPE_REGISTRY_URL
+
+
+def resolve_registry_url(server: Optional[str] = None, cache_dir: Optional[Path] = None) -> str:
+    """``ANTIBROW_RECIPES_URL``, else the server's own registry; raises when the server has recipes off."""
+    override = os.environ.get(ENV_REGISTRY_URL)
+    if override:
+        return override
+    config = assert_server_feature(server, "recipes", str(cache_dir) if cache_dir else None)
+    return config["recipeRegistryUrl"]
 
 
 def recipes_dir(cache_dir: Optional[Path] = None) -> Path:
@@ -112,6 +122,7 @@ def update_recipes(
     cache_dir: Optional[Path] = None,
     *,
     accept_changes: bool = False,
+    server: Optional[str] = None,
 ) -> UpdateResult:
     """Pull the registry and pin what it names.
 
@@ -120,7 +131,7 @@ def update_recipes(
     profile that may hold live logins, and a silent swap is the shape a
     supply-chain attack takes here.
     """
-    url = registry_url()
+    url = resolve_registry_url(server, cache_dir)
     status, text = _http.send("GET", _cache_bust(url))
     if status != 200:
         raise RecipeError("recipe registry: HTTP {0} from {1}".format(status, url))
@@ -157,15 +168,19 @@ def load_cached_registry(cache_dir: Optional[Path] = None) -> Optional[RecipeReg
         return None
 
 
-def load_registry(cache_dir: Optional[Path] = None) -> RecipeRegistry:
+def load_registry(cache_dir: Optional[Path] = None, server: Optional[str] = None) -> RecipeRegistry:
     """The cached copy, pulling once if this machine has never had one."""
+    # Asked even with a cached copy: a server with recipes off must refuse them.
+    resolve_registry_url(server, cache_dir)
     cached = load_cached_registry(cache_dir)
     if cached is not None:
         return cached
-    return update_recipes(cache_dir).registry
+    return update_recipes(cache_dir, server=server).registry
 
 
-def ensure_recipe_source(entry: RecipeEntry, cache_dir: Optional[Path] = None) -> str:
+def ensure_recipe_source(
+    entry: RecipeEntry, cache_dir: Optional[Path] = None, server: Optional[str] = None
+) -> str:
     """The local copy of the pinned bytes, downloading and verifying if needed."""
     path = _source_path(cache_dir, entry.sha256)
     if path.exists():
@@ -175,7 +190,7 @@ def ensure_recipe_source(entry: RecipeEntry, cache_dir: Optional[Path] = None) -
             return cached
         path.unlink(missing_ok=True)
 
-    url = urljoin(registry_url(), entry.path)
+    url = urljoin(resolve_registry_url(server, cache_dir), entry.path)
     status, text = _http.send("GET", _cache_bust(url), accept_json=False)
     if status != 200:
         raise RecipeError("{0}: HTTP {1} from {2}".format(entry.id, status, url))

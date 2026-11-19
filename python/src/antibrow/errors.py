@@ -52,6 +52,17 @@ class ConcurrencyLimitError(LaunchError):
     """
 
 
+class ProfileInUseError(LaunchError):
+    """A kernel on this machine already has the profile's user-data dir open."""
+
+    def __init__(self, user_data_dir: str, pid: int) -> None:
+        super().__init__(
+            "Profile is already open in another browser (pid {0}, {1}). Close it first.".format(pid, user_data_dir)
+        )
+        self.user_data_dir = user_data_dir
+        self.pid = pid
+
+
 class ApiError(AntibrowError):
     """The server refused a management call (:mod:`antibrow.api`).
 

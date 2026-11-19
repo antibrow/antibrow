@@ -1,0 +1,39 @@
+{
+  "name": "antibrow-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    "./core": "./src/core/index.ts",
+    "./protocol": "./src/core/protocol.ts"
+  },
+  "scripts": {
+    "dev": "astro dev",
+    "build:cf": "OEM_TARGET=cloudflare astro build",
+    "build:node": "OEM_TARGET=node astro build",
+    "test": "vitest run",
+    "db:migrate": "prisma migrate deploy",
+    "db:generate": "prisma generate",
+    "test:protocol": "vitest run tests/protocol",
+    "typecheck:protocol": "tsc -p tests/protocol/tsconfig.json"
+  },
+  "dependencies": {
+    "@astrojs/cloudflare": "^12.6.10",
+    "@astrojs/node": "^9.5.0",
+    "@prisma/adapter-pg": "^7.9.0",
+    "@prisma/client": "^7.9.0",
+    "astro": "^5.15.1",
+    "aws4fetch": "^1.0.20",
+    "pg": "^8.20.0",
+    "prisma": "^7.9.0",
+    "tweetnacl": "^1.0.3",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.18.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.0.0"
+  }
+}

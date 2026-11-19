@@ -1,0 +1,118 @@
+---
+import { getConfig } from '../core/config'
+
+interface Props {
+  title: string
+  active?: 'users' | 'plans' | 'releases' | 'settings'
+}
+const { title, active } = Astro.props
+const brand = getConfig(Astro.locals).brand.name
+const nav = [
+  ['users', 'Users'],
+  ['plans', 'Plans'],
+  ['releases', 'Releases'],
+  ['settings', 'Settings'],
+] as const
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>{title} - {brand} admin</title>
+  </head>
+  <body>
+    {
+      active && (
+        <header>
+          <strong>{brand}</strong>
+          <nav>
+            {nav.map(([key, label]) => (
+              <a href={`/admin/${key}`} aria-current={active === key ? 'page' : undefined}>
+                {label}
+              </a>
+            ))}
+          </nav>
+          <button type="button" class="ghost" id="logout">Log out</button>
+        </header>
+      )
+    }
+    <main>
+      <slot />
+    </main>
+    <script>
+      import { api } from '../scripts/admin-api'
+      document.getElementById('logout')?.addEventListener('click', async () => {
+        await api('POST', 'logout').catch(() => null)
+        location.href = '/admin'
+      })
+    </script>
+  </body>
+</html>
+
+<style is:global>
+  :root {
+    --bg: #f6f7f9;
+    --fg: #1b1f24;
+    --muted: #667085;
+    --card: #fff;
+    --line: #d9dde3;
+    --accent: #3b6ef5;
+    --danger: #c0392b;
+    --ok: #1a7f4b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;
+      --fg: #e7e9ec;
+      --muted: #98a1b0;
+      --card: #1d2026;
+      --line: #343944;
+      --accent: #7aa2ff;
+      --danger: #ff7b6b;
+      --ok: #4cc38a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; padding: 10px 16px; background: var(--card); border-bottom: 1px solid var(--line); }
+  header nav { display: flex; flex-wrap: wrap; gap: 4px 14px; flex: 1; }
+  header a { color: var(--muted); text-decoration: none; padding: 2px 0; }
+  header a[aria-current] { color: var(--fg); border-bottom: 2px solid var(--accent); }
+  main { max-width: 960px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 1.4rem; margin: 0 0 12px; }
+  h2 { font-size: 1.1rem; margin: 0 0 12px; }
+  section, .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin-bottom: 16px; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { color: var(--muted); font-weight: 600; font-size: 0.85rem; white-space: nowrap; }
+  td.acts { white-space: nowrap; }
+  input, select, textarea, button { font: inherit; color: var(--fg); }
+  input, select, textarea { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; max-width: 100%; }
+  label { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; color: var(--muted); }
+  button { background: var(--accent); color: #fff; border: 1px solid transparent; border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+  button.ghost { background: transparent; color: var(--fg); border-color: var(--line); }
+  button.danger { background: var(--danger); }
+  button.small { padding: 2px 8px; font-size: 0.85rem; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .form { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+  .stack { display: flex; flex-direction: column; gap: 10px; }
+  .row { display: flex; gap: 8px; }
+  .row input { flex: 1; min-width: 0; }
+  .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+  .mono { font-family: ui-monospace, Menlo, monospace; }
+  .muted { color: var(--muted); }
+  .badge { display: inline-block; font-size: 0.75rem; padding: 0 6px; border-radius: 10px; border: 1px solid var(--line); color: var(--muted); }
+  .badge.bad { color: var(--danger); border-color: var(--danger); }
+  .warn { color: var(--danger); font-weight: 600; }
+  .ok { color: var(--ok); }
+  .bad { color: var(--danger); }
+  dialog { background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 10px; padding: 16px; width: min(520px, calc(100vw - 24px)); }
+  dialog::backdrop { background: rgba(0, 0, 0, 0.5); }
+  .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 8px 14px; border-radius: 6px; z-index: 100; max-width: calc(100vw - 24px); }
+  .toast.err { background: var(--danger); color: #fff; }
+  .login { max-width: 360px; margin: 12vh auto 0; }
+</style>

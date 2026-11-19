@@ -204,7 +204,10 @@ def cmd_login(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
-        print("Get a free API key at https://antibrow.com (dashboard -> API keys).")
+        if server.rstrip("/") == _config.DEFAULT_SERVER:
+            print("Get a free API key at {0} (dashboard -> API keys).".format(_config.DEFAULT_SERVER))
+        else:
+            print("Get an API key from {0}.".format(server.rstrip("/")))
         key = getpass.getpass("AntiBrow API key: ").strip()
     if not key:
         print("error: empty API key", file=sys.stderr)
@@ -327,7 +330,9 @@ def _print_run(result: Any, args: argparse.Namespace) -> None:
 def cmd_recipe_update(args: argparse.Namespace) -> int:
     from .recipe import update_recipes
 
-    result = update_recipes(_recipe_cache_dir(args), accept_changes=args.accept_changes)
+    result = update_recipes(
+        _recipe_cache_dir(args), accept_changes=args.accept_changes, server=getattr(args, "server", None)
+    )
     print("{0} recipe(s) from {1}".format(len(result.registry.recipes), result.url))
     if result.added:
         print("  new: {0}".format(", ".join(result.added)))
@@ -341,7 +346,7 @@ def cmd_recipe_list(args: argparse.Namespace) -> int:
 
     rows = [
         entry
-        for entry in load_registry(_recipe_cache_dir(args)).recipes
+        for entry in load_registry(_recipe_cache_dir(args), getattr(args, "server", None)).recipes
         if not args.site or entry.id.split("/")[0] == args.site
     ]
     if args.json:
@@ -375,7 +380,7 @@ def cmd_recipe_list(args: argparse.Namespace) -> int:
 def cmd_recipe_info(args: argparse.Namespace) -> int:
     from .recipe import describe, load_registry
 
-    entry = load_registry(_recipe_cache_dir(args)).find(args.id)
+    entry = load_registry(_recipe_cache_dir(args), getattr(args, "server", None)).find(args.id)
     if args.json:
         print(
             json.dumps(
@@ -546,10 +551,10 @@ def cmd_recipe_scaffold(args: argparse.Namespace) -> int:
 
 def cmd_recipe_guide(args: argparse.Namespace) -> int:
     from . import _http
-    from .recipe import recipes_dir, registry_url
+    from .recipe import recipes_dir, resolve_registry_url
 
     cached = recipes_dir(_recipe_cache_dir(args)) / "GUIDE.md"
-    url = urljoin(registry_url(), "GUIDE.md")
+    url = urljoin(resolve_registry_url(getattr(args, "server", None), _recipe_cache_dir(args)), "GUIDE.md")
     status, text = _http.send("GET", url, accept_json=False)
     if status == 200:
         cached.parent.mkdir(parents=True, exist_ok=True)

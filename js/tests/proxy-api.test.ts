@@ -1,6 +1,13 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { activateProxy, managedProxyToRelayUrl, issueProxyTicket, revokeProxyTicket } from '../src/api'
 
+// These cover the wire format; a custom test server's feature switches are
+// covered in server-config.test.ts.
+vi.mock('../src/server-config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/server-config')>()),
+  assertServerFeature: async () => ({}),
+}))
+
 describe('managedProxyToRelayUrl', () => {
   // A managed proxy is addressed by id through the relay; the credential is a
   // short-lived ticket, so the account key never reaches the command line.

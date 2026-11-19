@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { retryFetch } from '../retry-fetch'
+import { resolveServer } from '../server-config'
 
 // Tokens are signed server-side; the SDK only fetches and caches them.
 
@@ -110,16 +111,17 @@ export async function getLicenseToken(opts?: {
   key?: string
   server?: string
 }): Promise<LicenseInfo> {
-  if (!opts?.key || !opts?.server) {
+  if (!opts?.key) {
     throw new Error(
-      'Cannot obtain license token: key and server are required. All license signing goes through the server (run it locally for development).',
+      'Cannot obtain license token: an API key is required. All license signing goes through the server (run it locally for development).',
     )
   }
-  const file = cacheFilePath(opts.key, opts.server)
+  const server = resolveServer(opts.server)
+  const file = cacheFilePath(opts.key, server)
   const cached = readCachedLicense(file)
   if (cached && isFresh(cached)) return cached
 
-  const info = await fetchLicenseToken({ key: opts.key, server: opts.server })
+  const info = await fetchLicenseToken({ key: opts.key, server })
   writeCachedLicense(file, info)
   return info
 }

@@ -54,4 +54,24 @@ describe('every API call is bounded', () => {
 
     expect(spy).not.toHaveBeenCalled()
   })
+
+  it('stops charging hooks registered during the launch once it has ended', async () => {
+    const { spy } = record()
+    let now = 0
+    const deadline = new Deadline(120_000, () => now)
+    // Bound inside the launch like the kernel's exit event, so it still runs
+    // in the launch's async context when the browser closes an hour later.
+    let exit!: () => void
+    let upload!: Promise<Response>
+    await withDeadline(deadline, async () => {
+      upload = new Promise<void>((r) => { exit = r }).then(() => retryFetch('https://example.com/upload'))
+    })
+    deadline.end()
+    now = 3_600_000
+
+    exit()
+    await upload
+
+    expect(spy).toHaveBeenCalledOnce()
+  })
 })

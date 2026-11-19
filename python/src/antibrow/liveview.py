@@ -18,6 +18,7 @@ from typing import Any, Optional
 
 from . import _http
 from .errors import LiveViewError
+from .server_config import assert_server_feature
 
 #: Relay the dashboard viewer reads from.
 DEFAULT_RELAY_URL = "wss://liveview-relay.antibrow.com"
@@ -77,8 +78,10 @@ def register_live_session(
     profile_name: Optional[str] = None,
     label: Optional[str] = None,
     ua: Optional[str] = None,
+    cache_dir: Optional[str] = None,
 ) -> LiveViewRegistration:
     """Claim a session key and get the relay token and dashboard URL for it."""
+    assert_server_feature(server, "liveView", cache_dir)
     payload = {"sessionKey": session_key, "profileName": profile_name, "label": label, "ua": ua}
     status, text = _http.send(
         "POST",

@@ -36,7 +36,7 @@ import { Deadline, withDeadline } from './deadline'
 import { killPidTree, registerKernel, reapOrphans, unregisterKernel } from './reaper'
 import { fetchProfileCryptKey, resolveCryptKey } from './crypt-key'
 
-export { KERNEL_VERSIONS, DEFAULT_KERNEL_VERSION, defaultKernelVersion, ensureKernel, isKernelInstalled, findKernelVersion, findKernelVersionStrict, normalizeKernelVersion, migrateLegacyKernelDirs, listInstalledKernels, kernelDirSize, deleteKernel, kernelDir, kernelAvailableOnPlatform, kernelsForPlatform, allKernelVersions, registerKernelVersions, fetchRemoteKernelVersions, refreshKernelVersions, loadCachedKernelVersions, KERNEL_MANIFEST_URL, KERNEL_MANIFEST_TTL_MS, KERNEL_VERSION_CACHE_FILE, currentPlatform, installedKernelBuild, writeInstalledKernelBuild, kernelUpdateStatus, installedKernelUpdates, newerKernelThan, kernelSupportsAndroid, kernelReadsAppLocaleFromConfig, kernelVersionAtLeast, androidCapableKernels, resolveAndroidKernel, ANDROID_MIN_KERNEL_VERSION, APP_LOCALE_MIN_KERNEL_VERSION, APP_LOCALE_MIN_KERNEL_BUILD } from './downloader'
+export { KERNEL_VERSIONS, DEFAULT_KERNEL_VERSION, defaultKernelVersion, ensureKernel, isKernelInstalled, findKernelVersion, findKernelVersionStrict, normalizeKernelVersion, migrateLegacyKernelDirs, listInstalledKernels, kernelDirSize, deleteKernel, kernelDir, kernelAvailableOnPlatform, kernelsForPlatform, allKernelVersions, registerKernelVersions, fetchRemoteKernelVersions, refreshKernelVersions, loadCachedKernelVersions, assertTrustedKernelUrl, UntrustedKernelSourceError, KERNEL_MANIFEST_URL, KERNEL_MANIFEST_TTL_MS, KERNEL_VERSION_CACHE_FILE, currentPlatform, installedKernelBuild, writeInstalledKernelBuild, kernelUpdateStatus, installedKernelUpdates, newerKernelThan, kernelSupportsAndroid, kernelReadsAppLocaleFromConfig, kernelVersionAtLeast, androidCapableKernels, resolveAndroidKernel, ANDROID_MIN_KERNEL_VERSION, APP_LOCALE_MIN_KERNEL_VERSION, APP_LOCALE_MIN_KERNEL_BUILD } from './downloader'
 export type { KernelVersion, KernelUpdateStatus, NewerKernel } from './downloader'
 export type { KernelSession as EngineSession } from './launcher'
 export { downloadProfileCache, uploadProfileCache, packProfileCache, packProfileCacheWithReport, lastProfilePackReport, unpackProfileCache, exportProfileArchive, importProfileArchive, PROFILE_ARCHIVE_EXT, ARCHIVE_VERSION_FILE, readArchiveVersion, writeArchiveVersion, clearArchiveVersion, normalizeArchiveVersion } from './profile-cache'
@@ -56,6 +56,7 @@ export type { ExportProfileArchiveOptions, CryptRekeyOptions, RekeyRequest, Reke
 export type { ProfileEntry, ProfileMeta, ResolvedProfile, ProfileRootOptions } from './profile-dir'
 
 export { LaunchTimeoutError } from './deadline'
+export { ProfileInUseError } from './launcher'
 export { StallTimeoutError } from './stall'
 
 export function defaultCacheDir(): string {
@@ -114,10 +115,16 @@ export interface OpenProfileOptions {
   kernelVersion?: string
   /** Pull a newer build of this profile's kernel before launching. */
   updateKernelBeforeLaunch?: boolean
+  /** Kernel manifest to use instead of the one the server's config names. */
+  kernelManifestUrl?: string
+  /** Download kernels only from these hosts over https (`UntrustedKernelSourceError` otherwise). */
+  trustedKernelHosts?: string[]
   /** Per-profile kernel behaviour. Omitted = kernel defaults. */
   canvasNoise?: boolean
   apiLog?: ApiLogMode
   webauthnCapture?: boolean
+  /** Re-derive languages from the exit country on every launch, not just the first. Default false. */
+  followExitLanguage?: boolean
   /** Reopen the previous session's tabs. Default true. */
   restoreTabs?: boolean
   /** Hand downloads to Playwright (download events) instead of the browser. Default false. */
@@ -189,7 +196,7 @@ export interface OpenedProfile extends KernelSession {
  */
 export async function resolvePersonaInit(
   profileDir: string,
-  opts: Pick<OpenProfileOptions, 'deviceType' | 'os' | 'hardware' | 'screenScale' | 'realFingerprint' | 'key' | 'server'>,
+  opts: Pick<OpenProfileOptions, 'deviceType' | 'os' | 'hardware' | 'screenScale' | 'realFingerprint' | 'key' | 'server' | 'cacheDir'>,
   hostPlatform: string = process.platform,
 ): Promise<PersonaInit | undefined> {
   if (fs.existsSync(path.join(profileDir, 'persona.json'))) return undefined
@@ -203,6 +210,7 @@ export async function resolvePersonaInit(
         os: opts.deviceType === 'android' ? 'android' : 'windows',
         key: opts.key,
         server: opts.server,
+        cacheDir: opts.cacheDir,
       })
     : undefined
   return { deviceType: opts.deviceType, device, os: opts.os, hardware, screenScale: opts.screenScale }
@@ -421,7 +429,11 @@ export async function openProfile(opts: OpenProfileOptions): Promise<OpenedProfi
   const budget = new Deadline(opts.timeoutMs ?? DEFAULT_LAUNCH_TIMEOUT_MS)
   // Published for the whole call, so every HTTP request inside shrinks to fit
   // what is left rather than each carrying its own unrelated timeout.
-  return withDeadline(budget, () => openProfileWithin(opts, budget))
+  try {
+    return await withDeadline(budget, () => openProfileWithin(opts, budget))
+  } finally {
+    budget.end()
+  }
 }
 
 async function openProfileWithin(opts: OpenProfileOptions, budget: Deadline): Promise<OpenedProfile> {
@@ -503,7 +515,11 @@ async function openProfileWithin(opts: OpenProfileOptions, budget: Deadline): Pr
   // catalogue first. `updateKernelBeforeLaunch` acts on the published build, so
   // it cannot read a cached one.
   budget.check('refreshing the kernel catalogue')
-  await refreshKernelVersions(cacheDir, { force: opts.updateKernelBeforeLaunch })
+  await refreshKernelVersions(cacheDir, {
+    force: opts.updateKernelBeforeLaunch,
+    server: opts.server,
+    manifestUrl: opts.kernelManifestUrl,
+  })
 
   const personaInit = await resolvePersonaInit(profileDir, opts)
 
@@ -535,6 +551,7 @@ async function openProfileWithin(opts: OpenProfileOptions, budget: Deadline): Pr
   opts.onKernelResolved?.(kv.version)
   noticeNewerKernel(cacheDir, kv, opts)
 
+  const trust = opts.trustedKernelHosts ? { trustedKernelHosts: opts.trustedKernelHosts } : undefined
   const onDownload = opts.onKernelDownload
     ? (e: { ok: boolean; error?: unknown }) => opts.onKernelDownload?.({ ...e, version: kv.version })
     : undefined
@@ -542,7 +559,7 @@ async function openProfileWithin(opts: OpenProfileOptions, budget: Deadline): Pr
     const status = kernelUpdateStatus(cacheDir, kv.version)
     if (status?.updateAvailable) {
       opts.onProgress?.(`Updating kernel ${kv.label} to the latest build`)
-      await budget.paused(() => ensureKernel(cacheDir, kv, opts.onProgress, { force: true, onDownload }))
+      await budget.paused(() => ensureKernel(cacheDir, kv, opts.onProgress, { force: true, onDownload, ...trust }))
     }
   }
 
@@ -550,7 +567,7 @@ async function openProfileWithin(opts: OpenProfileOptions, budget: Deadline): Pr
   budget.check('installing the browser kernel')
   // Outside the budget too: a first install is ~200-320MB and waiting on another
   // process's install has its own 30 minute cap.
-  const exePath = await budget.paused(() => ensureKernel(cacheDir, kv, opts.onProgress, onDownload && { onDownload }))
+  const exePath = await budget.paused(() => ensureKernel(cacheDir, kv, opts.onProgress, onDownload || trust ? { onDownload, ...trust } : undefined))
 
   if (persona.deviceType === 'android') assertAndroidKernel(kv.version)
 
@@ -566,7 +583,13 @@ async function openProfileWithin(opts: OpenProfileOptions, budget: Deadline): Pr
   if (proxyUrl) {
     opts.onProgress?.('Looking up proxy geo')
     budget.check('looking up the proxy exit geo')
-    geo = await lookupProxyGeo(proxyUrl).catch(() => null)
+    geo = await lookupProxyGeo(proxyUrl, undefined, opts.server).catch(() => null)
+    // Mobile exits routinely need 5-10s on a cold session. Launching without
+    // geo means the persona's default timezone and WebRTC off, so pay once more.
+    if (!geo) {
+      opts.onProgress?.('Proxy geo lookup failed, retrying')
+      geo = await lookupProxyGeo(proxyUrl, budget.budget(20_000), opts.server).catch(() => null)
+    }
     if (geo?.timezone) timezone = geo.timezone
     if (geo?.ip) publicIp = geo.ip
   } else {
@@ -576,13 +599,13 @@ async function openProfileWithin(opts: OpenProfileOptions, budget: Deadline): Pr
     // timeout because nothing here blocks a launch - a network that swallows
     // the request must not add ten seconds to every start.
     opts.onProgress?.('Looking up exit geo')
-    direct = await lookupDirectGeo(4_000).catch(() => null)
+    direct = await lookupDirectGeo(4_000, opts.server).catch(() => null)
     if (direct?.timezone) timezone = direct.timezone
     if (direct?.ip) publicIp = direct.ip
     rttMs = direct?.rttMs
   }
 
-  persona = settlePersonaLanguages(profileDir, persona, (geo ?? direct)?.countryCode)
+  persona = settlePersonaLanguages(profileDir, persona, (geo ?? direct)?.countryCode, opts.followExitLanguage)
   const warnings = personaHostWarnings(persona, process.platform)
   for (const w of warnings) opts.onProgress?.(`Warning: ${w}`)
 

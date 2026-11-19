@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { retryFetch } from '../retry-fetch'
+import { DEFAULT_RECIPE_REGISTRY_URL, assertServerFeature } from '../server-config'
 import { readMeta, validateMeta } from './source'
 import type { RecipeEntry, RecipeRegistry } from './types'
 
@@ -10,10 +11,22 @@ import type { RecipeEntry, RecipeRegistry } from './types'
  * site must not mean a release of this package, and the review cadence is not
  * the release cadence.
  */
-export const RECIPE_REGISTRY_URL = 'https://raw.githubusercontent.com/antibrow/recipes/main/registry.json'
+export const RECIPE_REGISTRY_URL = DEFAULT_RECIPE_REGISTRY_URL
 
 export function recipeRegistryUrl(env: NodeJS.ProcessEnv = process.env): string {
   return env.ANTIBROW_RECIPES_URL || RECIPE_REGISTRY_URL
+}
+
+/** `ANTIBROW_RECIPES_URL`, else the server's own registry; throws when the server has recipes off. */
+export async function resolveRecipeRegistryUrl(options: {
+  server?: string
+  cacheDir?: string
+  env?: NodeJS.ProcessEnv
+}): Promise<string> {
+  const override = (options.env ?? process.env).ANTIBROW_RECIPES_URL
+  if (override) return override
+  const config = await assertServerFeature(options.server, 'recipes', { cacheDir: options.cacheDir })
+  return config.recipeRegistryUrl
 }
 
 export function recipesDir(cacheDir: string): string {
@@ -89,8 +102,9 @@ export async function updateRecipes(options: {
   cacheDir: string
   acceptChanges?: boolean
   env?: NodeJS.ProcessEnv
+  server?: string
 }): Promise<UpdateRecipesResult> {
-  const url = recipeRegistryUrl(options.env)
+  const url = await resolveRecipeRegistryUrl(options)
   const res = await retryFetch(`${url}${url.includes('?') ? '&' : '?'}_cb=${Date.now().toString(36)}`, {
     headers: { Accept: 'application/json' },
   })
@@ -132,10 +146,13 @@ export function loadCachedRegistry(cacheDir: string): RecipeRegistry | undefined
 export async function loadRegistry(options: {
   cacheDir: string
   env?: NodeJS.ProcessEnv
+  server?: string
 }): Promise<RecipeRegistry> {
+  // Asked even with a cached copy: a server with recipes off must refuse them.
+  await resolveRecipeRegistryUrl(options)
   const cached = loadCachedRegistry(options.cacheDir)
   if (cached) return cached
-  const { registry } = await updateRecipes({ cacheDir: options.cacheDir, env: options.env })
+  const { registry } = await updateRecipes({ cacheDir: options.cacheDir, env: options.env, server: options.server })
   return registry
 }
 
@@ -171,6 +188,7 @@ export async function ensureRecipeSource(options: {
   cacheDir: string
   entry: RecipeEntry
   env?: NodeJS.ProcessEnv
+  server?: string
 }): Promise<string> {
   const { cacheDir, entry } = options
   const file = sourcePath(cacheDir, entry.sha256)
@@ -183,7 +201,7 @@ export async function ensureRecipeSource(options: {
     fs.rmSync(file, { force: true })
   }
 
-  const url = new URL(entry.path, recipeRegistryUrl(options.env)).toString()
+  const url = new URL(entry.path, await resolveRecipeRegistryUrl(options)).toString()
   const res = await retryFetch(`${url}${url.includes('?') ? '&' : '?'}_cb=${Date.now().toString(36)}`)
   if (!res.ok) throw new Error(`${entry.id}: HTTP ${res.status} from ${url}`)
   const source = await res.text()

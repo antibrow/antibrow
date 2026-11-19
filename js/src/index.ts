@@ -53,8 +53,18 @@ export { uploadProfileState, downloadProfileState } from './api'
 export { lookupProxyGeo, lookupCurrentGeo, type GeoInfo } from './geo'
 export { checkClientVersion, SDK_VERSION, type VersionCheckResult } from './version'
 export {
+  getServerConfig,
+  resolveServer,
+  FeatureUnavailableError,
+  DEFAULT_SERVER,
+  type ServerConfig,
+  type ServerFeature,
+} from './server-config'
+export {
   openProfile,
   ensureKernel,
+  assertTrustedKernelUrl,
+  UntrustedKernelSourceError,
   KERNEL_VERSIONS,
   DEFAULT_KERNEL_VERSION,
   defaultKernelVersion,
@@ -171,6 +181,7 @@ export {
   type SetProfileKernelVersionOptions,
   LaunchTimeoutError,
   StallTimeoutError,
+  ProfileInUseError,
 } from './engine'
 
 export {
@@ -193,6 +204,7 @@ export {
   assertRunnable,
   readRecipeLock,
   recipeRegistryUrl,
+  resolveRecipeRegistryUrl,
   recipeLockPath,
   recipesDir,
   RECIPE_REGISTRY_URL,

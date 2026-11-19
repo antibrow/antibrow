@@ -29,6 +29,7 @@ export class Deadline {
   private readonly clock: () => number
   private started: number
   private currentStep?: string
+  private ended = false
 
   constructor(totalMs: number | undefined, clock: () => number = Date.now, step?: string) {
     this.total = totalMs && totalMs > 0 ? totalMs : undefined
@@ -41,8 +42,14 @@ export class Deadline {
     return this.currentStep
   }
 
+  /** The launch is over. Callbacks registered during it (the exit-time archive
+   *  upload) still see this deadline through the async context, hours later. */
+  end(): void {
+    this.ended = true
+  }
+
   remaining(): number {
-    if (this.total === undefined) return Infinity
+    if (this.total === undefined || this.ended) return Infinity
     return this.total - (this.clock() - this.started)
   }
 

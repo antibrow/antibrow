@@ -174,6 +174,7 @@ Starts the kernel and returns a handle that is ready to drive. Blocking (sync) A
 | `api_log` | `"off" \| "curated" \| "all"` | `"off"` | Log the fingerprint APIs pages touch to `<profile>/fp-api-log.jsonl`. |
 | `live_view` | `bool \| LiveViewOptions` | `False` | Stream the window to your dashboard. See [Live View](#live-view). |
 | `webauthn_capture` | `bool` | `True` | Keep new passkeys in the profile's portable store, so they travel with a sync or an export. `False` lets the browser ask where to save instead (phone / security key) and those stay on this device. |
+| `follow_exit_language` | `bool` | `False` | Re-derive the browser languages from the exit country on every launch. Off: they are fixed by the first launch and stay put when the proxy changes. |
 | `reuse_initial_page` | `bool` | `True` | Let the first `new_page()` return Chromium's initial blank tab instead of opening a second one. |
 | `timeout` | `float` | `120.0` | Seconds to wait for the browser to come up. |
 | `on_progress` | `callable` | `None` | Receives progress lines (`"Downloading 42%"`, `"CDP endpoint ready …"`). |

@@ -1,8 +1,9 @@
 import fs from 'node:fs'
 import http from 'node:http'
+import os from 'node:os'
 import path from 'node:path'
 import net from 'node:net'
-import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn, execFile, execFileSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core'
 import { SocksClient } from 'socks'
 import { personaToFpConfig, API_LOG_FILE, type FpConfigSettings, type Persona } from './persona'
@@ -417,15 +418,50 @@ const SINGLETON_FILES = ['SingletonLock', 'SingletonCookie', 'SingletonSocket']
  * Chromium records the owning `<hostname>-<pid>` in SingletonLock and refuses a
  * profile whose lock names another computer - which is every start when the
  * profile lives on shared storage and the host name changes per container, so
- * the profile becomes permanently unopenable. Removing it trades that for the
- * guard against two kernels writing one user-data dir at once; the SDK's own
- * session bookkeeping is what keeps that from happening now.
+ * the profile becomes permanently unopenable. A lock held by a live kernel on
+ * this machine is the one case that is not removed: see `assertProfileNotInUse`.
  *
  * `force`, never a `fs.existsSync` guard: the lock is a symlink to a name that
  * was never created, so following it reports the file as absent and a guarded
  * delete removes nothing.
  */
+/** A kernel on this machine already has the profile's user-data dir open. */
+export class ProfileInUseError extends Error {
+  constructor(readonly userDataDir: string, readonly pid: number) {
+    super(`Profile is already open in another browser (pid ${pid}, ${userDataDir}). Close it first.`)
+    this.name = 'ProfileInUseError'
+  }
+}
+
+/**
+ * Two kernels on one user-data dir corrupt it (profile error dialogs, blank
+ * transparent windows), and Chromium's own guard is gone once the lock is
+ * deleted. So a lock naming this host and a live pid whose command line holds
+ * the same dir stops the launch. Anything else (other host, dead pid, a reused
+ * pid, no `ps`, Windows where the lock is not a symlink) counts as stale.
+ */
+export function assertProfileNotInUse(userDataDir: string): void {
+  let target: string
+  try {
+    target = fs.readlinkSync(path.join(userDataDir, 'SingletonLock'))
+  } catch {
+    return
+  }
+  const cut = target.lastIndexOf('-')
+  const pid = Number(target.slice(cut + 1))
+  if (cut <= 0 || !Number.isInteger(pid) || pid <= 0 || pid === process.pid) return
+  if (target.slice(0, cut) !== os.hostname()) return
+  let command: string
+  try {
+    command = execFileSync('ps', ['-ww', '-o', 'command=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  } catch {
+    return
+  }
+  if (command.includes(`--user-data-dir=${userDataDir}`)) throw new ProfileInUseError(userDataDir, pid)
+}
+
 export function clearSingletonLocks(userDataDir: string): void {
+  assertProfileNotInUse(userDataDir)
   for (const name of SINGLETON_FILES) {
     try {
       fs.rmSync(path.join(userDataDir, name), { force: true, recursive: true })

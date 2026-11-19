@@ -1,0 +1,34 @@
+---
+import Admin from '../../layouts/Admin.astro'
+import { getConfig } from '../../core/config'
+
+export const prerender = false
+const brand = getConfig(Astro.locals).brand.name
+---
+
+<Admin title="Sign in">
+  <form id="login" class="card login stack">
+    <h1>{brand} admin</h1>
+    <label>
+      Password
+      <input type="password" name="password" autocomplete="current-password" required autofocus />
+    </label>
+    <button type="submit">Sign in</button>
+    <p id="msg" class="bad" role="alert"></p>
+  </form>
+  <script>
+    import { api, errMsg } from '../../scripts/admin-api'
+    const form = document.getElementById('login') as HTMLFormElement
+    const msg = document.getElementById('msg')!
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault()
+      msg.textContent = ''
+      try {
+        await api('POST', 'login', { password: new FormData(form).get('password') })
+        location.href = '/admin/users'
+      } catch (err) {
+        msg.textContent = errMsg(err)
+      }
+    })
+  </script>
+</Admin>

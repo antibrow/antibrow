@@ -1,4 +1,5 @@
 import { retryFetch } from '../retry-fetch'
+import { assertServerFeature, resolveServer } from '../server-config'
 
 /** One real device's bound set of facts, as served by the device library. */
 export interface RealDevice {
@@ -77,8 +78,6 @@ export interface WebgpuFacts {
   limits?: Record<string, number>
 }
 
-const DEFAULT_SERVER = 'https://antibrow.com'
-
 /**
  * Draw one device from the library. Never falls back to a generated persona:
  * the caller asked for a real fingerprint explicitly, and quietly handing back
@@ -88,8 +87,11 @@ export async function fetchRealDevice(opts: {
   os: 'android' | 'windows'
   key?: string
   server?: string
+  /** Where the server's config is cached. */
+  cacheDir?: string
 }): Promise<RealDevice> {
-  const server = (opts.server ?? DEFAULT_SERVER).replace(/\/+$/, '')
+  const server = resolveServer(opts.server)
+  await assertServerFeature(server, 'realDevices', { cacheDir: opts.cacheDir })
   const headers: Record<string, string> = { Accept: 'application/json' }
   if (opts.key) headers.Authorization = `Bearer ${opts.key}`
 

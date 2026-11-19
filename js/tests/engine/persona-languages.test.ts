@@ -91,6 +91,18 @@ describe('settlePersonaLanguages', () => {
     expect(settled.languages).toEqual(['en-US', 'en'])
     expect(settled.languagesPending).toBeUndefined()
   })
+
+  it('follows a new exit only when asked, and never onto the default', () => {
+    const dir = tmp()
+    const { languagesPending: _, ...settled } = { ...generatePersona(152, '152'), languages: ['en-US', 'en', 'zh'] }
+    fs.writeFileSync(path.join(dir, 'persona.json'), JSON.stringify(settled))
+    expect(settlePersonaLanguages(dir, settled, 'JP')).toBe(settled)
+    expect(settlePersonaLanguages(dir, settled, 'ZZ', true)).toBe(settled)
+    expect(settlePersonaLanguages(dir, settled, 'SG', true)).toBe(settled)
+    const moved = settlePersonaLanguages(dir, settled, 'JP', true)
+    expect(moved.languages).toEqual(['ja', 'en'])
+    expect(onDisk(dir).languages).toEqual(['ja', 'en'])
+  })
 })
 
 describe('openProfile', () => {
@@ -101,6 +113,15 @@ describe('openProfile', () => {
     exit = { countryCode: 'US', timezone: 'America/Chicago' }
     await openProfile({ cacheDir, profileName: 'p', licenseToken: 'tok', proxyUrl: 'http://h.io:8080' })
     expect(launched).toEqual([['zh-CN', 'zh', 'en'], ['zh-CN', 'zh', 'en']])
+  })
+
+  it('moves with the exit when followExitLanguage is on', async () => {
+    const cacheDir = tmp()
+    exit = { countryCode: 'CN', timezone: 'Asia/Shanghai' }
+    await openProfile({ cacheDir, profileName: 'p', licenseToken: 'tok', proxyUrl: 'http://h.io:8080' })
+    exit = { countryCode: 'JP', timezone: 'Asia/Tokyo' }
+    await openProfile({ cacheDir, profileName: 'p', licenseToken: 'tok', proxyUrl: 'http://h.io:8080', followExitLanguage: true })
+    expect(launched).toEqual([['zh-CN', 'zh', 'en'], ['ja', 'en']])
   })
 
   it('settles from a direct exit too, and retries after a failed lookup', async () => {

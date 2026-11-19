@@ -8,7 +8,8 @@ import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional
 
-from .config import USER_AGENT, default_server
+from .config import USER_AGENT
+from .server_config import assert_server_feature, resolve_server
 
 _TIMEOUT = 20
 
@@ -17,6 +18,7 @@ def fetch_real_device(
     os_name: str,
     key: Optional[str] = None,
     server: Optional[str] = None,
+    cache_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Draw one device from the library.
 
@@ -24,7 +26,8 @@ def fetch_real_device(
     fingerprint explicitly, and quietly handing back a synthetic one would
     leave them believing something untrue about the profile.
     """
-    base = (server or default_server()).rstrip("/")
+    base = resolve_server(server)
+    assert_server_feature(base, "realDevices", cache_dir)
     url = "{0}/api/v1/devices/pick?{1}".format(base, urllib.parse.urlencode({"os": os_name}))
     # Cloudflare rejects the stock urllib agent with error 1010, which surfaces
     # as a bare 403 that looks nothing like the real cause.

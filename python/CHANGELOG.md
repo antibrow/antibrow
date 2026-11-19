@@ -4,16 +4,31 @@ All notable changes to the `antibrow` Python SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.2.1] - 2026-11-19
+
+### Added
+
+- Self-hosted servers: `get_server_config(server)` reads a server's brand, feature switches and manifest locations (cached for an hour), and `resolve_server()` resolves the server the SDK talks to. Both are exported.
+- With a custom `server`, managed proxies, Live View, real-device fingerprints and recipes follow that server's feature switches and raise the new `FeatureUnavailableError` (with `.feature`) when it has them off. Nothing is sent to antibrow.com instead. A Live View on a custom server needs `relay_url`.
+- With a custom `server`, the "no API key" and "key rejected" errors and `python -m antibrow login` point at that server instead of antibrow.com.
+- `refresh_kernel_versions()` takes `server`, and the recipe registry functions take `server` (`resolve_registry_url()` is new); `ANTIBROW_RECIPES_URL` still wins.
+
+### Fixed
+
+- Opening a profile that is already open in another browser on the same computer now raises `ProfileInUseError` (a `LaunchError`, with the holder's `pid`) instead of starting a second browser on the same data, which corrupted it. Close the first browser, or catch the error.
+
 ## [1.2.0] - 2026-10-29
 
 ### Added
 
 - `generate_persona()` takes `screen_scale` (`"host"`, `100`, `125` or `150`) for generated Windows personas. A number picks a resolution and pixel ratio that match that Windows display scale; `"host"` reports this computer's own screen. Profiles created this way by either SDK open the same in the other.
 - `with_screen_scale(persona, screen_scale)` moves an existing generated Windows persona to another scale; seeds and GPU stay, only the screen changes.
+- `launch()` / `launch_async()` take `follow_exit_language=True` to re-derive the browser languages from the exit country on every launch. By default they are still fixed by the first launch. `ProfileConfig` carries the same field (`follow_exit_language`).
 
 ### Fixed
 
 - Files downloaded in a launched browser now go to the browser's normal download folder under their real names. Before, Playwright redirected them to a temporary folder with random names and deleted it on disconnect. If you rely on `page.expect_download()`, pass `playwright_downloads=True` to `launch()` / `launch_async()`.
+- A slow proxy (typically mobile) no longer launches with the default timezone and WebRTC off: the exit lookup is retried once with a longer timeout.
 
 ## [1.1.0] - 2026-10-26
 

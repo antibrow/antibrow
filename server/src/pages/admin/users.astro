@@ -1,0 +1,163 @@
+---
+import Admin from '../../layouts/Admin.astro'
+
+export const prerender = false
+---
+
+<Admin title="Users" active="users">
+  <h1>Users</h1>
+  <section>
+    <h2>New user</h2>
+    <form id="create" class="form">
+      <label>Label<input name="label" placeholder="alice@example.com" /></label>
+      <label>Plan<select name="planId" id="create-plan"></select></label>
+      <label>Plan expires<input name="expires" type="datetime-local" /></label>
+      <button type="submit">Create user</button>
+    </form>
+  </section>
+  <section>
+    <form id="filter" class="form">
+      <label>Search<input name="query" placeholder="label or id" /></label>
+      <label>Plan<select name="planId" id="filter-plan"></select></label>
+      <button type="submit" class="ghost">Filter</button>
+    </form>
+  </section>
+  <section class="scroll">
+    <table>
+      <thead>
+        <tr><th>Label</th><th>Plan</th><th>Expires</th><th>Keys</th><th>Status</th><th></th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <p id="empty" class="muted" hidden>No users.</p>
+    <div class="actions"><button type="button" id="more" class="ghost" hidden>Load more</button></div>
+  </section>
+  <script>
+    import { api, attempt, confirmDialog, fmtDate, fromLocalInput, h, openDialog, showKey, toLocalInput, toast } from '../../scripts/admin-api'
+
+    interface Plan { id: string; code: string; name: string; isDefault: boolean }
+    interface User { id: string; label: string | null; plan: { id: string; code: string; name: string }; planExpiresAt: string | null; disabled: boolean; keyCount: number }
+    interface Key { id: string; name: string | null; last4: string; lastUsedAt: string | null; revokedAt: string | null }
+
+    const rows = document.getElementById('rows')!
+    const more = document.getElementById('more') as HTMLButtonElement
+    const empty = document.getElementById('empty')!
+    const filter = document.getElementById('filter') as HTMLFormElement
+    const create = document.getElementById('create') as HTMLFormElement
+    let plans: Plan[] = []
+    let cursor: string | null = null
+
+    const planOptions = (sel: HTMLSelectElement, any: boolean, current?: string) => {
+      sel.replaceChildren(
+        ...(any ? [h('option', { value: '' }, 'All plans')] : []),
+        ...plans.map((p) => {
+          const o = h('option', { value: p.id }, `${p.name} (${p.code})`)
+          if (p.id === current || (!current && !any && p.isDefault)) o.selected = true
+          return o
+        }),
+      )
+    }
+
+    async function loadUsers(append: boolean) {
+      const f = new FormData(filter)
+      const qs = new URLSearchParams()
+      if (f.get('query')) qs.set('query', String(f.get('query')))
+      if (f.get('planId')) qs.set('planId', String(f.get('planId')))
+      if (append && cursor) qs.set('cursor', cursor)
+      const res = await api<{ users: User[]; nextCursor: string | null }>('GET', `users?${qs}`)
+      cursor = res.nextCursor
+      const els = res.users.map(row)
+      if (append) rows.append(...els)
+      else rows.replaceChildren(...els)
+      more.hidden = !cursor
+      empty.hidden = rows.children.length > 0
+    }
+    const reload = () => attempt(() => loadUsers(false))
+
+    function row(u: User) {
+      const expired = u.planExpiresAt && new Date(u.planExpiresAt) < new Date()
+      const tr = h('tr', {},
+        h('td', {}, u.label ?? h('span', { class: 'muted mono' }, u.id.slice(0, 8))),
+        h('td', {}, u.plan.code),
+        h('td', {}, fmtDate(u.planExpiresAt), expired ? ' ' : '', expired ? h('span', { class: 'badge bad' }, 'expired') : null),
+        h('td', {}, String(u.keyCount)),
+        h('td', {}, u.disabled ? h('span', { class: 'badge bad' }, 'disabled') : h('span', { class: 'badge' }, 'active')),
+        h('td', { class: 'acts' },
+          h('button', { class: 'ghost small', onclick: () => edit(u) }, 'Edit'), ' ',
+          h('button', { class: 'ghost small', onclick: () => keys(u) }, 'Keys'), ' ',
+          h('button', { class: 'ghost small', onclick: async () => { if (await attempt(() => api('PATCH', `users/${u.id}`, { disabled: !u.disabled }))) reload() } }, u.disabled ? 'Enable' : 'Disable'), ' ',
+          h('button', { class: 'ghost small', onclick: async () => {
+            if (!(await confirmDialog(`Delete ${u.label ?? u.id} with all keys and cloud data? This cannot be undone.`))) return
+            if (await attempt(() => api('DELETE', `users/${u.id}`))) reload()
+          } }, 'Delete'),
+        ),
+      )
+      return tr
+    }
+
+    function edit(u: User) {
+      const label = h('input', { value: u.label ?? '' })
+      const plan = h('select', {})
+      planOptions(plan, false, u.plan.id)
+      const exp = h('input', { type: 'datetime-local', value: toLocalInput(u.planExpiresAt) })
+      const body = h('div', { class: 'stack' }, h('label', {}, 'Label', label), h('label', {}, 'Plan', plan), h('label', {}, 'Plan expires (empty = never)', exp))
+      const save = h('button', { type: 'button', onclick: async () => {
+        if (await attempt(() => api('PATCH', `users/${u.id}`, { label: label.value, planId: plan.value, planExpiresAt: fromLocalInput(exp.value) }))) { dlg.close(); reload() }
+      } }, 'Save')
+      const dlg = openDialog('Edit user', body, [save])
+    }
+
+    function keys(u: User) {
+      const list = h('div', { class: 'scroll' })
+      const render = async () => {
+        const { keys } = await api<{ keys: Key[] }>('GET', `users/${u.id}/keys`)
+        list.replaceChildren(h('table', {},
+          h('thead', {}, h('tr', {}, h('th', {}, 'Key'), h('th', {}, 'Last used'), h('th', {}, ''))),
+          h('tbody', {}, ...keys.map((k) => h('tr', {},
+            h('td', { class: 'mono' }, `...${k.last4}`, k.name ? ` (${k.name})` : '', k.revokedAt ? ' ' : '', k.revokedAt ? h('span', { class: 'badge bad' }, 'revoked') : null),
+            h('td', {}, fmtDate(k.lastUsedAt)),
+            h('td', {}, k.revokedAt ? null : h('button', { class: 'ghost small', onclick: async () => {
+              if (!(await confirmDialog(`Revoke key ending ${k.last4}?`))) return
+              if (await attempt(() => api('DELETE', `users/${u.id}/keys/${k.id}`))) { await render(); reload() }
+            } }, 'Revoke')),
+          ))),
+        ))
+      }
+      const add = h('button', { type: 'button', onclick: async () => {
+        try {
+          const { key } = await api<{ key: { key: string } }>('POST', `users/${u.id}/keys`)
+          showKey(key.key)
+          await render()
+          reload()
+        } catch (e) { toast(e instanceof Error ? e.message : String(e), true) }
+      } }, 'New key')
+      openDialog(`Keys for ${u.label ?? u.id.slice(0, 8)}`, list, [add])
+      attempt(render)
+    }
+
+    filter.addEventListener('submit', (e) => { e.preventDefault(); reload() })
+    more.addEventListener('click', () => attempt(() => loadUsers(true)))
+    create.addEventListener('submit', async (e) => {
+      e.preventDefault()
+      const f = new FormData(create)
+      try {
+        const res = await api<{ key: { key: string } }>('POST', 'users', {
+          label: String(f.get('label') ?? '').trim() || undefined,
+          planId: String(f.get('planId') || '') || undefined,
+          planExpiresAt: fromLocalInput(String(f.get('expires') ?? '')),
+        })
+        create.reset()
+        planOptions(document.getElementById('create-plan') as HTMLSelectElement, false)
+        showKey(res.key.key)
+        reload()
+      } catch (err) { toast(err instanceof Error ? err.message : String(err), true) }
+    })
+
+    attempt(async () => {
+      plans = (await api<{ plans: Plan[] }>('GET', 'plans')).plans
+      planOptions(document.getElementById('create-plan') as HTMLSelectElement, false)
+      planOptions(document.getElementById('filter-plan') as HTMLSelectElement, true)
+      await loadUsers(false)
+    })
+  </script>
+</Admin>

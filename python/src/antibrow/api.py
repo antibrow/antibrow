@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from . import _http
 from .config import encode_path_segment
 from .errors import ApiError
+from .server_config import assert_server_feature
 
 PROFILES_PATH = "/api/v1/profiles"
 PROXIES_PATH = "/api/v1/proxies"
@@ -114,6 +115,7 @@ class ProfileConfig:
     canvas_noise: Optional[bool] = None
     api_log: Optional[str] = None  # "off" | "curated" | "all"
     webauthn_capture: Optional[bool] = None
+    follow_exit_language: Optional[bool] = None
     device_type: Optional[str] = None  # "desktop" | "android"
     os: Optional[str] = None  # "windows" | "macos"
     hardware: Optional[str] = None  # "host" | "generated"
@@ -135,6 +137,9 @@ class ProfileConfig:
             canvas_noise=raw.get("canvasNoise") if isinstance(raw.get("canvasNoise"), bool) else None,
             api_log=_as_str(raw.get("apiLog")),
             webauthn_capture=raw.get("webauthnCapture") if isinstance(raw.get("webauthnCapture"), bool) else None,
+            follow_exit_language=(
+                raw.get("followExitLanguage") if isinstance(raw.get("followExitLanguage"), bool) else None
+            ),
             device_type=_as_str(raw.get("deviceType")),
             os=raw.get("os") if raw.get("os") in ("windows", "macos") else None,
             hardware=raw.get("hardware") if raw.get("hardware") in ("host", "generated") else None,
@@ -154,6 +159,7 @@ class ProfileConfig:
                 "canvasNoise": self.canvas_noise,
                 "apiLog": self.api_log,
                 "webauthnCapture": self.webauthn_capture,
+                "followExitLanguage": self.follow_exit_language,
                 "deviceType": self.device_type,
                 "os": self.os,
                 "hardware": self.hardware,
@@ -585,6 +591,7 @@ def managed_proxy_to_relay_url(
 
 
 def list_proxies(api_key: str, server: Optional[str] = None) -> ProxyListing:
+    assert_server_feature(server, "managedProxy")
     body = _as_dict(_call("GET", _http.url_for(server, PROXIES_PATH), api_key, action="list proxies"))
     raw = body.get("proxies")
     return ProxyListing(
@@ -594,6 +601,7 @@ def list_proxies(api_key: str, server: Optional[str] = None) -> ProxyListing:
 
 
 def _proxy_action(api_key: str, server: Optional[str], body: Dict[str, Any]) -> Dict[str, Any]:
+    assert_server_feature(server, "managedProxy")
     result = _call(
         "POST",
         _http.url_for(server, PROXIES_PATH),
@@ -636,6 +644,7 @@ def _reject_proxy_access(status: int, text: str) -> None:
 def activate_proxy(api_key: str, server: Optional[str] = None, *, proxy_id: str) -> ProxyActivation:
     """Meter and authorise one use of a managed proxy. Call before taking a
     ticket: this is what checks ownership and the monthly quota."""
+    assert_server_feature(server, "managedProxy")
     url = _http.url_for(server, "{0}/{1}/activate".format(PROXIES_PATH, encode_path_segment(proxy_id)))
     status, text = _http.send("POST", url, api_key=api_key)
     _reject_proxy_access(status, text)
@@ -658,6 +667,7 @@ def issue_proxy_ticket(
     label: Optional[str] = None,
     ttl_minutes: Optional[int] = None,
 ) -> ProxyTicket:
+    assert_server_feature(server, "managedProxy")
     url = _http.url_for(server, "{0}/{1}/ticket".format(PROXIES_PATH, encode_path_segment(proxy_id)))
     payload = _drop_none({"label": label, "ttlMinutes": ttl_minutes})
     status, text = _http.send("POST", url, api_key=api_key, payload=payload)

@@ -36,6 +36,7 @@ import {
 import { LiveViewStream, registerLiveSession, unregisterLiveSession, heartbeatLiveSession } from './liveview'
 import { checkClientVersion, SDK_VERSION, type VersionCheckResult } from './version'
 import { clearTemporaryProfiles, type ClearTemporaryOptions, type ClearedTemporaryProfile } from './temporary-profiles'
+import { DEFAULT_LIVEVIEW_RELAY_URL, FeatureUnavailableError, assertServerFeature, isDefaultServer, resolveServer } from './server-config'
 
 export type SyncMode = 'off' | 'existing' | 'create'
 
@@ -126,6 +127,7 @@ export function buildOpenProfileOptions(input: BuildOpenProfileOptionsInput): Op
     apiLog: options.apiLog,
     canvasNoise: options.canvasNoise,
     webauthnCapture: options.webauthnCapture,
+    followExitLanguage: options.followExitLanguage,
     restoreTabs: options.restoreTabs,
     playwrightDownloads: options.playwrightDownloads,
     args: options.args,
@@ -142,10 +144,10 @@ interface LaunchOutcome {
 
 export class AntiDetectBrowser {
   private readonly key: string
-  private readonly server?: string
+  private readonly server: string
   private readonly cacheDir: string
-  private readonly relayUrl: string
-  private readonly proxyHost: string
+  private readonly relayUrl?: string
+  private readonly proxyHost?: string
   private readonly notify: (message: string) => void
   private readonly temporary: boolean
   private readonly telemetry: boolean
@@ -173,10 +175,13 @@ export class AntiDetectBrowser {
       throw new Error('API key is required. Pass { key: "your-api-key" } to AntiDetectBrowser constructor.')
     }
     this.key = options.key
-    this.server = options.server || 'https://antibrow.com'
+    this.server = resolveServer(options.server)
     this.cacheDir = ensureCacheDir(options.cacheDir)
-    this.relayUrl = options.relayUrl || 'wss://liveview-relay.antibrow.com'
-    this.proxyHost = options.proxyHost || DEFAULT_RELAY_HOST
+    // Our relays only serve our own server; a custom one names its relay host
+    // in each proxy ticket, and has no Live View relay unless told one.
+    const ours = isDefaultServer(this.server)
+    this.relayUrl = options.relayUrl || (ours ? DEFAULT_LIVEVIEW_RELAY_URL : undefined)
+    this.proxyHost = options.proxyHost || (ours ? DEFAULT_RELAY_HOST : undefined)
     this.notify = options.notify ?? ((m) => console.log(m))
     this.temporary = options.temporary ?? false
     this.telemetry = options.telemetry ?? true
@@ -215,11 +220,20 @@ export class AntiDetectBrowser {
 
   private report(events: TelemetryEvent[]): Promise<void> {
     if (!this.telemetry) return Promise.resolve()
-    return sendTelemetry({ key: this.key, server: this.server ?? 'https://antibrow.com', events })
+    return sendTelemetry({ key: this.key, server: this.server, events })
   }
 
   private async launchChecked(options: LaunchOptions, outcome: LaunchOutcome): Promise<LaunchResult> {
     await this.ensureVersionOk()
+    // Before any kernel install or server-side side effect: a feature this
+    // server lacks has to fail the launch, not quietly route elsewhere.
+    if (options.proxyId) await assertServerFeature(this.server, 'managedProxy', { cacheDir: this.cacheDir })
+    if (options.liveView) {
+      await assertServerFeature(this.server, 'liveView', { cacheDir: this.cacheDir })
+      if (!this.relayUrl) {
+        throw new FeatureUnavailableError('liveView', `No Live View relay is known for ${this.server}; pass relayUrl.`)
+      }
+    }
 
     // Cached locally and only refetched near expiry, so this is cheap in loops.
     // Concurrency is capped by the kernel, not here.
@@ -252,7 +266,7 @@ export class AntiDetectBrowser {
           key: this.key, server: this.server, proxyId, label: options.profile,
         })
         ticket = { proxyId, ticketId: issued.ticketId }
-        return managedProxyToRelayUrl(issued.username, issued.password, this.proxyHost)
+        return managedProxyToRelayUrl(issued.username, issued.password, this.proxyHost ?? issued.host)
       }
     }
 
@@ -337,10 +351,10 @@ export class AntiDetectBrowser {
       try {
         const lvOptions: LiveViewStreamOptions = typeof options.liveView === 'object' ? options.liveView : {}
         const reg = await registerLiveSession({
-          key: this.key, server: this.server, sessionKey: sessionId,
+          key: this.key, server: this.server, sessionKey: sessionId, cacheDir: this.cacheDir,
           profileName: options.profile, label: options.label, ua: '',
         })
-        const stream = new LiveViewStream(context, page, this.relayUrl, reg.sessionKey, reg.relayToken, lvOptions)
+        const stream = new LiveViewStream(context, page, this.relayUrl as string, reg.sessionKey, reg.relayToken, lvOptions)
         await stream.start()
         liveViewInfo = { sessionKey: reg.sessionKey, viewUrl: reg.viewUrl }
         const stored = this.activeSessions.get(sessionId)
@@ -473,7 +487,7 @@ export class AntiDetectBrowser {
   private async ensureVersionOk(): Promise<void> {
     if (!this.versionCheckPromise) {
       this.versionCheckPromise = checkClientVersion({
-        client: 'sdk', version: SDK_VERSION, server: this.server,
+        client: 'sdk', version: SDK_VERSION, server: this.server, cacheDir: this.cacheDir,
       }).catch(() => ({ status: 'ok', current: SDK_VERSION } as VersionCheckResult))
     }
     const vc = await this.versionCheckPromise
@@ -499,7 +513,7 @@ export class AntiDetectBrowser {
   /** One entry per installed kernel; check `.updateAvailable`. */
   async checkKernelUpdates(): Promise<KernelUpdateStatus[]> {
     // Forced: an explicit check must not answer from a cached manifest.
-    await refreshKernelVersions(this.cacheDir, { force: true })
+    await refreshKernelVersions(this.cacheDir, { force: true, server: this.server })
     return installedKernelUpdates(this.cacheDir)
   }
 

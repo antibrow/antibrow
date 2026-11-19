@@ -1181,11 +1181,22 @@ export function withScreenScale(persona: Persona, scale: ScreenScale): Persona {
  * Settle a pending persona's languages from the exit country and persist them.
  * A country outside the table still settles (on the default): the exit was
  * known, so waiting for another launch would only let the language change later.
+ * `follow` re-derives settled languages too, but only from a country in the
+ * table: an unknown exit is no reason to drop to the default.
  */
-export function settlePersonaLanguages(profileDir: string, persona: Persona, countryCode: string | undefined): Persona {
-  if (!persona.languagesPending || !countryCode) return persona
+export function settlePersonaLanguages(
+  profileDir: string,
+  persona: Persona,
+  countryCode: string | undefined,
+  follow = false,
+): Persona {
+  if (!countryCode) return persona
+  const derived = languagesForCountry(countryCode)
+  if (!persona.languagesPending) {
+    if (!follow || !derived || derived.join(',') === persona.languages.join(',')) return persona
+  }
   const { languagesPending: _, ...rest } = persona
-  const settled: Persona = { ...rest, languages: languagesForCountry(countryCode) ?? persona.languages }
+  const settled: Persona = { ...rest, languages: derived ?? persona.languages }
   const file = path.join(profileDir, PERSONA_FILE)
   // Patched into the file rather than rewritten from memory: the in-memory copy
   // has its kernelVersion normalized, and the file keeps whatever it had.

@@ -95,6 +95,12 @@ export interface LaunchOptions {
   /** Keep newly registered passkeys in this profile instead of asking. */
   webauthnCapture?: boolean
   /**
+   * Re-derive the browser languages from the exit country on every launch.
+   * Off by default: languages are fixed by the first launch's exit, since a
+   * sudden language change on a logged-in identity stands out.
+   */
+  followExitLanguage?: boolean
+  /**
    * Reopen the tabs the last session left. On by default. A registration or
    * warm-up run wants this off: the restored tabs arrive already logged in
    * somewhere else, and the site sees them.
@@ -183,6 +189,7 @@ export interface ProfileConfig {
   canvasNoise?: boolean
   apiLog?: import('./engine/persona').ApiLogMode
   webauthnCapture?: boolean
+  followExitLanguage?: boolean
   /** Fixed when the profile was created; travels so every machine shows the
    *  same identity before the profile is ever launched there. */
   deviceType?: import('./engine/persona').DeviceType

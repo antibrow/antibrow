@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, List, Optional, Sequence, Tuple
 
 from ..license import get_license_token
+from .registry import resolve_registry_url
 from .runtime import RecipeRunResult, run_recipe
 from .source import RecipeError
 
@@ -57,6 +58,8 @@ def fanout_recipe(
     if not ordered:
         raise RecipeError("fanout_recipe needs at least one profile.")
 
+    # Refused up front, so a server with recipes off does not mint a license first.
+    resolve_registry_url(server, cache_dir)
     license_info = get_license_token(api_key, server)
     requested = concurrency if concurrency is not None else license_info.mi
     limit = max(1, min(requested, license_info.mi, len(ordered)))

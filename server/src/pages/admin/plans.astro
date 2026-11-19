@@ -1,0 +1,84 @@
+---
+import Admin from '../../layouts/Admin.astro'
+
+export const prerender = false
+---
+
+<Admin title="Plans" active="plans">
+  <h1>Plans</h1>
+  <section class="scroll">
+    <table>
+      <thead>
+        <tr><th>Name</th><th>Code</th><th>Concurrent</th><th>Synced profiles</th><th>Users</th><th></th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </section>
+  <section>
+    <h2>New plan</h2>
+    <form id="create" class="form">
+      <label>Code<input name="code" required placeholder="PRO" /></label>
+      <label>Name<input name="name" required placeholder="Pro" /></label>
+      <label>Concurrent browsers<input name="mi" type="number" min="1" value="5" required /></label>
+      <label>Synced profiles (0 = off)<input name="maxSyncedProfiles" type="number" min="0" value="20" required /></label>
+      <button type="submit">Create plan</button>
+    </form>
+  </section>
+  <script>
+    import { api, attempt, confirmDialog, h, openDialog, toast } from '../../scripts/admin-api'
+
+    interface Plan { id: string; code: string; name: string; mi: number; maxSyncedProfiles: number; isDefault: boolean; builtin: boolean; userCount: number }
+    const rows = document.getElementById('rows')!
+
+    async function load() {
+      const { plans } = await api<{ plans: Plan[] }>('GET', 'plans')
+      rows.replaceChildren(...plans.map(row))
+    }
+
+    function row(p: Plan) {
+      const acts = h('td', { class: 'acts' })
+      acts.append(h('button', { class: 'ghost small', onclick: () => edit(p) }, 'Edit'), ' ')
+      if (!p.isDefault) {
+        acts.append(h('button', { class: 'ghost small', onclick: async () => { if (await attempt(() => api('POST', `plans/${p.id}/default`))) { toast('Default plan changed'); load() } } }, 'Make default'), ' ')
+        acts.append(h('button', { class: 'ghost small', onclick: async () => {
+          if (!(await confirmDialog(`Delete plan ${p.code}?`))) return
+          if (await attempt(() => api('DELETE', `plans/${p.id}`))) load()
+        } }, 'Delete'))
+      }
+      return h('tr', {},
+        h('td', {}, p.name, p.isDefault ? ' ' : '', p.isDefault ? h('span', { class: 'badge' }, 'default') : null),
+        h('td', { class: 'mono' }, p.code),
+        h('td', {}, String(p.mi)),
+        h('td', {}, String(p.maxSyncedProfiles)),
+        h('td', {}, String(p.userCount)),
+        acts,
+      )
+    }
+
+    function edit(p: Plan) {
+      const name = h('input', { value: p.name, required: true })
+      const mi = h('input', { type: 'number', min: '1', value: String(p.mi) })
+      const max = h('input', { type: 'number', min: '0', value: String(p.maxSyncedProfiles) })
+      const body = h('div', { class: 'stack' }, h('label', {}, 'Name', name), h('label', {}, 'Concurrent browsers', mi), h('label', {}, 'Synced profiles', max))
+      const save = h('button', { type: 'button', onclick: async () => {
+        if (await attempt(() => api('PATCH', `plans/${p.id}`, { name: name.value, mi: Number(mi.value), maxSyncedProfiles: Number(max.value) }))) { dlg.close(); load() }
+      } }, 'Save')
+      const dlg = openDialog(`Edit ${p.code}`, body, [save])
+    }
+
+    const form = document.getElementById('create') as HTMLFormElement
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault()
+      const f = new FormData(form)
+      const ok = await attempt(() => api('POST', 'plans', {
+        code: String(f.get('code')).trim().toUpperCase(),
+        name: String(f.get('name')).trim(),
+        mi: Number(f.get('mi')),
+        maxSyncedProfiles: Number(f.get('maxSyncedProfiles')),
+      }))
+      if (ok) { form.reset(); toast('Plan created'); load() }
+    })
+
+    attempt(load)
+  </script>
+</Admin>

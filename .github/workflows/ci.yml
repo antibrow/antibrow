@@ -83,3 +83,41 @@ jobs:
         with:
           name: dist
           path: python/dist/
+
+  server:
+    name: server (vitest + postgres)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: antibrow
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: antibrow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U antibrow"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://antibrow@localhost:5432/antibrow
+      TEST_DATABASE_URL: postgresql://antibrow@localhost:5432/antibrow
+      # Makes the DB-backed test files fail instead of skipping when the database is missing.
+      REQUIRE_DB_TESTS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npx prisma generate
+      - run: npx prisma migrate deploy
+      - run: npx tsc --noEmit
+      - run: npx vitest run

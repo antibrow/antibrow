@@ -3,9 +3,10 @@ import path from 'node:path'
 import { ensureCacheDir, listProfiles } from '../profile'
 import { fanoutRecipe } from './fanout'
 import {
-  ensureRecipeSource, findRecipe, loadCachedRegistry, loadRegistry, recipeRegistryUrl,
+  ensureRecipeSource, findRecipe, loadCachedRegistry, loadRegistry, resolveRecipeRegistryUrl,
   recipesDir, updateRecipes,
 } from './registry'
+import { resolveServer } from '../server-config'
 import { applyFilter } from './select'
 import { readMeta } from './source'
 import { assertRunnable } from './registry'
@@ -58,11 +59,15 @@ function cacheDirFromEnv(env: NodeJS.ProcessEnv): string {
   return ensureCacheDir(env.ANTIBROW_CACHE_DIR || env.ANTI_DETECT_BROWSER_CACHE_DIR)
 }
 
+function serverFromEnv(env: NodeJS.ProcessEnv): string {
+  return resolveServer(env.ANTIBROW_SERVER || env.ANTI_DETECT_BROWSER_SERVER)
+}
+
 function apiKeyFromEnv(env: NodeJS.ProcessEnv): string {
   const key = env.ANTIBROW_API_KEY || env.ANTI_DETECT_BROWSER_KEY
   if (!key) {
     throw new Error(
-      'No API key. Set ANTIBROW_API_KEY (or ANTI_DETECT_BROWSER_KEY). Get one at https://antibrow.com.',
+      `No API key. Set ANTIBROW_API_KEY (or ANTI_DETECT_BROWSER_KEY). Get one at ${serverFromEnv(env)}.`,
     )
   }
   return key
@@ -208,7 +213,8 @@ function localRecipePath(target: string, flags: Parsed['flags']): string | undef
 
 async function cmdGuide(cacheDir: string, env: NodeJS.ProcessEnv, io: RecipeCliIo): Promise<number> {
   const cached = path.join(recipesDir(cacheDir), 'GUIDE.md')
-  const url = new URL('GUIDE.md', recipeRegistryUrl(env)).toString()
+  const registryUrl = await resolveRecipeRegistryUrl({ cacheDir, env, server: serverFromEnv(env) })
+  const url = new URL('GUIDE.md', registryUrl).toString()
   try {
     const res = await fetch(url)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -243,7 +249,9 @@ export async function runRecipeCli(
 
   try {
     if (command === 'update') {
-      const result = await updateRecipes({ cacheDir, acceptChanges: flags['accept-changes'] === true, env })
+      const result = await updateRecipes({
+        cacheDir, acceptChanges: flags['accept-changes'] === true, env, server: serverFromEnv(env),
+      })
       if (flags.json) {
         io.out(JSON.stringify({ url: result.url, count: result.registry.recipes.length, added: result.added, changed: result.changed }, null, 2))
         return 0
@@ -255,7 +263,7 @@ export async function runRecipeCli(
     }
 
     if (command === 'list') {
-      const registry = await loadRegistry({ cacheDir, env })
+      const registry = await loadRegistry({ cacheDir, env, server: serverFromEnv(env) })
       const site = flagString(flags, 'site')
       const rows = registry.recipes.filter((r) => !site || r.id.split('/')[0] === site)
       if (flags.json) {
@@ -277,7 +285,7 @@ export async function runRecipeCli(
     if (command === 'info') {
       const id = positionals[1]
       if (!id) throw new Error('recipe info needs a recipe id')
-      const entry = findRecipe(await loadRegistry({ cacheDir, env }), id)
+      const entry = findRecipe(await loadRegistry({ cacheDir, env, server: serverFromEnv(env) }), id)
       if (flags.json) {
         io.out(JSON.stringify(entry, null, 2))
         return 0
@@ -315,7 +323,7 @@ export async function runRecipeCli(
       const temporary = flags.temporary === true || (command === 'test' && !flags.profile)
       const launch = {
         key: apiKeyFromEnv(env),
-        server: env.ANTIBROW_SERVER || env.ANTI_DETECT_BROWSER_SERVER,
+        server: serverFromEnv(env),
         cacheDir,
         profile: flagString(flags, 'profile'),
         temporary: temporary && !flags.profile,
@@ -348,7 +356,7 @@ export async function runRecipeCli(
       const result = await fanoutRecipe({
         id,
         key: apiKeyFromEnv(env),
-        server: env.ANTIBROW_SERVER || env.ANTI_DETECT_BROWSER_SERVER,
+        server: serverFromEnv(env),
         cacheDir,
         profiles,
         concurrency: flagNumber(flags, 'concurrency'),

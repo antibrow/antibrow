@@ -1,8 +1,7 @@
 import { getLicenseToken } from '../engine'
+import { resolveRecipeRegistryUrl } from './registry'
 import { runRecipe, type RunRecipeOptions } from './runtime'
 import type { FanoutRecipeResult, RecipeRunResult } from './types'
-
-const DEFAULT_SERVER = 'https://antibrow.com'
 
 export interface FanoutRecipeOptions extends Omit<RunRecipeOptions, 'profile' | 'temporary'> {
   profiles: string[]
@@ -24,7 +23,9 @@ export async function fanoutRecipe(options: FanoutRecipeOptions): Promise<Fanout
   const profiles = [...new Set(options.profiles)]
   if (profiles.length === 0) throw new Error('fanoutRecipe needs at least one profile.')
 
-  const license = await getLicenseToken({ key: options.key, server: options.server ?? DEFAULT_SERVER })
+  // Refused up front, so a server with recipes off does not mint a license first.
+  await resolveRecipeRegistryUrl({ server: options.server, cacheDir: options.cacheDir })
+  const license = await getLicenseToken({ key: options.key, server: options.server })
   const requested = options.concurrency ?? license.mi
   const concurrency = Math.max(1, Math.min(requested, license.mi, profiles.length))
   if (requested > license.mi) {

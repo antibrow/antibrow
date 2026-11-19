@@ -1,7 +1,6 @@
 import { isCryptKeyPending, isProfileEncrypted } from './profile-dir'
 import { encodePathSegment } from '../url-path'
-
-const DEFAULT_SERVER = 'https://antibrow.com'
+import { resolveServer } from '../server-config'
 
 /** 32 bytes as lowercase hex, the form the kernel's --fp-crypt-key takes. */
 const CRYPT_KEY_PATTERN = /^[0-9a-f]{64}$/
@@ -29,7 +28,7 @@ export async function fetchProfileCryptKey(opts: {
 }): Promise<string | undefined> {
   const url = new URL(
     `/api/v1/profiles/${encodePathSegment(opts.name)}/crypt-key`,
-    opts.server || DEFAULT_SERVER,
+    resolveServer(opts.server),
   )
   // An encrypted profile cannot launch without this key, so a transport
   // failure here (offline, DNS, connection refused) must not reach the caller

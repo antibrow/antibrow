@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "antibrow"
-version = "1.2.0"
+version = "1.2.1"
 description = "The antidetect browser your AI agent can drive - kernel-level fingerprint spoofing with the Playwright API"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -99,6 +99,7 @@ exclude = ["NOTES.md", "DELIVERY.md"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = ["server_offers_everything: stand-in server with no config route; every optional feature is on"]
 filterwarnings = ["error::DeprecationWarning:antibrow.*"]
 
 [tool.ruff]

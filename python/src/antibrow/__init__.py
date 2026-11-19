@@ -20,7 +20,7 @@ See https://antibrow.com and the project README for the full API.
 
 from __future__ import annotations
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 from .api import (
     DEFAULT_RELAY_HOST,
@@ -117,6 +117,7 @@ from .errors import (
     LicenseError,
     LiveViewError,
     ProfileCacheError,
+    ProfileInUseError,
     ProxyError,
     UnsupportedPlatformError,
 )
@@ -249,6 +250,7 @@ from .recipe import (
     run_recipe_source_async,
     update_recipes,
 )
+from .server_config import FeatureUnavailableError, get_server_config, resolve_server
 from .temporary_profiles import (
     ClearedTemporaryProfile,
     clear_temporary_profiles,
@@ -433,6 +435,9 @@ __all__ = [
     # proxies and geo
     "ProxySpec",
     "parse_proxy",
+    "FeatureUnavailableError",
+    "get_server_config",
+    "resolve_server",
     "ProxyGeo",
     "GeoTarget",
     "geo_targets",
@@ -467,6 +472,7 @@ __all__ = [
     "ApiError",
     "LiveViewError",
     "LaunchError",
+    "ProfileInUseError",
     "LaunchTimeout",
     "LicenseError",
     "ConcurrencyLimitError",

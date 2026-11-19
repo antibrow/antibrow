@@ -27,12 +27,12 @@ from typing import Callable, List, Optional, Tuple
 
 from .config import USER_AGENT
 from .proxy import ProxyLike, ProxySpec, parse_proxy
+from .server_config import resolve_server
 
 GEO_HOST = "ip-api.com"
 GEO_PATH = "/json/?fields=status,country,countryCode,city,timezone,query"
 GEO_URL = "http://{0}{1}".format(GEO_HOST, GEO_PATH)
 
-DEFAULT_GEO_SERVER = "https://antibrow.com"
 DEFAULT_TIMEOUT = 10.0
 # Our own endpoint gets a short leash so a slow edge cannot eat the whole budget
 # and leave nothing for the fallback.
@@ -66,7 +66,7 @@ def geo_targets(server_url: Optional[str] = None) -> List[GeoTarget]:
     """
     base = server_url or os.environ.get("ANTIBROW_GEO_SERVER") or os.environ.get(
         "ANTIBROW_SERVER"
-    ) or DEFAULT_GEO_SERVER
+    ) or resolve_server()
     parts = urllib.parse.urlsplit(base.rstrip("/") + "/api/v1/geo")
     if parts.scheme not in ("http", "https") or not parts.hostname:
         return [IPAPI_TARGET]

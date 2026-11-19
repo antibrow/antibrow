@@ -4,6 +4,27 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [3.3.0] - 2026-11-19
+
+### Added
+
+- `launch()` / `openProfile()` take `followExitLanguage: true` to re-derive the browser languages from the exit country on every launch. By default they are still fixed by the first launch. `ProfileConfig` carries the same field.
+- Self-hosted servers: `getServerConfig(server)` reads a server's brand, feature switches and manifest locations (cached for an hour), `resolveServer()` resolves the server the SDK talks to, and both are exported with the `ServerConfig` type.
+- With a custom `server`, managed proxies, Live View, real-device fingerprints and recipes follow that server's feature switches and throw the new `FeatureUnavailableError` (with `.feature`) when it has them off. Nothing is sent to antibrow.com instead. A Live View on a custom server needs `relayUrl`.
+- `refreshKernelVersions()` takes `server`, and recipe registry functions take `server` (`resolveRecipeRegistryUrl()` is new); `ANTIBROW_RECIPES_URL` still wins.
+- `openProfile()` takes `kernelManifestUrl` to read the kernel catalogue from that manifest instead of the one the server's config names.
+- `openProfile()`, `ensureKernel()` and `exportProfileArchiveAsync()` take `trustedKernelHosts` to download kernels only over https from those hosts (redirects included); any other source throws the new `UntrustedKernelSourceError` before anything is changed. `assertTrustedKernelUrl(url, hosts)` runs the same check on its own.
+
+### Changed
+
+- Every function with a `server` option now falls back to `ANTI_DETECT_BROWSER_SERVER` before the default.
+
+### Fixed
+
+- Cloud profiles opened with `openProfile()` now save on exit after sessions longer than the launch timeout. Before, the upload failed with `Launch timed out before the request could be sent` and the cloud copy stayed at its old state.
+- A slow proxy (typically mobile) no longer launches with the default timezone and WebRTC off: the exit lookup is retried once with a longer timeout.
+- Opening a profile that is already open in another browser on the same computer now throws `ProfileInUseError` (with the holder's `pid`) instead of starting a second browser on the same data, which corrupted it. Close the first browser, or catch the error.
+
 ## [3.2.0] - 2026-10-29
 
 ### Added

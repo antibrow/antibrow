@@ -15,6 +15,8 @@ import pytest
 from antibrow import api
 from antibrow.errors import ApiError
 
+pytestmark = pytest.mark.server_offers_everything
+
 
 class _Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args):  # keep the test output clean

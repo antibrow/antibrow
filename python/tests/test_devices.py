@@ -10,6 +10,8 @@ from antibrow import devices, kernel
 from antibrow.errors import KernelDownloadError
 from antibrow.launcher import build_launch_args
 
+pytestmark = pytest.mark.server_offers_everything
+
 _SAMPLE = {
     "os": "android",
     "model": "SM-S918U",

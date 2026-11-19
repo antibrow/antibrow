@@ -4,6 +4,7 @@ import net from 'node:net'
 import tls from 'node:tls'
 import { SocksClient } from 'socks'
 import { relayFetch, relayKeyFromUrl } from './relay-tunnel'
+import { resolveServer } from '../server-config'
 
 export interface ProxyGeo {
   ip: string
@@ -31,8 +32,6 @@ const GEO_FIELDS = 'status,message,country,countryCode,city,timezone,query'
 const GEO_API_HOST = 'ip-api.com'
 const GEO_API_PATH = `/json/?fields=${GEO_FIELDS}`
 const GEO_API_URL = `http://${GEO_API_HOST}${GEO_API_PATH}`
-
-const DEFAULT_GEO_SERVER = 'https://antibrow.com'
 /** Our own endpoint gets a short leash so a slow edge cannot eat the whole
  *  budget and leave nothing for the fallback. */
 const OWN_TARGET_TIMEOUT_MS = 4_000
@@ -59,7 +58,7 @@ const IPAPI_TARGET: GeoTarget = {
  * since a geo lookup that resolves to nothing cancels the launch outright.
  */
 export function geoTargets(serverUrl?: string): GeoTarget[] {
-  const base = serverUrl ?? process.env.ANTIBROW_GEO_SERVER ?? process.env.ANTIBROW_SERVER ?? DEFAULT_GEO_SERVER
+  const base = serverUrl ?? process.env.ANTIBROW_GEO_SERVER ?? process.env.ANTIBROW_SERVER ?? resolveServer()
   try {
     const u = new URL(`${base.replace(/\/+$/, '')}/api/v1/geo`)
     return [{

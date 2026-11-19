@@ -1,5 +1,6 @@
 import type { BrowserContext, Page, CDPSession } from 'playwright-core'
 import WebSocket from 'ws'
+import { assertServerFeature, resolveServer } from './server-config'
 
 export interface LiveViewOptions {
   /** JPEG quality (1-100), default 60 */
@@ -205,8 +206,11 @@ export async function registerLiveSession(options: {
   profileName?: string
   label?: string
   ua?: string
+  /** Where the server's config is cached. */
+  cacheDir?: string
 }): Promise<LiveViewSession> {
-  const baseUrl = options.server || 'https://antibrow.com'
+  const baseUrl = resolveServer(options.server)
+  await assertServerFeature(baseUrl, 'liveView', { cacheDir: options.cacheDir })
   const res = await fetch(`${baseUrl}/api/v1/liveview/sessions`, {
     method: 'POST',
     headers: {
@@ -235,7 +239,7 @@ export async function unregisterLiveSession(options: {
   server?: string
   sessionKey: string
 }): Promise<void> {
-  const baseUrl = options.server || 'https://antibrow.com'
+  const baseUrl = resolveServer(options.server)
   await fetch(`${baseUrl}/api/v1/liveview/${options.sessionKey}`, {
     method: 'DELETE',
     headers: {
@@ -250,7 +254,7 @@ export async function heartbeatLiveSession(options: {
   server?: string
   sessionKey: string
 }): Promise<void> {
-  const baseUrl = options.server || 'https://antibrow.com'
+  const baseUrl = resolveServer(options.server)
   await fetch(`${baseUrl}/api/v1/liveview/${options.sessionKey}`, {
     method: 'POST',
     headers: {

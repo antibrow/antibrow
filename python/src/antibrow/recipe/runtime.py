@@ -321,12 +321,13 @@ def resolve_published(
     temporary: bool,
     allow_unreviewed: bool = False,
     cache_dir: Optional[Path] = None,
+    server: Optional[str] = None,
 ) -> Tuple[RecipeEntry, str]:
     """The registry row and the pinned bytes for one published recipe."""
     cache_dir = Path(cache_dir) if cache_dir else default_cache_dir()
-    entry = load_registry(cache_dir).find(recipe_id)
+    entry = load_registry(cache_dir, server).find(recipe_id)
     assert_runnable(entry, temporary=temporary, allow_unreviewed=allow_unreviewed, cache_dir=cache_dir)
-    return entry, ensure_recipe_source(entry, cache_dir)
+    return entry, ensure_recipe_source(entry, cache_dir, server)
 
 
 def run_recipe(
@@ -342,6 +343,7 @@ def run_recipe(
         temporary=launch.temporary,
         allow_unreviewed=allow_unreviewed,
         cache_dir=launch.cache_dir,
+        server=launch.server,
     )
     return run_recipe_source(entry, source, launch)
 
@@ -359,5 +361,6 @@ async def run_recipe_async(
         temporary=launch.temporary,
         allow_unreviewed=allow_unreviewed,
         cache_dir=launch.cache_dir,
+        server=launch.server,
     )
     return await run_recipe_source_async(entry, source, launch)

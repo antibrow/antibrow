@@ -4,6 +4,7 @@ import https from 'node:https'
 import http from 'node:http'
 import { execFile, spawnSync } from 'node:child_process'
 import { StallTimeoutError } from './stall'
+import { DEFAULT_KERNEL_MANIFEST_URL, effectiveServerConfig } from '../server-config'
 
 /** Only linux is split by arch: mac is universal, windows is x64 only. */
 export type SupportedPlatform = 'win32' | 'linux' | 'linux-arm64' | 'darwin'
@@ -111,7 +112,7 @@ function pickDefaultKernel(): KernelVersion {
   return KERNEL_VERSIONS[0]
 }
 
-export const KERNEL_MANIFEST_URL = 'https://download.antibrow.com/fp-browser-versions.json'
+export const KERNEL_MANIFEST_URL = DEFAULT_KERNEL_MANIFEST_URL
 
 interface RemoteKernelEntry {
   version: string
@@ -310,7 +311,7 @@ function writeCachedKernelVersions(cacheDir: string, versions: KernelVersion[]):
  */
 export async function refreshKernelVersions(
   cacheDir: string,
-  opts?: { force?: boolean; ttlMs?: number; manifestUrl?: string },
+  opts?: { force?: boolean; ttlMs?: number; manifestUrl?: string; server?: string },
 ): Promise<void> {
   migrateLegacyKernelDirs(cacheDir)
   const cached = loadCachedKernelVersions(cacheDir)
@@ -320,7 +321,10 @@ export async function refreshKernelVersions(
   if (!opts?.force && cached.length && cachedKernelVersionsAge(cacheDir) < ttl) return
 
   try {
-    const remote = await fetchRemoteKernelVersions(opts?.manifestUrl)
+    const manifestUrl = opts?.manifestUrl
+      || (await effectiveServerConfig(opts?.server, { cacheDir })).kernelManifestUrl
+      || KERNEL_MANIFEST_URL
+    const remote = await fetchRemoteKernelVersions(manifestUrl)
     registerKernelVersions(remote)
     writeCachedKernelVersions(cacheDir, remote)
   } catch {
@@ -787,6 +791,27 @@ async function acquireKernelLock(
   }
 }
 
+/** The kernel download URL is not on the allowed host list. */
+export class UntrustedKernelSourceError extends Error {
+  readonly url: string
+  constructor(url: string, hosts: string[]) {
+    super(`Refusing to download a browser kernel from ${url}: only https downloads from ${hosts.join(', ')} are allowed.`)
+    this.name = 'UntrustedKernelSourceError'
+    this.url = url
+  }
+}
+
+/** No-op without `hosts`; otherwise the URL must be https on one of them, exactly. */
+export function assertTrustedKernelUrl(url: string, hosts?: string[]): void {
+  if (!hosts) return
+  let u: URL | undefined
+  try { u = new URL(url) } catch { /* rejected below */ }
+  const allowed = hosts.map((h) => h.toLowerCase())
+  if (!u || u.protocol !== 'https:' || u.username || u.password || u.port || !allowed.includes(u.hostname.toLowerCase())) {
+    throw new UntrustedKernelSourceError(url, hosts)
+  }
+}
+
 /**
  * Download + extract if needed; returns the executable path. `force` re-downloads
  * a rebuilt kernel published under the same version number.
@@ -799,6 +824,8 @@ export async function ensureKernel(
     force?: boolean
     /** Fires only when this call actually downloads, not when the kernel was already there. */
     onDownload?: (e: { ok: boolean; error?: unknown }) => void
+    /** Download only from these hosts over https; anything else throws `UntrustedKernelSourceError`. */
+    trustedKernelHosts?: string[]
   },
 ): Promise<string> {
   const platform = currentPlatform()
@@ -814,6 +841,9 @@ export async function ensureKernel(
   if (!opts?.force && fs.existsSync(exePath) && !kernelInstallInFlight(cacheDir, kv.version, platform)) {
     return ready()
   }
+
+  // Before the lock and before the old install is wiped: a refused source must leave nothing changed.
+  assertTrustedKernelUrl(asset.downloadUrl, opts?.trustedKernelHosts)
 
   const lock = await acquireKernelLock(cacheDir, kv, platform, {
     isInstalled: () => kernelInstallSatisfies(cacheDir, kv, asset, exePath, opts?.force),
@@ -831,7 +861,7 @@ export async function ensureKernel(
     fs.mkdirSync(kDir, { recursive: true })
     sweepStaleKernelZips(cacheDir, kv.version, platform, zipPath)
 
-    await downloadFile(cacheBustUrl(asset.downloadUrl), zipPath, onProgress)
+    await downloadFile(cacheBustUrl(asset.downloadUrl), zipPath, onProgress, KERNEL_STALL_MS, opts?.trustedKernelHosts)
     onProgress?.('Extracting kernel')
     await extractKernelZip(zipPath, kDir, onProgress)
 
@@ -899,6 +929,7 @@ export function downloadFile(
   destPath: string,
   onProgress?: (message: string) => void,
   stallMs: number = KERNEL_STALL_MS,
+  trustedHosts?: string[],
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(destPath)
@@ -915,6 +946,8 @@ export function downloadFile(
 
     const noCache = { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }
     const doGet = (targetUrl: string) => {
+      // Redirects too: a trusted host must not be able to bounce the download elsewhere.
+      try { assertTrustedKernelUrl(targetUrl, trustedHosts) } catch (e) { fail(e as Error); return }
       const mod = targetUrl.startsWith('https://') ? https : http
       const request = mod.get(targetUrl, { headers: noCache }, (res) => {
         if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {

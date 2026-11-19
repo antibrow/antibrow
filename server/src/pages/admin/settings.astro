@@ -1,0 +1,66 @@
+---
+import Admin from '../../layouts/Admin.astro'
+import { getConfig } from '../../core/config'
+
+export const prerender = false
+const cfg = getConfig(Astro.locals)
+const rows: Array<[string, string]> = [
+  ['Brand name', cfg.brand.name],
+  ['Public URL', cfg.publicUrl || '(not set)'],
+  ['Kernel manifest', cfg.kernelManifestUrl],
+  ['App versions key', cfg.appVersionsKey],
+  ['Recipe registry', cfg.recipeRegistryUrl || '(disabled)'],
+  ['S3 endpoint', cfg.s3?.endpoint ?? '(not configured)'],
+  ['S3 bucket', cfg.s3?.bucket ?? '(not configured)'],
+]
+---
+
+<Admin title="Settings" active="settings">
+  <h1>Settings</h1>
+  <section>
+    <h2>Connectivity</h2>
+    <table>
+      <tbody id="checks">
+        <tr><td>Database</td><td id="c-db" class="muted">checking...</td></tr>
+        <tr><td>S3 storage</td><td id="c-s3" class="muted">checking...</td></tr>
+        <tr><td>License key</td><td id="c-licenseKey" class="muted">checking...</td></tr>
+      </tbody>
+    </table>
+    <div class="actions"><button type="button" id="recheck" class="ghost">Check again</button></div>
+  </section>
+  <section class="scroll">
+    <h2>Configuration</h2>
+    <table>
+      <tbody>
+        {rows.map(([k, v]) => <tr><th>{k}</th><td class="mono">{v}</td></tr>)}
+      </tbody>
+    </table>
+  </section>
+  <script>
+    import { api, errMsg } from '../../scripts/admin-api'
+
+    async function check() {
+      for (const id of ['db', 's3', 'licenseKey']) {
+        const el = document.getElementById(`c-${id}`)!
+        el.textContent = 'checking...'
+        el.className = 'muted'
+      }
+      try {
+        const s = await api<Record<'db' | 's3' | 'licenseKey', string>>('GET', 'status')
+        for (const [id, v] of Object.entries(s)) {
+          const el = document.getElementById(`c-${id}`)!
+          el.textContent = v === 'ok' ? 'ok' : v
+          el.className = v === 'ok' ? 'ok' : 'bad'
+        }
+      } catch (e) {
+        for (const id of ['db', 's3', 'licenseKey']) {
+          const el = document.getElementById(`c-${id}`)!
+          el.textContent = errMsg(e)
+          el.className = 'bad'
+        }
+      }
+    }
+    document.getElementById('recheck')!.addEventListener('click', check)
+    check()
+  </script>
+</Admin>

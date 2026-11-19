@@ -1,6 +1,13 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { fetchRealDevice } from '../../src/engine/devices'
 
+// These cover the wire format; a custom test server's feature switches are
+// covered in server-config.test.ts.
+vi.mock('../../src/server-config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/server-config')>()),
+  assertServerFeature: async () => ({}),
+}))
+
 const SAMPLE = {
   os: 'android',
   model: 'SM-S918U',

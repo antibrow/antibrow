@@ -16,6 +16,8 @@ import pytest
 from antibrow import liveview as LV
 from antibrow.errors import LiveViewError
 
+pytestmark = pytest.mark.server_offers_everything
+
 
 class _Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args):
