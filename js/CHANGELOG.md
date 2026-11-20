@@ -18,12 +18,14 @@ All notable changes to the `anti-detect-browser` Node SDK. Format follows
 ### Changed
 
 - Every function with a `server` option now falls back to `ANTI_DETECT_BROWSER_SERVER` before the default.
+- A session started by `launch()` no longer changes the tabs the profile reopens next time: when it closes, the profile's saved tabs are put back as they were before it started. `openProfile()` behaves the same unless it is given the new `saveTabs: true`, meant for a person's own browsing.
 
 ### Fixed
 
 - Cloud profiles opened with `openProfile()` now save on exit after sessions longer than the launch timeout. Before, the upload failed with `Launch timed out before the request could be sent` and the cloud copy stayed at its old state.
 - A slow proxy (typically mobile) no longer launches with the default timezone and WebRTC off: the exit lookup is retried once with a longer timeout.
 - Opening a profile that is already open in another browser on the same computer now throws `ProfileInUseError` (with the holder's `pid`) instead of starting a second browser on the same data, which corrupted it. Close the first browser, or catch the error.
+- A proxy url passed to `profile()` / `setProxy()` that differs from an earlier one only in its password (providers that put the session id there, such as iproyal) is now stored as its own proxy. Before, it reused the earlier entry and every profile ran on the first session. Profiles bound that way are rebound the next time they get their url.
 
 ## [3.2.0] - 2026-10-29
 

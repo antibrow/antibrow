@@ -94,10 +94,11 @@ export function proxyUrlToConfig(url: string): ProxyConfig {
 /**
  * Deterministic, so the same endpoint pushed twice collides on the server's
  * unique (userId, clientId) instead of piling up duplicate library rows. The
- * password is deliberately out: rotating it must not orphan the row.
+ * password is in the seed: some providers (iproyal) put the sticky session
+ * there, so two passwords are two different exits, and a 409 reuses the row.
  */
 export function proxyLibraryClientId(config: ProxyConfig): string {
-  const seed = `${config.type}://${config.username ?? ''}@${config.host}:${config.port}`
+  const seed = `${config.type}://${config.username ?? ''}:${config.password ?? ''}@${config.host}:${config.port}`
   return `sdk-${createHash('sha256').update(seed).digest('hex').slice(0, 16)}`
 }
 

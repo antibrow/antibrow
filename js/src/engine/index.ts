@@ -22,7 +22,8 @@ import { assertPersonaOs, personaHostWarnings, loadOrGeneratePersona, readPerson
 import { fetchRealDevice } from './devices'
 import { lookupDirectGeo, lookupProxyGeo, type ProxyGeo } from './geoip'
 import { getLicenseToken } from './license'
-import { launchKernel, type KernelSession } from './launcher'
+import { assertProfileNotInUse, launchKernel, type KernelSession } from './launcher'
+import { hasSavedTabsSnapshot, restoreSavedTabs, snapshotSavedTabs } from './saved-tabs'
 import {
   downloadProfileCache,
   uploadProfileCache,
@@ -127,6 +128,9 @@ export interface OpenProfileOptions {
   followExitLanguage?: boolean
   /** Reopen the previous session's tabs. Default true. */
   restoreTabs?: boolean
+  /** Let this session's tabs become the ones the profile reopens. Default false:
+   *  a scripted session leaves them as it found them. For a person's own browsing. */
+  saveTabs?: boolean
   /** Hand downloads to Playwright (download events) instead of the browser. Default false. */
   playwrightDownloads?: boolean
   /** Device profile. New profiles only; an existing one keeps its own. */
@@ -467,6 +471,12 @@ async function openProfileWithin(opts: OpenProfileOptions, budget: Deadline): Pr
       })
   const profileDir = resolved.dir
   fs.mkdirSync(profileDir, { recursive: true })
+  // Owed by a scripted session that died before its exit hook. Before the cloud
+  // restore, which is free to replace it, and never under a kernel still running.
+  if (hasSavedTabsSnapshot(profileDir)) {
+    assertProfileNotInUse(path.join(profileDir, 'user-data'))
+    restoreSavedTabs(profileDir)
+  }
 
   // Restore first: persona.json carries the kernel version read below.
   const kernelBeforeRestore = readPersona(profileDir)?.kernelVersion
@@ -501,6 +511,7 @@ async function openProfileWithin(opts: OpenProfileOptions, budget: Deadline): Pr
   // crash, before the exit hook below could run) and corrects a mark that data
   // contradicts, so what follows reads a directory that agrees with itself.
   settleCryptState(profileDir)
+  if (!opts.saveTabs) snapshotSavedTabs(profileDir)
   const cryptKey = await resolveCryptKey({
     profileDir,
     cryptKey: opts.cryptKey,
@@ -672,6 +683,13 @@ async function openProfileWithin(opts: OpenProfileOptions, budget: Deadline): Pr
     // will restore. A build that ignored the switch settles as plain here, so
     // nothing claims an encryption that was never applied.
     settleCryptState(profileDir)
+    if (!opts.saveTabs) {
+      try {
+        restoreSavedTabs(profileDir)
+      } catch (e) {
+        opts.onProgress?.(`Could not put the saved tabs back: ${errText(e)}`)
+      }
+    }
     if (!uploads) return
     opts.onArchiveSync?.({ phase: 'upload', state: 'start' })
     session.archiveUpload = uploadArchive(profileDir, opts).then(

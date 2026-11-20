@@ -13,6 +13,10 @@ All notable changes to the `antibrow` Python SDK. Format follows
 - With a custom `server`, the "no API key" and "key rejected" errors and `python -m antibrow login` point at that server instead of antibrow.com.
 - `refresh_kernel_versions()` takes `server`, and the recipe registry functions take `server` (`resolve_registry_url()` is new); `ANTIBROW_RECIPES_URL` still wins.
 
+### Changed
+
+- A session started by `launch()` no longer changes the tabs the profile reopens next time: when it closes, the profile's saved tabs are put back as they were before it started.
+
 ### Fixed
 
 - Opening a profile that is already open in another browser on the same computer now raises `ProfileInUseError` (a `LaunchError`, with the holder's `pid`) instead of starting a second browser on the same data, which corrupted it. Close the first browser, or catch the error.

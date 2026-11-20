@@ -36,6 +36,7 @@ vi.mock('../../src/engine/persona', () => ({
 /** Capture what openProfile actually hands the kernel. */
 const launches: Array<{ profileDir: string; label?: string }> = []
 vi.mock('../../src/engine/launcher', () => ({
+  assertProfileNotInUse: () => {},
   launchKernel: async (opts: { profileDir: string; label?: string }) => {
     launches.push({ profileDir: opts.profileDir, label: opts.label })
     return {

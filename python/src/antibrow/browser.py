@@ -44,6 +44,7 @@ from .geoip import lookup_direct_geo, lookup_proxy_geo
 from .launcher import (
     DEFAULT_LAUNCH_TIMEOUT,
     _drain_output,
+    assert_profile_not_in_use,
     build_launch_args,
     clear_singleton_locks,
     is_stray_locale_tab_url,
@@ -84,6 +85,7 @@ from .profile_cache import (
 )
 from .profile_dir import read_profile_meta, resolve_profile_dir, settle_crypt_state
 from .proxy import ProxyLike, ProxySpec, parse_proxy
+from .saved_tabs import has_saved_tabs_snapshot, restore_saved_tabs, snapshot_saved_tabs
 from .server_config import FeatureUnavailableError, assert_server_feature, is_default_server, resolve_server
 
 _GEO_RETRY_TIMEOUT = 20.0
@@ -296,6 +298,11 @@ def prepare_launch(
         directory, resolved_name = resolved.dir, resolved.name
         server_denied = resolved.server_denied
     directory.mkdir(parents=True, exist_ok=True)
+    # Owed by a scripted session that died before close(). Before the cloud
+    # restore, which is free to replace it, and never under a kernel still running.
+    if has_saved_tabs_snapshot(directory):
+        assert_profile_not_in_use(directory / "user-data")
+        restore_saved_tabs(directory)
 
     budget.check("restoring the cloud archive")
     # Outside the budget: an archive is as big as the browsing history in it.
@@ -326,6 +333,7 @@ def prepare_launch(
     # crash, before close() could run) and corrects a mark that data contradicts,
     # so what follows reads a directory that agrees with itself.
     settle_crypt_state(directory)
+    snapshot_saved_tabs(directory)
     key_source = get_crypt_key or _own_crypt_key_source(resolved_name, api_key, server)
     launch_crypt_key = resolve_crypt_key(directory, crypt_key=crypt_key, get_crypt_key=key_source)
 
@@ -1231,6 +1239,13 @@ class _BaseSession:
         except OSError:
             pass  # an unwritable directory is not worth failing a finished session
 
+    def _restore_saved_tabs(self) -> None:
+        """Put back the tabs the profile had before this scripted session."""
+        try:
+            restore_saved_tabs(self._plan.profile_dir)
+        except OSError as e:
+            print(f"[antibrow] could not put the saved tabs back: {e}", file=sys.stderr)
+
     def _upload_archive(self) -> None:
         """Pack and upload the profile, after the kernel process is gone.
 
@@ -1362,6 +1377,7 @@ class Antibrow(_BaseSession):
             pass
         _revoke_ticket(self._plan.proxy_ticket)
         self._settle_crypt_state()
+        self._restore_saved_tabs()
         self._upload_archive()
 
     def __enter__(self) -> "Antibrow":
@@ -1443,6 +1459,7 @@ class AsyncAntibrow(_BaseSession):
         # Revoking and uploading both block on the network; keep the loop free.
         await loop.run_in_executor(None, _revoke_ticket, self._plan.proxy_ticket)
         await loop.run_in_executor(None, self._settle_crypt_state)
+        await loop.run_in_executor(None, self._restore_saved_tabs)
         await loop.run_in_executor(None, self._upload_archive)
 
     async def __aenter__(self) -> "AsyncAntibrow":

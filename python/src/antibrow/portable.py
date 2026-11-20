@@ -44,6 +44,7 @@ from .profile_dir import (
     profile_crypt_marker,
     write_crypt_state,
 )
+from .saved_tabs import drop_saved_tabs_snapshot
 
 #: Recommended file extension for a portable profile archive.
 PROFILE_ARCHIVE_EXT = "fpprofile"
@@ -567,6 +568,7 @@ def _import_manifest_archive(
     # here; an imported archive's generation is unknowable, so the next launch
     # must restore rather than trust a stale marker.
     clear_archive_version(root)
+    drop_saved_tabs_snapshot(root)
     # The portable format carries neither the marker nor a key, so what lands here
     # is unencrypted as far as this machine can act on it.
     _settle_imported_crypt_state(root, False)
@@ -610,6 +612,7 @@ def _import_legacy_archive(zf: zipfile.ZipFile, root: Path) -> ImportedProfileMe
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(zf.read(info))
     clear_archive_version(root)
+    drop_saved_tabs_snapshot(root)
     _settle_imported_crypt_state(root, CRYPT_STATE_FILE in zf.namelist())
 
     rest = {key: value for key, value in legacy.items() if key not in ("name", "kernelVersion")}

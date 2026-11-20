@@ -14,6 +14,8 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import shutil
+from pathlib import Path
 
 import pytest
 
@@ -21,7 +23,8 @@ from antibrow import browser as B
 from antibrow import kernel as K
 from antibrow import license as L
 from antibrow import profile_cache as P
-from antibrow.errors import AntibrowError, ProfileCacheError
+from antibrow import saved_tabs
+from antibrow.errors import AntibrowError, ProfileCacheError, ProfileInUseError
 from antibrow.profile_sync import ArchiveUrls
 
 
@@ -662,3 +665,79 @@ def test_close_asks_the_browser_to_quit_from_the_calling_thread(tmp_path, fake_k
     assert browser.close_requested, "Browser.close never reached the browser"
     assert not browser.wrong_thread, "the CDP call was made from the wrong thread"
     assert killed == [], "the browser was killed instead of being asked to quit"
+
+
+# -- saved tabs -------------------------------------------------------------
+
+
+def _sessions(directory):
+    return Path(directory) / "user-data" / "Default" / "Sessions"
+
+
+def _seed(directory, name):
+    _sessions(directory).mkdir(parents=True, exist_ok=True)
+    (_sessions(directory) / name).write_text(name)
+
+
+def _browse(directory):
+    # What the kernel leaves on exit: the session it just ran replaces the saved one.
+    shutil.rmtree(_sessions(directory), ignore_errors=True)
+    _seed(directory, "Session_script")
+
+
+def test_the_saved_tabs_are_back_before_the_upload_packs_them(tmp_path, fake_kernel, paid_license, server_stub, monkeypatch):
+    monkeypatch.setattr(B, "download_profile_cache", lambda url, profile_dir: False)
+    directory = tmp_path / "profiles" / "p1"
+    _seed(directory, "Session_person")
+    packed = []
+
+    def upload(profile_dir, url):
+        packed.extend(sorted(p.name for p in _sessions(profile_dir).iterdir()))
+        return "etag-1"
+
+    monkeypatch.setattr(B, "upload_profile_cache", upload)
+    plan = plan_for(tmp_path, profile_dir=directory)
+    session = session_for(tmp_path, monkeypatch, plan, [])
+    _browse(directory)
+
+    session.close()
+
+    assert packed == ["Session_person"]
+    assert [p.name for p in _sessions(directory).iterdir()] == ["Session_person"]
+
+
+def test_a_session_that_died_is_settled_by_the_next_launch(tmp_path, fake_kernel, paid_license, server_stub, monkeypatch):
+    monkeypatch.setattr(B, "download_profile_cache", lambda url, profile_dir: False)
+    directory = tmp_path / "profiles" / "p1"
+    _seed(directory, "Session_person")
+    plan_for(tmp_path, profile_dir=directory)
+    _browse(directory)  # and close() never runs
+
+    plan_for(tmp_path, profile_dir=directory)
+
+    assert [p.name for p in _sessions(directory).iterdir()] == ["Session_person"]
+
+
+def test_the_snapshot_layout_matches_the_node_sdk():
+    # Either SDK may have to settle a snapshot the other one left behind.
+    source = (Path(__file__).resolve().parents[2] / "js" / "src" / "engine" / "saved-tabs.ts").read_text()
+    assert "export const SAVED_TABS_DIR = '{0}'".format(saved_tabs.SAVED_TABS_DIR) in source
+    assert "'user-data', 'Default', 'Sessions'" in source
+    assert "path.join(staging, 'Sessions')" in source
+
+
+def test_a_snapshot_owed_under_a_live_kernel_is_left_for_later(tmp_path, fake_kernel, free_license, monkeypatch):
+    directory = tmp_path / "profiles" / "p1"
+    _seed(directory, "Session_person")
+    saved_tabs.snapshot_saved_tabs(directory)
+    _browse(directory)
+
+    def busy(user_data_dir):
+        raise ProfileInUseError(str(user_data_dir), 7)
+
+    monkeypatch.setattr(B, "assert_profile_not_in_use", busy)
+    with pytest.raises(ProfileInUseError):
+        plan_for(tmp_path, profile_dir=directory)
+
+    assert saved_tabs.has_saved_tabs_snapshot(directory)
+    assert [p.name for p in _sessions(directory).iterdir()] == ["Session_script"]

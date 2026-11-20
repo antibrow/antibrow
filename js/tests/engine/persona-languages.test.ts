@@ -25,6 +25,7 @@ vi.mock('../../src/engine/geoip', () => ({
 
 const launched: string[][] = []
 vi.mock('../../src/engine/launcher', () => ({
+  assertProfileNotInUse: () => {},
   launchKernel: async (opts: { persona: { languages: string[] }; profileDir: string }) => {
     launched.push(opts.persona.languages)
     return { context: { pages: () => [], newPage: vi.fn() }, profileDir: opts.profileDir, onExit: () => undefined, close: vi.fn(async () => undefined) }

@@ -21,6 +21,7 @@ from typing import Optional, Set, Tuple
 from .config import USER_AGENT
 from .errors import ProfileCacheError
 from .profile_dir import CRYPT_STATE_FILE
+from .saved_tabs import drop_saved_tabs_snapshot
 
 #: Browser state kept under ``<profile_dir>/user-data/``.
 USER_DATA_ITEMS: Tuple[str, ...] = ("Default", "GrShaderCache", "Local State", "Variations")
@@ -329,6 +330,7 @@ def unpack_profile_cache(data: bytes, profile_dir: Path | str) -> None:
                 continue
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(zf.read(info))
+    drop_saved_tabs_snapshot(root)
     # persona.json is in the archive, so this just overwrote it - including the
     # kernel version of whichever generation was packed.
 

@@ -44,6 +44,7 @@ vi.mock('../../src/engine/license', () => ({ getLicenseToken: () => licenseSpy()
 
 const launchArgs: Array<Record<string, unknown>> = []
 vi.mock('../../src/engine/launcher', () => ({
+  assertProfileNotInUse: () => {},
   launchKernel: async (o: Record<string, unknown>) => (launchArgs.push(o), {
     context: { pages: () => [], newPage: vi.fn() },
     profileDir: '',

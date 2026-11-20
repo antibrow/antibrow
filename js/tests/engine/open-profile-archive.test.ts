@@ -55,6 +55,7 @@ vi.mock('../../src/engine/profile-cache', async () => {
 /** Kernel session stand-in that lets the test fire the browser-exit event. */
 const exits: Array<() => void> = []
 vi.mock('../../src/engine/launcher', () => ({
+  assertProfileNotInUse: () => {},
   launchKernel: async () => ({
     context: { pages: () => [], newPage: vi.fn() },
     profileDir: '',
@@ -221,5 +222,80 @@ describe('openProfile archive generation gate', () => {
     await session.archiveUpload
 
     expect(readArchiveVersion(profileDir)).toBeUndefined()
+  })
+})
+
+describe('openProfile saved tabs', () => {
+  const sessionsOf = (dir: string) => path.join(dir, 'user-data', 'Default', 'Sessions')
+  const seed = (dir: string, name: string) => {
+    fs.mkdirSync(sessionsOf(dir), { recursive: true })
+    fs.writeFileSync(path.join(sessionsOf(dir), name), name)
+  }
+  /** What the kernel leaves on exit: the session it just ran replaces the saved one. */
+  const browse = (dir: string) => {
+    fs.rmSync(sessionsOf(dir), { recursive: true, force: true })
+    seed(dir, 'Session_script')
+  }
+
+  it('puts the saved tabs back before the archive is packed', async () => {
+    const profileDir = tmp()
+    seed(profileDir, 'Session_person')
+    let packed: string[] = []
+    uploadSpy.mockImplementation(async (dir: string) => {
+      packed = fs.readdirSync(sessionsOf(dir))
+      return undefined
+    })
+
+    const session = await openProfile({ ...base(), profileDir, getArchivePutUrl: async () => 'https://r2/put.zip' })
+    browse(profileDir)
+    await exit()
+    await session.archiveUpload
+
+    expect(packed).toEqual(['Session_person'])
+    expect(fs.readdirSync(sessionsOf(profileDir))).toEqual(['Session_person'])
+  })
+
+  it('keeps what the session left when it is a person browsing', async () => {
+    const profileDir = tmp()
+    seed(profileDir, 'Session_person')
+
+    await openProfile({ ...base(), profileDir, saveTabs: true })
+    browse(profileDir)
+    await exit()
+
+    expect(fs.readdirSync(sessionsOf(profileDir))).toEqual(['Session_script'])
+  })
+
+  it('settles a snapshot a crashed scripted session still owes, even on a person launch', async () => {
+    const profileDir = tmp()
+    seed(profileDir, 'Session_person')
+    await openProfile({ ...base(), profileDir })
+    browse(profileDir)
+    exits.length = 0   // the process died: its exit hook never ran
+
+    await openProfile({ ...base(), profileDir, saveTabs: true })
+
+    expect(fs.readdirSync(sessionsOf(profileDir))).toEqual(['Session_person'])
+  })
+})
+
+describe('openProfile saved tabs under a live kernel', () => {
+  it('leaves an owed snapshot alone while another kernel has the profile open', async () => {
+    const launcher = await import('../../src/engine/launcher')
+    const { snapshotSavedTabs, hasSavedTabsSnapshot } = await import('../../src/engine/saved-tabs')
+    const profileDir = tmp()
+    const sessions = path.join(profileDir, 'user-data', 'Default', 'Sessions')
+    fs.mkdirSync(sessions, { recursive: true })
+    fs.writeFileSync(path.join(sessions, 'Session_person'), 'p')
+    snapshotSavedTabs(profileDir)
+    fs.rmSync(path.join(sessions, 'Session_person'))
+    fs.writeFileSync(path.join(sessions, 'Session_script'), 's')
+    const spy = vi.spyOn(launcher, 'assertProfileNotInUse').mockImplementation(() => { throw new Error('in use') })
+
+    await expect(openProfile({ ...base(), profileDir, saveTabs: true })).rejects.toThrow('in use')
+    spy.mockRestore()
+
+    expect(hasSavedTabsSnapshot(profileDir)).toBe(true)
+    expect(fs.readdirSync(sessions)).toEqual(['Session_script'])
   })
 })

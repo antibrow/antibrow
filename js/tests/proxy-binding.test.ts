@@ -117,12 +117,15 @@ describe('credential redaction in thrown error messages', () => {
 })
 
 describe('proxyLibraryClientId', () => {
-  it('is stable for the same endpoint and differs across endpoints', () => {
+  it('is stable for the same endpoint and credentials, differs otherwise', () => {
     const a = proxyLibraryClientId({ type: 'HTTP', host: 'h.io', port: 8080, username: 'u', password: 'p' })
     const b = proxyLibraryClientId({ type: 'HTTP', host: 'h.io', port: 8080, username: 'u', password: 'DIFFERENT' })
     const c = proxyLibraryClientId({ type: 'HTTP', host: 'h.io', port: 9090, username: 'u', password: 'p' })
+    const d = proxyLibraryClientId({ type: 'HTTP', host: 'h.io', port: 8080, username: 'u', password: 'p' })
     expect(a).toMatch(/^sdk-[0-9a-f]{16}$/)
-    expect(b).toBe(a)
+    expect(d).toBe(a)
+    // A session id carried in the password is a different exit, not a rotation.
+    expect(b).not.toBe(a)
     expect(c).not.toBe(a)
   })
 })

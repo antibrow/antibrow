@@ -5,6 +5,7 @@ import { defaultKernelVersion, kernelsForPlatform, normalizeKernelVersion } from
 import { generatePersona, readPersona, withKernelVersion, writePersona, type ApiLogMode, type CapturedFacts, type DeviceType, type Persona } from './persona'
 import { CRYPT_STATE_FILE, isProfileEncrypted, writeCryptState } from './profile-dir'
 import { readAllWithStall } from './stall'
+import { dropSavedTabsSnapshot } from './saved-tabs'
 
 // Browser state items stored under <profileDir>/user-data/
 const USER_DATA_ITEMS = ['Default', 'GrShaderCache', 'Local State', 'Variations'] as const
@@ -250,6 +251,7 @@ export function unpackProfileCache(buf: Buffer, profileDir: string): void {
   fs.mkdirSync(profileDir, { recursive: true })
   clearPackedState(profileDir, entries)
   zip.extractAllTo(profileDir, /* overwrite */ true)
+  dropSavedTabsSnapshot(profileDir)
   // persona.json is in the archive, so this just overwrote it - including the
   // kernel version of whichever generation was packed.
 }
@@ -589,6 +591,7 @@ export function importProfileArchive(buf: Buffer, profileDir: string): ImportedP
   if (identity) fs.writeFileSync(metaPath, identity)
   else fs.rmSync(metaPath, { force: true })
   clearArchiveVersion(profileDir)
+  dropSavedTabsSnapshot(profileDir)
   settleImportedCryptState(profileDir, !!zip.getEntry(CRYPT_STATE_FILE))
   const { name, kernelVersion, ...rest } = legacy as { name?: string; kernelVersion?: string }
   return {
@@ -763,6 +766,7 @@ function importLauncherArchive(zip: AdmZip, manifest: LauncherManifest, profileD
   const persona = launcherPersonaToPersona(lp.persona ?? {}, kernelVersion)
   fs.writeFileSync(path.join(profileDir, 'persona.json'), JSON.stringify(persona, null, 2))
   clearArchiveVersion(profileDir)
+  dropSavedTabsSnapshot(profileDir)
   // The portable format carries neither the marker nor a key, so what lands here
   // is unencrypted as far as this machine can act on it.
   settleImportedCryptState(profileDir, false)
