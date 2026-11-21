@@ -27,6 +27,7 @@ python/       →  PyPI: antibrow
 js/           →  npm:  anti-detect-browser
 ai-sdk-tool/  →  npm:  ai-sdk-tool-antibrow  (Vercel AI SDK tools)
 docker/       →  Docker Hub: antibrow/antibrow  (SDK + engine deps + xvfb)
+server/       →  API-сервер и панель администратора для самостоятельного размещения (OEM-версия)
 ```
 
 ## Установка
@@ -119,12 +120,25 @@ DuckDuckGo, GitHub, PyPI, npm, плюс проверки выходного IP �
 раз то, для чего слой существует. Откройте issue в репозитории рецептов или напишите свой
 по его `GUIDE.md`: формат - один файл без зависимостей.
 
+## Свой сервер: OEM-версия
+
+[`server/`](server/) - это API-сервер, с которым работают SDK и десктопное приложение, вместе
+с панелью администратора, под MIT. Одна кодовая база запускается на Cloudflare Workers или в
+Docker, с PostgreSQL и любым S3-совместимым бакетом. Направьте SDK на него через `server=`
+(или `ANTI_DETECT_BROWSER_SERVER`), и профили, облачная синхронизация и токены движка будут
+идти от вашего развёртывания, а не от antibrow.com.
+
+Запустить его как сервис для своих пользователей, под своим брендом и со своим десктопным
+приложением, - это [OEM-версия](https://antibrow.com/ru/oem). Настройка описана в
+[`server/README.md`](server/README.md) (на английском).
+
 ## Документация и примеры
 
 | | |
 |---|---|
 | API Python, опции, CLI | [`python/README.ru.md`](python/README.ru.md) |
 | API JavaScript | [`js/README.ru.md`](js/README.ru.md) |
+| Свой сервер (OEM-версия) | [`server/README.md`](server/README.md) · [antibrow.com/ru/oem](https://antibrow.com/ru/oem) |
 | Готовые к запуску примеры (Playwright, browser-use, crawl4ai, Scrapling, MCP, Docker) | [`python/examples/`](python/examples/) |
 
 ## Платформы
@@ -158,5 +172,6 @@ Windows x64, macOS (universal) и Linux x64 / arm64.
 ## Ссылки
 
 - Сайт - <https://antibrow.com/ru>
+- OEM-версия - <https://antibrow.com/ru/oem>
 - Документация - <https://antibrow.com/ru/dokumentatsiya>
 - Issues - <https://github.com/antibrow/antibrow/issues>

@@ -27,6 +27,7 @@ python/       →  PyPI: antibrow
 js/           →  npm:  anti-detect-browser
 ai-sdk-tool/  →  npm:  ai-sdk-tool-antibrow  (Vercel AI SDK tools)
 docker/       →  Docker Hub: antibrow/antibrow  (SDK + engine deps + xvfb)
+server/       →  self-hostable API server and admin panel (OEM edition)
 ```
 
 ## Install
@@ -169,12 +170,25 @@ protocol is inspected - which is the reason to host on your own domain rather th
 default. The frame format, key schedule and threat model are in the
 [whitepaper](https://antibrow.com/relay/whitepaper).
 
+## Self-host it: the OEM edition
+
+[`server/`](server/) is the API server the SDKs and the desktop app talk to, with an admin
+panel, under MIT. One codebase runs on Cloudflare Workers or in Docker, with PostgreSQL and
+any S3-compatible bucket. Point the SDKs at it with `server=` (or
+`ANTI_DETECT_BROWSER_SERVER`) and profiles, cloud sync and engine tokens come from your
+deployment instead of antibrow.com.
+
+Running it as a service for your own users, under your own brand and with a branded desktop
+app, is the [OEM edition](https://antibrow.com/oem). Setup is in
+[`server/README.md`](server/README.md).
+
 ## Docs and examples
 
 | | |
 |---|---|
 | Python API, options, CLI | [`python/README.md`](python/README.md) |
 | JavaScript API | [`js/README.md`](js/README.md) |
+| Self-hosted server (OEM edition) | [`server/README.md`](server/README.md) · [antibrow.com/oem](https://antibrow.com/oem) |
 | Vercel AI SDK tools | [`ai-sdk-tool/README.md`](ai-sdk-tool/README.md) · [antibrow.com/docs/ai-sdk](https://antibrow.com/docs/ai-sdk) |
 | Runnable examples (Playwright, browser-use, crawl4ai, Scrapling, MCP, Docker) | [`python/examples/`](python/examples/) |
 
@@ -208,5 +222,6 @@ automate and with the law in your jurisdiction.
 
 - Website — <https://antibrow.com>
 - Documentation — <https://antibrow.com/docs>
+- OEM edition — <https://antibrow.com/oem>
 - Encrypted relay — <https://antibrow.com/relay> · [antibrow/relay](https://github.com/antibrow/relay)
 - Issues — <https://github.com/antibrow/antibrow/issues>
